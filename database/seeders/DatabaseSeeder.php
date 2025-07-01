@@ -14,18 +14,16 @@ class DatabaseSeeder extends Seeder
      * Seed the application's database.
      */
     public function run(): void
-    {
-        // User::factory(10)->create();
-
-        // User::factory()->create([
-        //     'name' => 'Test User',
-        //     'email' => 'test@example.com',
-        // ]);
-
-        DB::table('users')->insert([
+    {  
+        // Create the default user for testing
+        User::factory()->create([
             'name' => 'admin',
             'email' => 'admin@admin.com',
             'password' => Hash::make('admin')
+        ]);
+
+        $this->call([
+            TenantSeeder::class,
         ]);
     }
 }
