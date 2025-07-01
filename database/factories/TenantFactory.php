@@ -21,8 +21,8 @@ class TenantFactory extends Factory
         return [
             'document' => $this->faker->unique()->numerify(str_repeat('#',10)),
             'name' => $this->faker->name(),
-            'phone_namber' => $this->faker->unique()->phoneNumber(),
-            'email' => $this->faker->unique()->safeEmail(),
+            'phone_number' => $this->faker->unique()->phoneNumber(),
+            'email' => $this->faker->unique()->optional()->safeEmail(),
 
             'user_id' => User::inRandomOrder()->first()->id,
         ];
