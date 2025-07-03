@@ -14,7 +14,7 @@ class DatabaseSeeder extends Seeder
      * Seed the application's database.
      */
     public function run(): void
-    {  
+    {
         // Create the default user for testing
         User::factory()->create([
             'name' => 'admin',
@@ -24,6 +24,7 @@ class DatabaseSeeder extends Seeder
 
         $this->call([
             TenantSeeder::class,
+            PropertySeeder::class,
         ]);
     }
 }
