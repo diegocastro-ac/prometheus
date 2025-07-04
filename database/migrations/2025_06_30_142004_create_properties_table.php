@@ -15,11 +15,12 @@ return new class extends Migration
             $table->id();
             $table->string('name');
             $table->string('description')->nullable();
-            $table->string('address')->unique();
+            $table->string('address');
             $table->boolean('is_rented');
             $table->timestamps();
 
             $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->unique(['user_id', 'address'], 'properties_user_address_unique');
         });
     }
 
