@@ -15,11 +15,17 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // Create the default user for testing
+        // Create the default users for testing
         User::factory()->create([
             'name' => 'admin',
             'email' => 'admin@admin.com',
             'password' => Hash::make('admin')
+        ]);
+
+        User::factory()->create([
+            'name' => 'user',
+            'email' => 'user@user.com',
+            'password' => Hash::make('user')
         ]);
 
         $this->call([
