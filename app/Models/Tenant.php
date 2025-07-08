@@ -11,7 +11,12 @@ class Tenant extends Model
     /** @use HasFactory<\Database\Factories\TenantFactory> */
     use HasFactory;
 
-    protected $filable = [
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var list<string>
+     */
+    protected $fillable = [
         'document',
         'name',
         'phone_number',

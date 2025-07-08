@@ -4,6 +4,7 @@ namespace Database\Factories;
 
 use Illuminate\Database\Eloquent\Factories\Factory;
 use \App\Models\User;
+use Illuminate\Support\Str;
 
 
 /**
@@ -19,10 +20,10 @@ class TenantFactory extends Factory
     public function definition(): array
     {
         return [
-            'document' => $this->faker->unique()->numerify(str_repeat('#',10)),
-            'name' => $this->faker->name(),
-            'phone_number' => $this->faker->unique()->phoneNumber(),
-            'email' => $this->faker->unique()->optional()->safeEmail(),
+            'document' => $this->faker->unique()->numerify(str_repeat('#', 15)),
+            'name' => Str::limit($this->faker->name(), 50, ''),
+            'phone_number' => Str::limit($this->faker->unique()->phoneNumber(), 15, ''),
+            'email' => Str::limit($this->faker->unique()->optional()->safeEmail(), 100, ''),
 
             'user_id' => User::inRandomOrder()->first()->id,
         ];

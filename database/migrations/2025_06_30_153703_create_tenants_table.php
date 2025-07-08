@@ -13,13 +13,16 @@ return new class extends Migration
     {
         Schema::create('tenants', function (Blueprint $table) {
             $table->id();
-            $table->string('document')->unique();
+            $table->string('document');
             $table->string('name');
-            $table->string('phone_number')->unique();
-            $table->string('email')->unique()->nullable();
+            $table->string('phone_number');
+            $table->string('email')->nullable();
             $table->timestamps();
 
             $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->unique(['user_id', 'document'], 'tenants_user_document_unique');
+            $table->unique(['user_id', 'document'], 'tenants_user_phone_number_unique');
+            $table->unique(['user_id', 'document'], 'tenants_user_email_unique');
         });
     }
 
