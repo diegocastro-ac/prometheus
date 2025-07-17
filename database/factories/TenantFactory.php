@@ -20,10 +20,10 @@ class TenantFactory extends Factory
     public function definition(): array
     {
         return [
-            'document' => $this->faker->unique()->numerify(str_repeat('#', 15)),
+            'document' => $this->faker->numerify(str_repeat('#', 15)),
             'name' => Str::limit($this->faker->name(), 50, ''),
-            'phone_number' => Str::limit($this->faker->unique()->phoneNumber(), 15, ''),
-            'email' => Str::limit($this->faker->unique()->optional()->safeEmail(), 100, ''),
+            'phone_number' => Str::limit($this->faker->phoneNumber(), 15, ''),
+            'email' => Str::limit($this->faker->optional()->safeEmail(), 100, ''),
 
             'user_id' => User::inRandomOrder()->first()->id,
         ];
