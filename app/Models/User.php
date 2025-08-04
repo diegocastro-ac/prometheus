@@ -49,13 +49,32 @@ class User extends Authenticatable
         ];
     }
 
+    /**
+     * Get all properties associated with the user.
+     */
     public function properties(): HasMany
     {
         return $this->hasMany(Property::class);
     }
 
-    // tenants()
-    // rentals()
-    // payments()
+    /**
+     * Get all tenants associated with the user.
+     */
+    public function tenants(): HasMany
+    {
+        return $this->hasMany(Tenant::class);
+    }
 
+    /**
+     * Get all rentals associated with the user.
+     */
+    public function rentals(): HasMany
+    {
+        return $this->hasMany(Rental::class);
+    }
+
+    /**
+     * Get all payments associated with the user.
+     */
+    // payments()
 }
