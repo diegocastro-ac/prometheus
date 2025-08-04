@@ -16,7 +16,6 @@ return new class extends Migration
             $table->string('name');
             $table->string('description')->nullable();
             $table->string('address');
-            $table->boolean('is_rented');
             $table->timestamps();
 
             $table->foreignId('user_id')->constrained()->onDelete('cascade');

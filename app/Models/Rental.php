@@ -18,6 +18,8 @@ class Rental extends Model
      * @var list<string>
      */
     protected $fillable = [
+        'name',
+        'description',
         'start_date',
         'end_date',
         'total_months',
@@ -41,6 +43,32 @@ class Rental extends Model
         'amount' => 'float',
     ];
 
+    protected static function booted()
+    {
+        static::created(function (Rental $rental) {
+            if ($rental->agreement_path && str_starts_with($rental->agreement_path, 'temp/uploads')) {
+                $newPath = "users/{$rental->user_id}/rentals/{$rental->id}/agreement/" . basename($rental->agreement_path);
+                Storage::disk('public')->move($rental->agreement_path, $newPath);
+                $rental->updateQuietly(['agreement_path' => $newPath]);
+            }
+        });
+
+        static::updating(function (Rental $rental) {
+            $original = $rental->getOriginal('agreement_path');
+            $current = $rental->agreement_path;
+
+            if ($original && $original !== $current) {
+                Storage::disk('public')->delete($original);
+            }
+        });
+
+        static::deleted(function (Rental $rental) {
+            Storage::disk('public')
+                ->deleteDirectory("users/{$rental->user_id}/rentals/{$rental->id}");
+        });
+    }
+
+    // Necessary?
     public function getAgreementUrlAttribute(): string
     {
         return Storage::url($this->agreement_path);
