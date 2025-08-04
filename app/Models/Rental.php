@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\Storage;
 
 class Rental extends Model
@@ -40,7 +41,7 @@ class Rental extends Model
     protected $casts = [
         'start_date' => 'date',
         'end_date' => 'date',
-        'amount' => 'float',
+        'monthly_amount' => 'float',
     ];
 
     protected static function booted()
@@ -68,7 +69,7 @@ class Rental extends Model
         });
     }
 
-    // Necessary?
+    // ? Necessary?
     public function getAgreementUrlAttribute(): string
     {
         return Storage::url($this->agreement_path);
@@ -101,5 +102,8 @@ class Rental extends Model
     /**
      * Get all payments associated with the rental.
      */
-    // payments()
+    public function payments(): HasMany
+    {
+        return $this->hasMany(Payment::class);
+    }
 }
