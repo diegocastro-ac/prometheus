@@ -21,7 +21,6 @@ class Property extends Model
         'name',
         'description',
         'address',
-        'is_rented',
         'user_id',
     ];
 

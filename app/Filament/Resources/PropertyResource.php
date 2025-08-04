@@ -47,8 +47,6 @@ class PropertyResource extends Resource
                     ->columnSpan('full')
                     ->autosize()
                     ->maxLength(255),
-                Forms\Components\Toggle::make('is_rented')
-                    ->required(),
                 Hidden::make('user_id')
                     ->default(fn() => Auth::id()),
             ]);
@@ -66,8 +64,6 @@ class PropertyResource extends Resource
                     ->searchable()
                     ->sortable()
                     ->limit(15),
-                Tables\Columns\IconColumn::make('is_rented')
-                    ->boolean(),
                 Tables\Columns\TextColumn::make('description')
                     ->searchable()
                     ->limit(30),
@@ -102,8 +98,6 @@ class PropertyResource extends Resource
                 TextEntry::make('name'),
                 TextEntry::make('address'),
                 TextEntry::make('description'),
-                IconEntry::make('is_rented')
-                    ->boolean(),
                 TextEntry::make('created_at')
                     ->dateTime(),
                 TextEntry::make('updated_at')

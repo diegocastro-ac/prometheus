@@ -22,7 +22,6 @@ class PropertyFactory extends Factory
             'name' => Str::limit($this->faker->words(3, true), 50, ''),
             'description' => Str::limit($this->faker->optional()->paragraph(), 255, ''),
             'address' => Str::limit($this->faker->address(), 50, ''),
-            'is_rented' => $this->faker->boolean(),
 
             'user_id' => User::inRandomOrder()->first()->id,
         ];
