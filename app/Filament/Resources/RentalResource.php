@@ -28,6 +28,12 @@ class RentalResource extends Resource
 
     protected static ?string $recordTitleAttribute = 'name';
 
+    protected static ?string $slug = 'administration/rentals';
+
+    protected static ?string $navigationGroup = 'Administration';
+
+    protected static ?int $navigationSort = 2;
+
     protected static ?string $navigationIcon = 'heroicon-o-clipboard-document-list';
 
     protected static SubNavigationPosition $subNavigationPosition = SubNavigationPosition::Top;
@@ -126,7 +132,7 @@ class RentalResource extends Resource
                             ->maxSize(5120)
                             ->hint('Only .pdf, .docx or images (.jpg, .png), up to 5MB'),
                     ])
-                    ->collapsible(),
+                    ->collapsed(),
             ]);
     }
 
@@ -149,13 +155,15 @@ class RentalResource extends Resource
                     ->sortable(),
                 Tables\Columns\TextColumn::make('total_persons')
                     ->numeric()
-                    ->sortable(),
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
                 Tables\Columns\TextColumn::make('monthly_amount')
                     ->numeric()
                     ->sortable(),
                 Tables\Columns\IconColumn::make('agreement_path')
                     ->label('Agreement')
-                    ->boolean(),
+                    ->boolean()
+                    ->toggleable(isToggledHiddenByDefault: true),
                 Tables\Columns\IconColumn::make('is_active')
                     ->boolean(),
                 Tables\Columns\TextColumn::make('tenant.name')
@@ -168,7 +176,8 @@ class RentalResource extends Resource
                     ->limit(15),
                 Tables\Columns\TextColumn::make('description')
                     ->searchable()
-                    ->limit(30),
+                    ->limit(30)
+                    ->toggleable(isToggledHiddenByDefault: true),
                 Tables\Columns\TextColumn::make('created_at')
                     ->dateTime()
                     ->sortable()
@@ -205,6 +214,7 @@ class RentalResource extends Resource
         return [
             'index' => Pages\ListRentals::route('/'),
             'create' => Pages\CreateRental::route('/create'),
+            'payments' => Pages\ManageRentalPayments::route('/{record}/payments'),
             'edit' => Pages\EditRental::route('/{record}/edit'),
             'view' => Pages\ViewRental::route('/{record}'),
         ];
@@ -302,6 +312,7 @@ class RentalResource extends Resource
         return $page->generateNavigationItems([
             Pages\ViewRental::class,
             Pages\EditRental::class,
+            Pages\ManageRentalPayments::class,
         ]);
     }
 }

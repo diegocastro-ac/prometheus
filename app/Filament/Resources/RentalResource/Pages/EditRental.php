@@ -4,12 +4,22 @@ namespace App\Filament\Resources\RentalResource\Pages;
 
 use App\Filament\Resources\RentalResource;
 use Filament\Actions;
+use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
+use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Support\Carbon;
 
 class EditRental extends EditRecord
 {
     protected static string $resource = RentalResource::class;
+
+    public function getTitle(): string | Htmlable
+    {
+        /** @var Rental */
+        $record = $this->getRecord();
+
+        return $record->name;
+    }
 
     protected function getHeaderActions(): array
     {
@@ -22,5 +32,19 @@ class EditRental extends EditRecord
     {
         $data['end_date'] = Carbon::parse($data['start_date'])->addMonths((int) $data['total_months']);
         return $data;
+    }
+
+    protected function afterSave(): void
+    {
+        $changes = $this->record->getChanges();
+        $fieldsToCheck = ['start_date', 'end_date', 'total_months'];
+
+        if (count(array_intersect(array_keys($changes), $fieldsToCheck)) > 0) {
+            Notification::make()
+                ->warning()
+                ->title('Attention')
+                ->body('The dates or months have changed, but the payment plan will NOT be automatically updated.')
+                ->send();
+        }
     }
 }
