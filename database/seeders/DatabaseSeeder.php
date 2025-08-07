@@ -30,7 +30,8 @@ class DatabaseSeeder extends Seeder
         $this->call([
             TenantSeeder::class,
             PropertySeeder::class,
-            RentalSeeder::class
+            RentalSeeder::class,
+            PaymentSeeder::class
         ]);
     }
 }

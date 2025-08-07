@@ -76,5 +76,8 @@ class User extends Authenticatable
     /**
      * Get all payments associated with the user.
      */
-    // payments()
+    public function payments(): HasMany
+    {
+        return $this->hasMany(Payment::class);
+    }
 }
