@@ -20,13 +20,9 @@ class Payment extends Model
         'date',
         'amount',
         'is_rent_paid',
-        'rent_voucher_path',
         'is_water_paid',
-        'water_voucher_path',
         'is_energy_paid',
-        'energy_voucher_path',
         'is_gas_paid',
-        'gas_voucher_path',
         'rental_id',
         'user_id',
     ];
