@@ -32,17 +32,17 @@ class ManageRentalPayments extends ManageRelatedRecords
 
         $recordTitle = $recordTitle instanceof Htmlable ? $recordTitle->toHtml() : $recordTitle;
 
-        return "Manage {$recordTitle} Payments";
+        return __('payments.navigation.pages.manage_title', ['title' => $recordTitle]);
     }
 
     public function getBreadcrumb(): string
     {
-        return 'Payments';
+        return __('payments.navigation.pages.breadcrumb');
     }
 
     public static function getNavigationLabel(): string
     {
-        return 'Manage Payments';
+        return __('payments.navigation.manage');
     }
 
     public function form(Form $form): Form
@@ -50,21 +50,27 @@ class ManageRentalPayments extends ManageRelatedRecords
         return $form
             ->schema([
                 Forms\Components\DatePicker::make('date')
+                    ->label(__('payments.form.date'))
                     ->required(),
                 Forms\Components\TextInput::make('amount')
+                    ->label(__('payments.form.amount'))
                     ->required()
                     ->numeric()
                     ->rules(['numeric', 'min:0']),
                 Forms\Components\Toggle::make('is_rent_paid')
+                    ->label(__('payments.form.is_rent_paid'))
                     ->default(false)
                     ->required(),
                 Forms\Components\Toggle::make('is_water_paid')
+                    ->label(__('payments.form.is_water_paid'))
                     ->default(false)
                     ->required(),
                 Forms\Components\Toggle::make('is_energy_paid')
+                    ->label(__('payments.form.is_energy_paid'))
                     ->default(false)
                     ->required(),
                 Forms\Components\Toggle::make('is_gas_paid')
+                    ->label(__('payments.form.is_gas_paid'))
                     ->default(false)
                     ->required(),
                 Hidden::make('user_id')
@@ -78,21 +84,31 @@ class ManageRentalPayments extends ManageRelatedRecords
         return $infolist
             ->schema([
                 TextEntry::make('date')
+                    ->label(__('payments.infolist.date'))
                     ->date(),
                 TextEntry::make('amount')
+                    ->label(__('payments.infolist.amount'))
                     ->numeric(),
                 IconEntry::make('is_rent_paid')
+                    ->label(__('payments.infolist.is_rent_paid'))
                     ->boolean(),
                 IconEntry::make('is_water_paid')
+                    ->label(__('payments.infolist.is_water_paid'))
                     ->boolean(),
                 IconEntry::make('is_energy_paid')
+                    ->label(__('payments.infolist.is_energy_paid'))
                     ->boolean(),
                 IconEntry::make('is_gas_paid')
+                    ->label(__('payments.infolist.is_gas_paid'))
                     ->boolean(),
-                TextEntry::make('rental.name'),
+                TextEntry::make('rental.name')
+                    ->label(__('payments.infolist.rental')),
+
                 TextEntry::make('created_at')
+                    ->label(__('payments.infolist.created_at'))
                     ->dateTime(),
                 TextEntry::make('updated_at')
+                    ->label(__('payments.infolist.updated_at'))
                     ->dateTime(),
             ]);
     }
@@ -103,24 +119,32 @@ class ManageRentalPayments extends ManageRelatedRecords
             ->recordTitleAttribute('date')
             ->columns([
                 Tables\Columns\TextColumn::make('date')
+                    ->label(__('payments.table.date'))
                     ->date()
                     ->sortable(),
                 Tables\Columns\TextColumn::make('amount')
+                    ->label(__('payments.table.amount'))
                     ->numeric()
                     ->sortable(),
                 Tables\Columns\IconColumn::make('is_rent_paid')
+                    ->label(__('payments.table.is_rent_paid'))
                     ->boolean(),
                 Tables\Columns\IconColumn::make('is_water_paid')
+                    ->label(__('payments.table.is_water_paid'))
                     ->boolean(),
                 Tables\Columns\IconColumn::make('is_energy_paid')
+                    ->label(__('payments.table.is_energy_paid'))
                     ->boolean(),
                 Tables\Columns\IconColumn::make('is_gas_paid')
+                    ->label(__('payments.table.is_gas_paid'))
                     ->boolean(),
                 Tables\Columns\TextColumn::make('created_at')
+                    ->label(__('payments.table.created_at'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
                 Tables\Columns\TextColumn::make('updated_at')
+                    ->label(__('payments.table.updated_at'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
@@ -129,7 +153,8 @@ class ManageRentalPayments extends ManageRelatedRecords
                 //
             ])
             ->headerActions([
-                Tables\Actions\CreateAction::make(),
+                Tables\Actions\CreateAction::make()
+                    ->label(__('payments.navigation.actions.create')),
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),

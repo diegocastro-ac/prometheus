@@ -9,9 +9,13 @@ use Illuminate\Support\Facades\Auth;
 
 class PaymentsStatusChart extends ChartWidget
 {
-    protected static ?string $heading = 'Payment status (current month)';
 
     protected static ?int $sort = 2;
+
+    public function getHeading(): string
+    {
+        return __('dashboard.charts.payment_status.title');
+    }
 
     protected function getType(): string
     {
@@ -46,11 +50,18 @@ class PaymentsStatusChart extends ChartWidget
             ->count();
 
         return [
-            'labels' => ['Paid', 'Due', 'Pending'],
+            'labels' => [
+                __('dashboard.charts.payment_status.paid'),
+                __('dashboard.charts.payment_status.due'),
+                __('dashboard.charts.payment_status.pending')
+            ],
             'datasets' => [
                 [
-                    'label' => 'Current month payment status',
-                    'data' => [$paidCount, $overdueCount, $futureCount],
+                    'data' => [
+                        $paidCount,
+                        $overdueCount,
+                        $futureCount
+                    ],
                     'backgroundColor' => [
                         'rgba(34,197,94,0.8)',
                         'rgba(239,68,68,0.85)',

@@ -9,9 +9,13 @@ use Illuminate\Support\Facades\Auth;
 
 class IncomeChart extends ChartWidget
 {
-    protected static ?string $heading = 'Monthly income (last 12 months)';
 
     protected static ?int $sort = 1;
+
+    public function getHeading(): string
+    {
+        return __('dashboard.charts.monthly_income.title');
+    }
 
     protected function getType(): string
     {
@@ -54,12 +58,12 @@ class IncomeChart extends ChartWidget
             'labels' => $labels,
             'datasets' => [
                 [
-                    'label' => 'Expected',
+                    'label' =>  __('dashboard.charts.monthly_income.expected'),
                     'data' => $expected,
                     'borderDash' => [6, 4],
                 ],
                 [
-                    'label' => 'Colleted',
+                    'label' =>  __('dashboard.charts.monthly_income.collected'),
                     'data' => $collected,
                     'fill' => true,
                 ],

@@ -12,7 +12,6 @@ use Illuminate\Database\Eloquent\Builder;
 
 class OverduePaymentsTable extends BaseWidget
 {
-    protected static ?string $heading = 'Past due or upcoming payments on active rentals';
 
     protected int | string | array $columnSpan = 'full';
 
@@ -21,44 +20,45 @@ class OverduePaymentsTable extends BaseWidget
     public function table(Table $table): Table
     {
         return $table
+            ->heading(__('dashboard.table.title'))
             ->query($this->getQuery())
             ->columns([
                 Tables\Columns\TextColumn::make('rental.name')
-                    ->label('Rental')
+                    ->label(__('dashboard.table.rental'))
                     ->searchable()
                     ->sortable(),
                 Tables\Columns\TextColumn::make('rental.tenant.name')
-                    ->label('Tenant')
+                    ->label(__('dashboard.table.tenant'))
                     ->searchable()
                     ->sortable(),
                 Tables\Columns\TextColumn::make('rental.property.name')
-                    ->label('Property')
+                    ->label(__('dashboard.table.property'))
                     ->searchable()
                     ->sortable(),
                 Tables\Columns\TextColumn::make('date')
-                    ->label('Due date')
+                    ->label(__('dashboard.table.due_date'))
                     ->date()
                     ->sortable(),
                 Tables\Columns\TextColumn::make('amount')
-                    ->label('Amount')
+                    ->label(__('dashboard.table.amount'))
                     ->money('COP')
                     ->sortable(),
                 Tables\Columns\TextColumn::make('status')
-                    ->label('Status')
+                    ->label(__('dashboard.table.status'))
                     ->badge()
                     ->state(function ($record) {
                         if (!$record->is_paid && $record->date < \Carbon\Carbon::today()) {
-                            return 'Expired';
+                            return __('dashboard.status.expired');
                         }
                         if (!$record->is_paid && $record->date <= \Carbon\Carbon::today()->addDays(7)) {
-                            return 'Expiring';
+                            return __('dashboard.status.expiring');
                         }
-                        return 'Paid';
+                        return __('dashboard.status.paid');
                     })
                     ->color(fn(string $state): string => match ($state) {
-                        'Expired' => 'danger',
-                        'Expiring' => 'warning',
-                        'Paid' => 'success',
+                        __('dashboard.status.expired') => 'danger',
+                        __('dashboard.status.expiring') => 'warning',
+                        __('dashboard.status.paid') => 'success',
                         default => 'gray',
                     }),
             ])
