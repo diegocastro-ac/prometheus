@@ -25,11 +25,29 @@ class TenantResource extends Resource
 
     protected static ?string $slug = 'administration/tenants';
 
-    protected static ?string $navigationGroup = 'Administration';
-
     protected static ?int $navigationSort = 1;
 
     protected static ?string $navigationIcon = 'heroicon-o-users';
+
+    public static function getNavigationGroup(): ?string
+    {
+        return __('tenant.navigation.group');
+    }
+
+    public static function getNavigationLabel(): string
+    {
+        return __('tenant.navigation.labels.plural');
+    }
+
+    public static function getModelLabel(): string
+    {
+        return __('tenant.navigation.labels.singular');
+    }
+
+    public static function getPluralModelLabel(): string
+    {
+        return __('tenant.navigation.labels.plural');
+    }
 
     public static function form(Form $form): Form
     {
@@ -37,6 +55,7 @@ class TenantResource extends Resource
             ->schema([
 
                 Forms\Components\TextInput::make('document')
+                    ->label(__('tenant.form.document'))
                     ->required()
                     ->maxLength(15)
                     ->rule(
@@ -45,9 +64,11 @@ class TenantResource extends Resource
                             ->ignore($get('id'))
                     ),
                 Forms\Components\TextInput::make('name')
+                    ->label(__('tenant.form.name'))
                     ->required()
                     ->maxLength(50),
                 Forms\Components\TextInput::make('phone_number')
+                    ->label(__('tenant.form.phone_number'))
                     ->required()
                     ->maxLength(15)
                     ->rule(
@@ -56,6 +77,7 @@ class TenantResource extends Resource
                             ->ignore($get('id'))
                     ),
                 Forms\Components\TextInput::make('email')
+                    ->label(__('tenant.form.email'))
                     ->maxLength(100)
                     ->rule(
                         fn(Get $get) => Rule::unique('tenants', 'email')
@@ -72,25 +94,31 @@ class TenantResource extends Resource
         return $table
             ->columns([
                 Tables\Columns\TextColumn::make('document')
+                    ->label(__('tenant.table.columns.document'))
                     ->searchable()
                     ->sortable()
                     ->limit(15),
                 Tables\Columns\TextColumn::make('name')
+                    ->label(__('tenant.table.columns.name'))
                     ->searchable()
                     ->sortable()
                     ->limit(15),
                 Tables\Columns\TextColumn::make('phone_number')
+                    ->label(__('tenant.table.columns.phone_number'))
                     ->searchable()
                     ->limit(15),
                 Tables\Columns\TextColumn::make('email')
+                    ->label(__('tenant.table.columns.email'))
                     ->searchable()
                     ->sortable()
                     ->limit(30),
                 Tables\Columns\TextColumn::make('created_at')
+                    ->label(__('tenant.table.columns.created_at'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
                 Tables\Columns\TextColumn::make('updated_at')
+                    ->label(__('tenant.table.columns.updated_at'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
@@ -114,13 +142,19 @@ class TenantResource extends Resource
     {
         return $infolist
             ->schema([
-                TextEntry::make('document'),
-                TextEntry::make('name'),
-                TextEntry::make('phone_number'),
-                TextEntry::make('email'),
+                TextEntry::make('document')
+                    ->label(__('tenant.infolist.document')),
+                TextEntry::make('name')
+                    ->label(__('tenant.infolist.name')),
+                TextEntry::make('phone_number')
+                    ->label(__('tenant.infolist.phone_number')),
+                TextEntry::make('email')
+                    ->label(__('tenant.infolist.email')),
                 TextEntry::make('created_at')
+                    ->label(__('tenant.infolist.created_at'))
                     ->dateTime(),
                 TextEntry::make('updated_at')
+                    ->label(__('tenant.infolist.updated_at'))
                     ->dateTime(),
             ])
             ->columns(1)

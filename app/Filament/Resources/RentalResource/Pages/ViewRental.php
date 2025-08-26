@@ -11,6 +11,11 @@ class ViewRental extends ViewRecord
 {
     protected static string $resource = RentalResource::class;
 
+    public static function getNavigationLabel(): string
+    {
+        return __('rental.navigation.pages.view');
+    }
+
     public function getTitle(): string | Htmlable
     {
         /** @var Rental */

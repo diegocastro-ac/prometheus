@@ -27,11 +27,29 @@ class PropertyResource extends Resource
 
     protected static ?string $slug = 'administration/properties';
 
-    protected static ?string $navigationGroup = 'Administration';
-
     protected static ?int $navigationSort = 0;
 
     protected static ?string $navigationIcon = 'heroicon-o-rectangle-stack';
+
+    public static function getNavigationGroup(): ?string
+    {
+        return __('property.navigation.group');
+    }
+
+    public static function getNavigationLabel(): string
+    {
+        return __('property.navigation.labels.plural');
+    }
+
+    public static function getModelLabel(): string
+    {
+        return __('property.navigation.labels.singular');
+    }
+
+    public static function getPluralModelLabel(): string
+    {
+        return __('property.navigation.labels.plural');
+    }
 
     public static function form(Form $form): Form
     {
@@ -39,9 +57,11 @@ class PropertyResource extends Resource
             ->schema([
 
                 Forms\Components\TextInput::make('name')
+                    ->label(__('property.form.name'))
                     ->required()
                     ->maxLength(50),
                 Forms\Components\TextInput::make('address')
+                    ->label(__('property.form.address'))
                     ->required()
                     ->maxLength(50)
                     ->rule(
@@ -50,6 +70,7 @@ class PropertyResource extends Resource
                             ->ignore($get('id'))
                     ),
                 Forms\Components\Textarea::make('description')
+                    ->label(__('property.form.description'))
                     ->columnSpan('full')
                     ->autosize()
                     ->maxLength(255),
@@ -63,21 +84,26 @@ class PropertyResource extends Resource
         return $table
             ->columns([
                 Tables\Columns\TextColumn::make('name')
+                    ->label(__('property.table.columns.name'))
                     ->searchable()
                     ->sortable()
                     ->limit(15),
                 Tables\Columns\TextColumn::make('address')
+                    ->label(__('property.table.columns.address'))
                     ->searchable()
                     ->sortable()
                     ->limit(15),
                 Tables\Columns\TextColumn::make('description')
+                    ->label(__('property.table.columns.description'))
                     ->searchable()
                     ->limit(30),
                 Tables\Columns\TextColumn::make('created_at')
+                    ->label(__('property.table.columns.created_at'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
                 Tables\Columns\TextColumn::make('updated_at')
+                    ->label(__('property.table.columns.updated_at'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
@@ -101,12 +127,17 @@ class PropertyResource extends Resource
     {
         return $infolist
             ->schema([
-                TextEntry::make('name'),
-                TextEntry::make('address'),
-                TextEntry::make('description'),
+                TextEntry::make('name')
+                    ->label(__('property.infolist.name')),
+                TextEntry::make('address')
+                    ->label(__('property.infolist.address')),
+                TextEntry::make('description')
+                    ->label(__('property.infolist.description')),
                 TextEntry::make('created_at')
+                    ->label(__('property.infolist.created_at'))
                     ->dateTime(),
                 TextEntry::make('updated_at')
+                    ->label(__('property.infolist.updated_at'))
                     ->dateTime(),
             ])
             ->columns(1)

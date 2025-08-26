@@ -50,20 +50,20 @@ class StatsOverview extends BaseWidget
             ->count();
 
         return [
-            Stat::make('Active rentals', (string) $activeRentals)
-                ->description('Active contracts now')
+            Stat::make(__('dashboard.kpis.active_rentals'), (string) $activeRentals)
+                ->description(__('dashboard.kpis.active_rentals_description'))
                 ->descriptionIcon('heroicon-m-arrow-trending-up')
                 ->chart([7, 2, 10, 3, 15, 4, 17])
                 ->color('success'),
 
-            Stat::make('Payments collected (this month)', '$' . number_format($collectedThisMonth, 0, ',', '.'))
-                ->description('Payments marked as paid')
+            Stat::make(__('dashboard.kpis.monthly_income'), '$' . number_format($collectedThisMonth, 0, ',', '.'))
+                ->description(__('dashboard.kpis.monthly_income_desciption'))
                 ->descriptionIcon('heroicon-m-arrow-trending-up')
                 ->chart([7, 2, 10, 3, 15, 4, 17])
                 ->color('success'),
 
-            Stat::make('Total payments due on active rentals', (string) $overduePaymentsCount)
-                ->description('Late rent or utility payments')
+            Stat::make(__('dashboard.kpis.overdue_payments'), (string) $overduePaymentsCount)
+                ->description(__('dashboard.kpis.overdue_payments_description'))
                 ->descriptionIcon('heroicon-m-arrow-trending-down')
                 ->chart([17, 16, 14, 15, 14, 13, 12])
                 ->color('danger'),
