@@ -5,7 +5,7 @@ return [
         'active_rentals_description' => 'Contracts currently active',
         'monthly_income' => 'Payments collected (month)',
         'monthly_income_desciption' => 'Payments marked as paid',
-        'overdue_payments' => 'Active rental payments due',
+        'overdue_payments' => 'Payments due',
         'overdue_payments_description' => 'Late rent or utility payment',
     ],
     'charts' => [

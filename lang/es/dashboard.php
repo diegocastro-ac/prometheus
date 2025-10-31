@@ -5,7 +5,7 @@ return [
         'active_rentals_description'   => 'Contratos activos ahora',
         'monthly_income'   => 'Pagos cobrados (mes)',
         'monthly_income_desciption'   => 'Pagos marcados como pagados',
-        'overdue_payments' => 'Pagos vencidos de alquileres activos',
+        'overdue_payments' => 'Pagos vencidos',
         'overdue_payments_description' => 'Pago tardío del alquiler o servicios',
     ],
     'charts' => [

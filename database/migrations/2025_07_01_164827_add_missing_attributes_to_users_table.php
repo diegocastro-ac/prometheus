@@ -12,8 +12,8 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            $table->string('document')->unique();
-            $table->string('phone_number')->unique();
+            $table->string('document')->unique()->nullable();
+            $table->string('phone_number')->unique()->nullable();
         });
     }
 
