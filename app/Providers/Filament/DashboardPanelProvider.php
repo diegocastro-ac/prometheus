@@ -17,6 +17,8 @@ use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Filament\Navigation\MenuItem;
+use App\Filament\Pages\EditProfile;
 
 class DashboardPanelProvider extends PanelProvider
 {
@@ -29,6 +31,12 @@ class DashboardPanelProvider extends PanelProvider
             ->login()
             ->registration()
             ->passwordReset()
+            ->userMenuItems([
+                'profile' => MenuItem::make()
+                    ->label('Mi Perfil')
+                    ->url(fn(): string => EditProfile::getUrl())
+                    ->icon('heroicon-o-user-circle'),
+            ])
             ->colors([
                 'primary' => Color::Amber,
             ])
@@ -39,8 +47,7 @@ class DashboardPanelProvider extends PanelProvider
             ])
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\\Filament\\Widgets')
             ->widgets([
-                Widgets\AccountWidget::class,
-                Widgets\FilamentInfoWidget::class,
+                \App\Filament\Widgets\AccountWidget::class,
             ])
             ->sidebarCollapsibleOnDesktop()
             ->navigationGroups([
