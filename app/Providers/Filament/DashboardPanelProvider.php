@@ -33,7 +33,7 @@ class DashboardPanelProvider extends PanelProvider
             ->passwordReset()
             ->userMenuItems([
                 'profile' => MenuItem::make()
-                    ->label('Mi Perfil')
+                    ->label(__('profile.title'))
                     ->url(fn(): string => EditProfile::getUrl())
                     ->icon('heroicon-o-user-circle'),
             ])

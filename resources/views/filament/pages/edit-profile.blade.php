@@ -8,28 +8,28 @@
     @if (auth()->user()->email_verified_at)
         <x-filament::section>
             <x-slot name="heading">
-                Verificación de Email
+                {{ __('profile.sections.email_verification') }}
             </x-slot>
 
             <div class="flex items-center gap-3">
                 <x-filament::icon icon="heroicon-o-check-circle" class="h-6 w-6 text-success-500" />
-                <span class="text-sm">Tu correo electrónico está verificado.</span>
+                <span class="text-sm">{{ __('profile.notifications.email_verified') }}</span>
             </div>
         </x-filament::section>
     @else
         <x-filament::section>
             <x-slot name="heading">
-                Verificación de Email
+                {{ __('profile.sections.email_verification') }}
             </x-slot>
 
             <div class="space-y-3">
                 <div class="flex items-center gap-3">
                     <x-filament::icon icon="heroicon-o-exclamation-circle" class="h-6 w-6 text-warning-500" />
-                    <span class="text-sm">Tu correo electrónico no está verificado.</span>
+                    <span class="text-sm">{{ __('profile.notifications.email_not_verified') }}</span>
                 </div>
 
                 <x-filament::button wire:click="sendVerificationEmail" color="primary" size="sm">
-                    Enviar email de verificación
+                    {{ __('profile.buttons.send_verification') }}
                 </x-filament::button>
             </div>
         </x-filament::section>
@@ -38,20 +38,20 @@
     {{-- Modal de confirmación de cambio de email --}}
     <x-filament::modal id="confirm-email-change" width="md">
         <x-slot name="heading">
-            Confirmar cambio de correo electrónico
+            {{ __('profile.modal.confirm_email_change') }}
         </x-slot>
 
         <x-slot name="description">
-            Al cambiar tu correo electrónico, deberás verificarlo nuevamente. ¿Deseas continuar?
+            {{ __('profile.modal.confirm_email_description') }}
         </x-slot>
 
         <x-slot name="footerActions">
             <x-filament::button color="gray" wire:click="cancelEmailChange">
-                Cancelar
+                {{ __('profile.buttons.cancel') }}
             </x-filament::button>
 
             <x-filament::button wire:click="confirmEmailChange">
-                Sí, cambiar email
+                {{ __('profile.buttons.confirm') }}
             </x-filament::button>
         </x-slot>
     </x-filament::modal>

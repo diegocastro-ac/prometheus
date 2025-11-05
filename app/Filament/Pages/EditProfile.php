@@ -22,6 +22,11 @@ class EditProfile extends Page
     public bool $confirmingEmailChange = false;
     public ?string $newEmail = null;
 
+    public function getTitle(): string
+    {
+        return __('profile.title');
+    }
+
     public function mount(): void
     {
         $this->form->fill([
@@ -37,54 +42,54 @@ class EditProfile extends Page
     {
         return $form
             ->schema([
-                Forms\Components\Section::make('Información Personal')
+                Forms\Components\Section::make(__('profile.sections.personal_info'))
                     ->schema([
                         Forms\Components\TextInput::make('name')
-                            ->label('Nombre completo')
+                            ->label(__('profile.form.name'))
                             ->required()
                             ->maxLength(255),
 
                         Forms\Components\TextInput::make('email')
-                            ->label('Correo electrónico')
+                            ->label(__('profile.form.email'))
                             ->email()
                             ->required()
                             ->unique(ignoreRecord: true)
                             ->maxLength(255),
 
                         Forms\Components\Select::make('document_type')
-                            ->label('Tipo de documento')
+                            ->label(__('profile.form.document_type'))
                             ->options([
-                                'CC' => 'Cédula de Ciudadanía',
-                                'TI' => 'Tarjeta de Identidad',
-                                'CE' => 'Cédula de Extranjería',
-                                'PAS' => 'Pasaporte',
-                                'NIT' => 'NIT',
+                                'CC' => __('profile.document_types.CC'),
+                                'TI' => __('profile.document_types.TI'),
+                                'CE' => __('profile.document_types.CE'),
+                                'PAS' => __('profile.document_types.PAS'),
+                                'NIT' => __('profile.document_types.NIT'),
                             ])
                             ->native(false),
 
                         Forms\Components\TextInput::make('document')
-                            ->label('Número de documento')
+                            ->label(__('profile.form.document'))
                             ->unique(ignoreRecord: true)
                             ->maxLength(255),
 
                         Forms\Components\TextInput::make('phone_number')
-                            ->label('Número de teléfono')
+                            ->label(__('profile.form.phone_number'))
                             ->tel()
                             ->unique(ignoreRecord: true)
                             ->maxLength(255),
                     ])
                     ->columns(2),
 
-                Forms\Components\Section::make('Cambiar Contraseña')
+                Forms\Components\Section::make(__('profile.sections.change_password'))
                     ->schema([
                         Forms\Components\TextInput::make('current_password')
-                            ->label('Contraseña actual')
+                            ->label(__('profile.form.current_password'))
                             ->password()
                             ->revealable()
                             ->rules(['required_with:new_password']),
 
                         Forms\Components\TextInput::make('new_password')
-                            ->label('Nueva contraseña')
+                            ->label(__('profile.form.new_password'))
                             ->password()
                             ->revealable()
                             ->rules([
@@ -94,13 +99,13 @@ class EditProfile extends Page
                             ]),
 
                         Forms\Components\TextInput::make('new_password_confirmation')
-                            ->label('Confirmar nueva contraseña')
+                            ->label(__('profile.form.new_password_confirmation'))
                             ->password()
                             ->revealable()
                             ->dehydrated(false),
                     ])
                     ->columns(2)
-                    ->description('Deja estos campos en blanco si no deseas cambiar tu contraseña.'),
+                    ->description(__('profile.descriptions.password_hint')),
             ])
             ->statePath('data');
     }
@@ -152,8 +157,8 @@ class EditProfile extends Page
             if (!Hash::check($data['current_password'], $user->password)) {
                 Notification::make()
                     ->danger()
-                    ->title('Error')
-                    ->body('La contraseña actual es incorrecta.')
+                    ->title(__('filament-panels::pages/auth/login.messages.failed'))
+                    ->body(__('profile.notifications.wrong_password'))
                     ->send();
                 return;
             }
@@ -161,8 +166,8 @@ class EditProfile extends Page
             if (empty($data['new_password'])) {
                 Notification::make()
                     ->danger()
-                    ->title('Error')
-                    ->body('Debes ingresar una nueva contraseña.')
+                    ->title(__('filament-panels::pages/auth/login.messages.failed'))
+                    ->body(__('profile.notifications.new_password_required'))
                     ->send();
                 return;
             }
@@ -189,17 +194,17 @@ class EditProfile extends Page
         $this->confirmingEmailChange = false;
         $this->newEmail = null;
 
-        $message = 'Tu información ha sido actualizada correctamente.';
+        $message = __('profile.notifications.profile_updated');
         if ($emailChanged) {
-            $message .= ' Tu nuevo correo electrónico debe ser verificado.';
+            $message .= ' ' . __('profile.notifications.email_changed');
         }
         if (!empty($data['current_password'])) {
-            $message .= ' Tu contraseña ha sido cambiada exitosamente.';
+            $message .= ' ' . __('profile.notifications.password_changed');
         }
 
         Notification::make()
             ->success()
-            ->title('Perfil actualizado')
+            ->title(__('filament-panels::resources/pages/edit-record.notifications.saved.title'))
             ->body($message)
             ->duration(5000)
             ->send();
@@ -215,8 +220,8 @@ class EditProfile extends Page
         if ($user->hasVerifiedEmail()) {
             Notification::make()
                 ->warning()
-                ->title('Email ya verificado')
-                ->body('Tu correo electrónico ya está verificado.')
+                ->title(__('filament-panels::pages/auth/email-verification/email-verification-prompt.notifications.notification_already_sent.title'))
+                ->body(__('profile.notifications.already_verified'))
                 ->send();
             return;
         }
@@ -225,8 +230,8 @@ class EditProfile extends Page
 
         Notification::make()
             ->success()
-            ->title('Email enviado')
-            ->body('Se ha enviado un enlace de verificación a tu correo electrónico.')
+            ->title(__('filament-panels::pages/auth/email-verification/email-verification-prompt.notifications.notification_sent.title'))
+            ->body(__('profile.notifications.verification_sent'))
             ->duration(5000)
             ->send();
     }
@@ -235,7 +240,7 @@ class EditProfile extends Page
     {
         return [
             Forms\Components\Actions\Action::make('save')
-                ->label('Guardar cambios')
+                ->label(__('profile.buttons.save'))
                 ->submit('save'),
         ];
     }
