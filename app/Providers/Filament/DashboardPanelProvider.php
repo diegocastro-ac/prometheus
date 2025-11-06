@@ -31,6 +31,7 @@ class DashboardPanelProvider extends PanelProvider
             ->login()
             ->registration()
             ->passwordReset()
+            ->favicon(asset('favicon.png'))
             ->userMenuItems([
                 'profile' => MenuItem::make()
                     ->label(__('profile.title'))
@@ -52,6 +53,7 @@ class DashboardPanelProvider extends PanelProvider
             ->sidebarCollapsibleOnDesktop()
             ->navigationGroups([
                 'Administration',
+                'Information',
             ])
             ->middleware([
                 EncryptCookies::class,
