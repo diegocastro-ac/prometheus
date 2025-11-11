@@ -36,7 +36,6 @@ class PaymentsStatusChart extends ChartWidget
         })
             ->whereBetween('date', [$startOfMonth, $endOfMonth]);
 
-
         $paidCount = (int) (clone $baseQuery)->where('is_rent_paid', true)->count();
 
         $overdueCount = (int) (clone $baseQuery)

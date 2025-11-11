@@ -6,24 +6,19 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            $table->string('document')->unique()->nullable();
-            $table->string('phone_number')->unique()->nullable();
+            $table->enum('document_type', ['CC', 'TI', 'CE', 'PAS', 'NIT'])
+                ->nullable()
+                ->after('email');
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            $table->dropColumn(['document', 'phone_number']);
+            $table->dropColumn('document_type');
         });
     }
 };

@@ -33,13 +33,12 @@ class StatsOverview extends BaseWidget
             ->where('is_rent_paid', true)
             ->sum('amount');
 
-        // Past due payments on active rentals
+        // Past due payments on rentals
         $today = Carbon::today()->toDateString();
 
         $overduePaymentsCount = Payment::whereDate('date', '<=', $today)
             ->whereHas('rental', function ($q) use ($userId) {
-                $q->where('user_id', $userId)
-                    ->where('is_active', true);
+                $q->where('user_id', $userId);
             })
             ->where(function ($q) {
                 $q->where('is_rent_paid', false)
