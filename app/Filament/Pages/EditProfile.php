@@ -2,12 +2,12 @@
 
 namespace App\Filament\Pages;
 
+use App\Services\ProfileService;
 use Filament\Forms;
 use Filament\Forms\Form;
-use Filament\Pages\Page;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Auth;
 use Filament\Notifications\Notification;
+use Filament\Pages\Page;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rules\Password;
 
 class EditProfile extends Page
@@ -21,6 +21,13 @@ class EditProfile extends Page
     public ?array $data = [];
     public bool $confirmingEmailChange = false;
     public ?string $newEmail = null;
+
+    private ProfileService $profileService;
+
+    public function __construct()
+    {
+        $this->profileService = app(ProfileService::class);
+    }
 
     public function getTitle(): string
     {
@@ -115,10 +122,8 @@ class EditProfile extends Page
         $data = $this->form->getState();
         $user = Auth::user();
 
-        // Verificar si está cambiando el email
         $emailChanged = $user->email !== $data['email'];
 
-        // Si cambió el email y está verificado, pedir confirmación
         if ($emailChanged && $user->hasVerifiedEmail() && !$this->confirmingEmailChange) {
             $this->newEmail = $data['email'];
             $this->confirmingEmailChange = true;
@@ -128,8 +133,7 @@ class EditProfile extends Page
             return;
         }
 
-        // Procesar el guardado
-        $this->processSave($data, $user, $emailChanged);
+        $this->processSave($data, $user->id, $emailChanged);
     }
 
     public function cancelEmailChange(): void
@@ -147,69 +151,27 @@ class EditProfile extends Page
 
         $this->dispatch('close-modal', id: 'confirm-email-change');
 
-        $this->processSave($data, $user, true);
+        $this->processSave($data, $user->id, true);
     }
 
-    protected function processSave(array $data, $user, bool $emailChanged): void
+    protected function processSave(array $data, int $userId, bool $emailChanged): void
     {
-        // Validar contraseña actual si se está intentando cambiar
-        if (!empty($data['current_password'])) {
-            if (!Hash::check($data['current_password'], $user->password)) {
-                Notification::make()
-                    ->danger()
-                    ->title(__('filament-panels::pages/auth/login.messages.failed'))
-                    ->body(__('profile.notifications.wrong_password'))
-                    ->send();
-                return;
-            }
+        $result = $this->profileService->updateProfile($userId, $data, $emailChanged);
 
-            if (empty($data['new_password'])) {
-                Notification::make()
-                    ->danger()
-                    ->title(__('filament-panels::pages/auth/login.messages.failed'))
-                    ->body(__('profile.notifications.new_password_required'))
-                    ->send();
-                return;
-            }
-
-            $user->password = Hash::make($data['new_password']);
+        if (!$result['success']) {
+            return;
         }
 
-        // Actualizar datos del perfil
-        $user->name = $data['name'];
-
-        // Si cambió el email, desmarcar como verificado
-        if ($emailChanged) {
-            $user->email = $data['email'];
-            $user->email_verified_at = null;
-        }
-
-        $user->document_type = $data['document_type'];
-        $user->document = $data['document'];
-        $user->phone_number = $data['phone_number'];
-
-        $user->save();
-
-        // Reset de confirmación
         $this->confirmingEmailChange = false;
         $this->newEmail = null;
-
-        $message = __('profile.notifications.profile_updated');
-        if ($emailChanged) {
-            $message .= ' ' . __('profile.notifications.email_changed');
-        }
-        if (!empty($data['current_password'])) {
-            $message .= ' ' . __('profile.notifications.password_changed');
-        }
 
         Notification::make()
             ->success()
             ->title(__('filament-panels::resources/pages/edit-record.notifications.saved.title'))
-            ->body($message)
+            ->body($result['message'])
             ->duration(5000)
             ->send();
 
-        // Refrescar el formulario
         $this->mount();
     }
 
