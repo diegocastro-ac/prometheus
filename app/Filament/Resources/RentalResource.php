@@ -6,6 +6,7 @@ use App\Contracts\CurrentUserContextInterface;
 use App\Filament\Resources\RentalResource\Pages;
 use App\Filament\Resources\RentalResource\RelationManagers;
 use App\Models\Rental;
+use App\Rules\UniqueActiveRentalRule;
 use App\ValueObjects\RentalPeriod;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -118,18 +119,14 @@ class RentalResource extends Resource
                             ->relationship('tenant', 'name')
                             ->required()
                             ->rules(fn(?Rental $record) => [
-                                Rule::unique('rentals', 'tenant_id')
-                                    ->where('is_active', true)
-                                    ->ignore($record?->id),
+                                new UniqueActiveRentalRule('tenant_id', $record?->id),
                             ]),
                         Forms\Components\Select::make('property_id')
                             ->label(__('rental.form.sections.main.property'))
                             ->relationship('property', 'name')
                             ->required()
                             ->rules(fn(?Rental $record) => [
-                                Rule::unique('rentals', 'property_id')
-                                    ->where('is_active', true)
-                                    ->ignore($record?->id),
+                                new UniqueActiveRentalRule('property_id', $record?->id),
                             ]),
                         Forms\Components\Toggle::make('is_active')
                             ->label(__('rental.form.sections.main.is_active'))
