@@ -6,6 +6,7 @@ use App\Contracts\CurrentUserContextInterface;
 use App\Filament\Resources\RentalResource\Pages;
 use App\Filament\Resources\RentalResource\RelationManagers;
 use App\Models\Rental;
+use App\ValueObjects\RentalPeriod;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -80,10 +81,8 @@ class RentalResource extends Resource
                             ->afterStateUpdated(function (callable $get, callable $set) {
                                 $months = (int) $get('total_months');
                                 if ($get('start_date') && $months > 0) {
-                                    $end = \Carbon\Carbon::parse($get('start_date'))
-                                        ->addMonths($months)
-                                        ->format('Y-m-d');
-                                    $set('end_date', $end);
+                                    $period = new RentalPeriod(\Carbon\Carbon::parse($get('start_date')), $months);
+                                    $set('end_date', $period->endDateFormatted());
                                 }
                             }),
                         Forms\Components\DatePicker::make('end_date')
@@ -102,10 +101,8 @@ class RentalResource extends Resource
                             ->afterStateUpdated(function (callable $get, callable $set, $state) {
                                 $months = (int) $state;
                                 if ($get('start_date') && $months > 0) {
-                                    $end = \Carbon\Carbon::parse($get('start_date'))
-                                        ->addMonths($months)
-                                        ->format('Y-m-d');
-                                    $set('end_date', $end);
+                                    $period = new RentalPeriod(\Carbon\Carbon::parse($get('start_date')), $months);
+                                    $set('end_date', $period->endDateFormatted());
                                 }
                             }),
                         Forms\Components\Select::make('total_persons')
