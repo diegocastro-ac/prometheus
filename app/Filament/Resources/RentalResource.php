@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources;
 
+use App\Contracts\CurrentUserContextInterface;
 use App\Filament\Resources\RentalResource\Pages;
 use App\Filament\Resources\RentalResource\RelationManagers;
 use App\Models\Rental;
@@ -12,7 +13,6 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
-use Illuminate\Support\Facades\Auth;
 use Filament\Forms\Components\Hidden;
 use Illuminate\Validation\Rule;
 use Filament\Resources\Pages\Page;
@@ -35,6 +35,16 @@ class RentalResource extends Resource
     protected static ?string $navigationIcon = 'heroicon-o-clipboard-document-list';
 
     protected static SubNavigationPosition $subNavigationPosition = SubNavigationPosition::Top;
+
+    private static ?CurrentUserContextInterface $userContext = null;
+
+    public static function getUserContext(): CurrentUserContextInterface
+    {
+        if (self::$userContext === null) {
+            self::$userContext = app(CurrentUserContextInterface::class);
+        }
+        return self::$userContext;
+    }
 
     public static function getNavigationGroup(): ?string
     {
@@ -134,7 +144,7 @@ class RentalResource extends Resource
                             ->autosize()
                             ->maxLength(255),
                         Hidden::make('user_id')
-                            ->default(fn() => Auth::id()),
+                            ->default(fn() => self::getUserContext()->id()),
                     ])
                     ->columns(2),
 
@@ -263,7 +273,7 @@ class RentalResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
-            ->where('user_id', Auth::id());
+            ->where('user_id', self::getUserContext()->id());
     }
 
     public static function infolist(Infolist $infolist): Infolist

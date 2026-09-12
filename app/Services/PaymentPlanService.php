@@ -2,14 +2,21 @@
 
 namespace App\Services;
 
+use App\Contracts\CurrentUserContextInterface;
 use App\Models\Payment;
 use App\Models\Rental;
 use Filament\Notifications\Notification;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Auth;
 
 class PaymentPlanService
 {
+    private CurrentUserContextInterface $userContext;
+
+    public function __construct(CurrentUserContextInterface $userContext)
+    {
+        $this->userContext = $userContext;
+    }
+
     /**
      * Generate payment plan for a rental.
      */
@@ -26,7 +33,7 @@ class PaymentPlanService
                 'is_water_paid' => false,
                 'is_energy_paid' => false,
                 'is_gas_paid' => false,
-                'user_id' => Auth::id(),
+                'user_id' => $this->userContext->id(),
             ]);
         }
 
