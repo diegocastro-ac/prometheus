@@ -3,15 +3,21 @@
 namespace App\Filament\Resources\RentalResource\Pages;
 
 use App\Filament\Resources\RentalResource;
+use App\Services\PaymentPlanService;
 use Filament\Actions;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Auth;
-use Filament\Notifications\Notification;
 
 class CreateRental extends CreateRecord
 {
     protected static string $resource = RentalResource::class;
+
+    private PaymentPlanService $paymentPlanService;
+
+    public function __construct()
+    {
+        $this->paymentPlanService = app(PaymentPlanService::class);
+    }
 
     protected function mutateFormDataBeforeCreate(array $data): array
     {
@@ -23,25 +29,7 @@ class CreateRental extends CreateRecord
     {
         $rental = parent::handleRecordCreation($data);
 
-        $start = Carbon::parse($rental->start_date);
-        for ($i = 1; $i <= $rental->total_months; $i++) {
-            $date = $start->copy()->addMonths($i)->format('Y-m-d');
-            $rental->payments()->create([
-                'date'         => $date,
-                'amount'       => $rental->monthly_amount,
-                'is_rent_paid' => false,
-                'is_water_paid' => false,
-                'is_energy_paid' => false,
-                'is_gas_paid'  => false,
-                'user_id'      => Auth::id(),
-            ]);
-        }
-
-        Notification::make()
-            ->success()
-            ->title('Payment plan generated')
-            ->body('To view it, go to the Payments section.')
-            ->send();
+        $this->paymentPlanService->generateFor($rental);
 
         return $rental;
     }
