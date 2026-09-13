@@ -72,38 +72,6 @@ class Payment extends Model
     }
 
     /**
-     * Check if the payment is fully paid.
-     */
-    public function isPaid(): bool
-    {
-        return $this->status() === PaymentStatus::PAID;
-    }
-
-    /**
-     * Check if the payment is partially paid.
-     */
-    public function isPartial(): bool
-    {
-        return $this->status() === PaymentStatus::PARTIAL;
-    }
-
-    /**
-     * Check if the payment is pending.
-     */
-    public function isPending(): bool
-    {
-        return $this->status() === PaymentStatus::PENDING;
-    }
-
-    /**
-     * Check if the payment is overdue.
-     */
-    public function isOverdue(): bool
-    {
-        return $this->status() === PaymentStatus::OVERDUE;
-    }
-
-    /**
      * Get the user that owns the rental.
      */
     public function user(): BelongsTo

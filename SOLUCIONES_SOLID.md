@@ -88,32 +88,12 @@ public function status(): PaymentStatus
 
     return PaymentStatus::PENDING;
 }
-
-public function isPaid(): bool
-{
-    return $this->status() === PaymentStatus::PAID;
-}
-
-public function isPartial(): bool
-{
-    return $this->status() === PaymentStatus::PARTIAL;
-}
-
-public function isPending(): bool
-{
-    return $this->status() === PaymentStatus::PENDING;
-}
-
-public function isOverdue(): bool
-{
-    return $this->status() === PaymentStatus::OVERDUE;
-}
 ```
 
 - Consumidores migrados al estado derivado (código muerto eliminado):
   - `app/Filament/Widgets/OverduePaymentsTable.php` — badge de expiración según `status()`
   - `app/Filament/Widgets/PaymentsStatusChart.php` — cortes paid/overdue/pending derivados
-  - `app/Filament/Widgets/StatsOverview.php` — KPI de vencidos con `isPaid()`
+  - `app/Filament/Widgets/StatsOverview.php` — KPI de vencidos con `status() !== PaymentStatus::PAID`
   - `app/Filament/Resources/RentalResource/Pages/ManageRentalPayments.php` — columna/entry de estado
   - `lang/en/payments.php` y `lang/es/payments.php` — labels del estado
 

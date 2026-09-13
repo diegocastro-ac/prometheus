@@ -2,6 +2,7 @@
 
 namespace App\Filament\Widgets;
 
+use App\Enums\PaymentStatus;
 use App\Models\Payment;
 use App\Models\Rental;
 use Filament\Widgets\StatsOverviewWidget as BaseWidget;
@@ -41,7 +42,7 @@ class StatsOverview extends BaseWidget
                 $q->where('user_id', $userId);
             })
             ->get()
-            ->filter(fn(Payment $payment) => ! $payment->isPaid())
+            ->filter(fn(Payment $payment) => $payment->status() !== PaymentStatus::PAID)
             ->count();
 
         return [
