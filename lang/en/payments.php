@@ -23,6 +23,7 @@ return [
 
     'table' => [
         'date' => 'Payment date',
+        'status' => 'Status',
         'amount' => 'Amount',
         'is_rent_paid' => 'Rent paid',
         'is_water_paid' => 'Water paid',
@@ -34,6 +35,7 @@ return [
 
     'infolist' => [
         'date' => 'Payment date',
+        'status' => 'Status',
         'amount' => 'Amount',
         'is_rent_paid' => 'Rent paid',
         'is_water_paid' => 'Water paid',
@@ -42,6 +44,13 @@ return [
         'rental' => 'Rental',
         'created_at' => 'Created at',
         'updated_at' => 'Updated at',
+    ],
+
+    'status' => [
+        'paid' => 'Paid',
+        'partial' => 'Partially paid',
+        'pending' => 'Pending',
+        'overdue' => 'Overdue',
     ],
 
 ];

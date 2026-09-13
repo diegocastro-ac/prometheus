@@ -2,6 +2,7 @@
 
 namespace App\Filament\Widgets;
 
+use App\Enums\PaymentStatus;
 use App\Models\Payment;
 use Carbon\Carbon;
 use Filament\Tables;
@@ -46,13 +47,20 @@ class OverduePaymentsTable extends BaseWidget
                 Tables\Columns\TextColumn::make('status')
                     ->label(__('dashboard.table.status'))
                     ->badge()
-                    ->state(function ($record) {
-                        if (!$record->is_paid && $record->date < \Carbon\Carbon::today()) {
+                    ->state(function (Payment $record) {
+                        $status = $record->status();
+
+                        if ($status === PaymentStatus::OVERDUE) {
                             return __('dashboard.status.expired');
                         }
-                        if (!$record->is_paid && $record->date <= \Carbon\Carbon::today()->addDays(7)) {
+
+                        if (
+                            in_array($status, [PaymentStatus::PENDING, PaymentStatus::PARTIAL], true)
+                            && $record->date <= \Carbon\Carbon::today()->addDays(7)
+                        ) {
                             return __('dashboard.status.expiring');
                         }
+
                         return __('dashboard.status.paid');
                     })
                     ->color(fn(string $state): string => match ($state) {

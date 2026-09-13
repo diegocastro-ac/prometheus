@@ -20,7 +20,7 @@
 **ID de Trazabilidad:** CC-04
 **Solución 1:** Enum PaymentStatus y métodos derivados en Payment
 
-**1. Principio Corregido:** Single Responsibility Principle (SRP) + Primitive Obsession
+**1. Principio Corregido:** Antipatrón Primitive Obsession — el estado del pago se representa mediante cuatro valores booleanos independientes. Como consecuencia, se dificulta cumplir el Open/Closed Principle (OCP), debido a que cualquier cambio o extensión del estado requiere modificar varias partes del sistema.
 
 **2. Código Antes (Estado del problema):**
 - Archivo: `app/Models/Payment.php`
@@ -54,6 +54,15 @@ enum PaymentStatus: string
 
 - Archivo modificado: `app/Models/Payment.php`
 ```php
+protected $casts = [
+    'date' => 'date',
+    'amount' => 'float',
+    'is_rent_paid' => 'boolean',
+    'is_water_paid' => 'boolean',
+    'is_energy_paid' => 'boolean',
+    'is_gas_paid' => 'boolean',
+];
+
 public function status(): PaymentStatus
 {
     $flags = [
@@ -63,7 +72,7 @@ public function status(): PaymentStatus
         $this->is_gas_paid,
     ];
 
-    $paidCount = count(array_filter($flags, fn($flag) => $flag === true));
+    $paidCount = count(array_filter($flags, fn($flag) => (bool) $flag));
 
     if ($paidCount === count($flags)) {
         return PaymentStatus::PAID;
@@ -101,19 +110,29 @@ public function isOverdue(): bool
 }
 ```
 
+- Consumidores migrados al estado derivado (código muerto eliminado):
+  - `app/Filament/Widgets/OverduePaymentsTable.php` — badge de expiración según `status()`
+  - `app/Filament/Widgets/PaymentsStatusChart.php` — cortes paid/overdue/pending derivados
+  - `app/Filament/Widgets/StatsOverview.php` — KPI de vencidos con `isPaid()`
+  - `app/Filament/Resources/RentalResource/Pages/ManageRentalPayments.php` — columna/entry de estado
+  - `lang/en/payments.php` y `lang/es/payments.php` — labels del estado
+
 **4. Archivos Modificados/Creados:**
 - Creado: `app/Enums/PaymentStatus.php`
-- Modificado: `app/Models/Payment.php`
+- Modificados: `app/Models/Payment.php`
+- Modificados (consumidores): `app/Filament/Widgets/OverduePaymentsTable.php`, `app/Filament/Widgets/PaymentsStatusChart.php`, `app/Filament/Widgets/StatsOverview.php`, `app/Filament/Resources/RentalResource/Pages/ManageRentalPayments.php`, `lang/en/payments.php`, `lang/es/payments.php`
 
 **5. Impacto de la Solución:**
 - **Flexibilidad:** Ahora existe un único lugar donde se define qué significa cada estado
 - **Extensibilidad:** Añadir nuevos servicios o cambiar la semántica solo requiere modificar el método `status()`
 - **Desacoplamiento:** La interpretación del estado vive en el modelo de dominio, no en consultas SQL dispersas
 - **Mantenibilidad:** El esquema de BD se mantiene (4 booleanos) para no romper, pero la lógica está centralizada
+- **Consistencia de tipos:** Los flags se castean a `boolean` en Eloquent, evitando que una comparación estricta (`=== true`) falle al recibir `int(1)` desde la BD
 
 **6. Verificación SOLID Post-Solución:**
-- ✅ SRP: El modelo Payment ahora tiene una única responsabilidad para el estado de pago
-- ✅ OCP: Añadir nuevos estados o cambiar la lógica no requiere modificar múltiples archivos
+- ✅ OCP: extender o cambiar la semántica de un estado ya no exige modificar consumidores ni consultas dispersas; se centraliza en `status()` (Single Source of Truth / Information Expert)
+- ✅ Se elimina la interpretación dispar de "pagado/vencido" que existía por consumidor
+- ✅ La comparación es tolerante a tipos reales de BD (`(bool) $flag`) además del cast de Eloquent
 - ✅ No introduce nuevas violaciones SOLID
 
 ---
@@ -835,7 +854,7 @@ Forms\Components\Select::make('property_id')
 
 || ID | Archivo / Clase Modificada | Principio SOLID Corregido | Archivos Creados | Archivos Modificados | Severidad Original |
 |---|---|---|---|---|---|
-| CC-04 | `app/Models/Payment.php` | SRP + Primitive Obsession | `app/Enums/PaymentStatus.php` | `app/Models/Payment.php` | Alta |
+| CC-04 | `app/Models/Payment.php` | Primitive Obsession (consecuencia en OCP) | `app/Enums/PaymentStatus.php` | `app/Models/Payment.php`<br>`app/Filament/Widgets/OverduePaymentsTable.php`<br>`app/Filament/Widgets/PaymentsStatusChart.php`<br>`app/Filament/Widgets/StatsOverview.php`<br>`app/Filament/Resources/RentalResource/Pages/ManageRentalPayments.php`<br>`lang/en/payments.php`<br>`lang/es/payments.php` | Alta |
 | CC-02 | `CreateRental.php` | SRP + God Method | `app/Services/PaymentPlanService.php` | `app/Filament/Resources/RentalResource/Pages/CreateRental.php` | Alta |
 | CC-01 | `app/Models/Rental.php` | SRP + God Class incipiente | `app/Services/AgreementStorageService.php` | `app/Models/Rental.php` | Alta |
 | CC-08 | `Rental.php`, Resources | DIP | Interfaces: `AgreementStorageInterface`, `CurrentUserContextInterface`<br>Adaptadores: `PublicDiskAgreementStorage`, `AuthUserContext` | `app/Services/AgreementStorageService.php`<br>`app/Services/PaymentPlanService.php`<br>`app/Providers/AppServiceProvider.php`<br>`app/Filament/Resources/RentalResource.php` | Media |
@@ -846,8 +865,8 @@ Forms\Components\Select::make('property_id')
 **Resumen de severidad corregida:** 3 hallazgos **Altos** (CC-01, CC-02, CC-04) · 3 **Medios** (CC-03, CC-08, CC-09) · 1 **Bajo** (CC-10). Total: 7.
 
 **Archivos totales creados:** 10
-**Archivos totales modificados:** 9
-**Commits realizados:** 7 (uno por cada hallazgo SOLID)
+**Archivos totales modificados:** 15
+**Commits realizados:** 8 (7 por hallazgo SOLID + 1 de control de cambios del estado de pago)
 
 ---
 

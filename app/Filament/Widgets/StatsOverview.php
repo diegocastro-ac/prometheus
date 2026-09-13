@@ -40,12 +40,8 @@ class StatsOverview extends BaseWidget
             ->whereHas('rental', function ($q) use ($userId) {
                 $q->where('user_id', $userId);
             })
-            ->where(function ($q) {
-                $q->where('is_rent_paid', false)
-                    ->orWhere('is_water_paid', false)
-                    ->orWhere('is_energy_paid', false)
-                    ->orWhere('is_gas_paid', false);
-            })
+            ->get()
+            ->filter(fn(Payment $payment) => ! $payment->isPaid())
             ->count();
 
         return [

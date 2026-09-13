@@ -47,6 +47,7 @@ class IncomeChart extends ChartWidget
                 $q->where('user_id', $userId);
             })
                 ->whereBetween('date', [$start, $end])
+                // No implementa manejo de estado de pago de la propia clase
                 ->where('is_rent_paid', true)
                 ->sum('amount');
 

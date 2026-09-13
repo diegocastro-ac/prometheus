@@ -36,6 +36,10 @@ class Payment extends Model
     protected $casts = [
         'date' => 'date',
         'amount' => 'float',
+        'is_rent_paid' => 'boolean',
+        'is_water_paid' => 'boolean',
+        'is_energy_paid' => 'boolean',
+        'is_gas_paid' => 'boolean',
     ];
 
     /**
@@ -50,7 +54,7 @@ class Payment extends Model
             $this->is_gas_paid,
         ];
 
-        $paidCount = count(array_filter($flags, fn($flag) => $flag === true));
+        $paidCount = count(array_filter($flags, fn($flag) => (bool) $flag));
 
         if ($paidCount === count($flags)) {
             return PaymentStatus::PAID;

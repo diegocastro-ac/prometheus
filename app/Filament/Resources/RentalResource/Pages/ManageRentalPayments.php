@@ -2,7 +2,9 @@
 
 namespace App\Filament\Resources\RentalResource\Pages;
 
+use App\Enums\PaymentStatus;
 use App\Filament\Resources\RentalResource;
+use App\Models\Payment;
 use Filament\Actions;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -83,6 +85,24 @@ class ManageRentalPayments extends ManageRelatedRecords
     {
         return $infolist
             ->schema([
+                TextEntry::make('status')
+                    ->label(__('payments.infolist.status'))
+                    ->badge()
+                    ->state(fn(Payment $record) => $record->status()->value)
+                    ->color(fn(string $state): string => match ($state) {
+                        PaymentStatus::PAID->value => 'success',
+                        PaymentStatus::PARTIAL->value => 'info',
+                        PaymentStatus::PENDING->value => 'warning',
+                        PaymentStatus::OVERDUE->value => 'danger',
+                        default => 'gray',
+                    })
+                    ->formatStateUsing(fn(string $state): string => match ($state) {
+                        PaymentStatus::PAID->value => __('payments.status.paid'),
+                        PaymentStatus::PARTIAL->value => __('payments.status.partial'),
+                        PaymentStatus::PENDING->value => __('payments.status.pending'),
+                        PaymentStatus::OVERDUE->value => __('payments.status.overdue'),
+                        default => $state,
+                    }),
                 TextEntry::make('date')
                     ->label(__('payments.infolist.date'))
                     ->date(),
@@ -122,6 +142,24 @@ class ManageRentalPayments extends ManageRelatedRecords
                     ->label(__('payments.table.date'))
                     ->date()
                     ->sortable(),
+                Tables\Columns\TextColumn::make('status')
+                    ->label(__('payments.table.status'))
+                    ->badge()
+                    ->state(fn(Payment $record) => $record->status()->value)
+                    ->color(fn(string $state): string => match ($state) {
+                        PaymentStatus::PAID->value => 'success',
+                        PaymentStatus::PARTIAL->value => 'info',
+                        PaymentStatus::PENDING->value => 'warning',
+                        PaymentStatus::OVERDUE->value => 'danger',
+                        default => 'gray',
+                    })
+                    ->formatStateUsing(fn(string $state): string => match ($state) {
+                        PaymentStatus::PAID->value => __('payments.status.paid'),
+                        PaymentStatus::PARTIAL->value => __('payments.status.partial'),
+                        PaymentStatus::PENDING->value => __('payments.status.pending'),
+                        PaymentStatus::OVERDUE->value => __('payments.status.overdue'),
+                        default => $state,
+                    }),
                 Tables\Columns\TextColumn::make('amount')
                     ->label(__('payments.table.amount'))
                     ->numeric()
