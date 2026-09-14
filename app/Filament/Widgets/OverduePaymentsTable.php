@@ -2,13 +2,13 @@
 
 namespace App\Filament\Widgets;
 
+use App\Contracts\CurrentUserContextInterface;
 use App\Enums\PaymentStatus;
 use App\Models\Payment;
 use Carbon\Carbon;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Filament\Widgets\TableWidget as BaseWidget;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Database\Eloquent\Builder;
 
 class OverduePaymentsTable extends BaseWidget
@@ -78,7 +78,7 @@ class OverduePaymentsTable extends BaseWidget
     {
         return Payment::query()
             ->whereHas('rental', function ($q) {
-                $q->where('user_id', Auth::id())
+                $q->where('user_id', app(CurrentUserContextInterface::class)->id())
                     ->where('is_active', true);
             })
             ->where(function ($q) {

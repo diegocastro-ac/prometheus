@@ -2,11 +2,11 @@
 
 namespace App\Filament\Widgets;
 
+use App\Contracts\CurrentUserContextInterface;
 use App\Enums\PaymentStatus;
 use App\Models\Payment;
 use Carbon\Carbon;
 use Filament\Widgets\ChartWidget;
-use Illuminate\Support\Facades\Auth;
 
 class PaymentsStatusChart extends ChartWidget
 {
@@ -25,7 +25,7 @@ class PaymentsStatusChart extends ChartWidget
 
     protected function getData(): array
     {
-        $userId = Auth::id();
+        $userId = app(CurrentUserContextInterface::class)->id();
         $today = Carbon::today();
 
         $startOfMonth = $today->copy()->startOfMonth()->toDateString();

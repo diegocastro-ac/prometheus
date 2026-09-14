@@ -2,12 +2,12 @@
 
 namespace App\Filament\Widgets;
 
+use App\Contracts\CurrentUserContextInterface;
 use App\Enums\PaymentStatus;
 use App\Models\Payment;
 use App\Models\Rental;
 use Filament\Widgets\StatsOverviewWidget as BaseWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
-use Illuminate\Support\Facades\Auth;
 use Carbon\Carbon;
 
 class StatsOverview extends BaseWidget
@@ -16,7 +16,7 @@ class StatsOverview extends BaseWidget
 
     protected function getStats(): array
     {
-        $userId = Auth::id();
+        $userId = app(CurrentUserContextInterface::class)->id();
 
         // Active rentals
         $activeRentals = Rental::where('user_id', $userId)
