@@ -5,7 +5,9 @@ namespace App\Filament\Resources;
 use App\Contracts\CurrentUserContextInterface;
 use App\Filament\Resources\RentalResource\Pages;
 use App\Filament\Resources\RentalResource\RelationManagers;
+use App\Models\Property;
 use App\Models\Rental;
+use App\Models\Tenant;
 use App\Rules\UniqueActiveRentalRule;
 use App\ValueObjects\RentalPeriod;
 use Filament\Forms;
@@ -116,14 +118,28 @@ class RentalResource extends Resource
                             ->rules(['numeric', 'min:0']),
                         Forms\Components\Select::make('tenant_id')
                             ->label(__('rental.form.sections.main.tenant'))
-                            ->relationship('tenant', 'name')
+                            ->options(fn() => Tenant::query()
+                                ->where('user_id', self::getUserContext()->id())
+                                ->orderBy('name')
+                                ->pluck('name', 'id'))
+                            ->getOptionLabelUsing(fn($value) => Tenant::query()
+                                ->where('user_id', self::getUserContext()->id())
+                                ->find($value)?->name)
+                            ->searchable()
                             ->required()
                             ->rules(fn(?Rental $record) => [
                                 new UniqueActiveRentalRule('tenant_id', $record?->id),
                             ]),
                         Forms\Components\Select::make('property_id')
                             ->label(__('rental.form.sections.main.property'))
-                            ->relationship('property', 'name')
+                            ->options(fn() => Property::query()
+                                ->where('user_id', self::getUserContext()->id())
+                                ->orderBy('name')
+                                ->pluck('name', 'id'))
+                            ->getOptionLabelUsing(fn($value) => Property::query()
+                                ->where('user_id', self::getUserContext()->id())
+                                ->find($value)?->name)
+                            ->searchable()
                             ->required()
                             ->rules(fn(?Rental $record) => [
                                 new UniqueActiveRentalRule('property_id', $record?->id),
