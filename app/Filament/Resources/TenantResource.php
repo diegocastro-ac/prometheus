@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources;
 
+use App\Contracts\CurrentUserContextInterface;
 use App\Filament\Resources\TenantResource\Pages;
 use App\Filament\Resources\TenantResource\RelationManagers;
 use App\Models\Tenant;
@@ -16,7 +17,6 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
 
 class TenantResource extends Resource
@@ -28,6 +28,16 @@ class TenantResource extends Resource
     protected static ?int $navigationSort = 1;
 
     protected static ?string $navigationIcon = 'heroicon-o-users';
+
+    private static ?CurrentUserContextInterface $userContext = null;
+
+    public static function getUserContext(): CurrentUserContextInterface
+    {
+        if (self::$userContext === null) {
+            self::$userContext = app(CurrentUserContextInterface::class);
+        }
+        return self::$userContext;
+    }
 
     public static function getNavigationGroup(): ?string
     {
@@ -60,7 +70,7 @@ class TenantResource extends Resource
                     ->maxLength(15)
                     ->rule(
                         fn(Get $get) => Rule::unique('tenants', 'document')
-                            ->where(fn($query) => $query->where('user_id', Auth::id()))
+                            ->where(fn($query) => $query->where('user_id', self::getUserContext()->id()))
                             ->ignore($get('id'))
                     ),
                 Forms\Components\TextInput::make('name')
@@ -73,7 +83,7 @@ class TenantResource extends Resource
                     ->maxLength(15)
                     ->rule(
                         fn(Get $get) => Rule::unique('tenants', 'phone_number')
-                            ->where(fn($query) => $query->where('user_id', Auth::id()))
+                            ->where(fn($query) => $query->where('user_id', self::getUserContext()->id()))
                             ->ignore($get('id'))
                     ),
                 Forms\Components\TextInput::make('email')
@@ -81,11 +91,11 @@ class TenantResource extends Resource
                     ->maxLength(100)
                     ->rule(
                         fn(Get $get) => Rule::unique('tenants', 'email')
-                            ->where(fn($query) => $query->where('user_id', Auth::id()))
+                            ->where(fn($query) => $query->where('user_id', self::getUserContext()->id()))
                             ->ignore($get('id'))
                     ),
                 Hidden::make('user_id')
-                    ->default(fn() => Auth::id()),
+                    ->default(fn() => self::getUserContext()->id()),
             ]);
     }
 
@@ -171,6 +181,6 @@ class TenantResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
-            ->where('user_id', Auth::id());
+            ->where('user_id', self::getUserContext()->id());
     }
 }

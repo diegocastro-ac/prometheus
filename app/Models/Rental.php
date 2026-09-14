@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\AgreementStorageService;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -48,8 +49,8 @@ class Rental extends Model
     {
         static::created(function (Rental $rental) {
             if ($rental->agreement_path && str_starts_with($rental->agreement_path, 'temp/uploads')) {
-                $newPath = "users/{$rental->user_id}/rentals/{$rental->id}/agreement/" . basename($rental->agreement_path);
-                Storage::disk('public')->move($rental->agreement_path, $newPath);
+                $storageService = app(AgreementStorageService::class);
+                $newPath = $storageService->persist($rental->agreement_path, $rental->user_id, $rental->id);
                 $rental->updateQuietly(['agreement_path' => $newPath]);
             }
         });
@@ -59,17 +60,17 @@ class Rental extends Model
             $current = $rental->agreement_path;
 
             if ($original && $original !== $current) {
-                Storage::disk('public')->delete($original);
+                $storageService = app(AgreementStorageService::class);
+                $storageService->remove($original);
             }
         });
 
         static::deleted(function (Rental $rental) {
-            Storage::disk('public')
-                ->deleteDirectory("users/{$rental->user_id}/rentals/{$rental->id}");
+            $storageService = app(AgreementStorageService::class);
+            $storageService->removeAllFor($rental->user_id, $rental->id);
         });
     }
 
-    // ? Necessary?
     public function getAgreementUrlAttribute(): string
     {
         return Storage::url($this->agreement_path);

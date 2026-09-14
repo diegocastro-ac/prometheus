@@ -2,12 +2,13 @@
 
 namespace App\Filament\Widgets;
 
+use App\Contracts\CurrentUserContextInterface;
+use App\Enums\PaymentStatus;
 use App\Models\Payment;
 use Carbon\Carbon;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Filament\Widgets\TableWidget as BaseWidget;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Database\Eloquent\Builder;
 
 class OverduePaymentsTable extends BaseWidget
@@ -46,13 +47,20 @@ class OverduePaymentsTable extends BaseWidget
                 Tables\Columns\TextColumn::make('status')
                     ->label(__('dashboard.table.status'))
                     ->badge()
-                    ->state(function ($record) {
-                        if (!$record->is_paid && $record->date < \Carbon\Carbon::today()) {
+                    ->state(function (Payment $record) {
+                        $status = $record->status();
+
+                        if ($status === PaymentStatus::OVERDUE) {
                             return __('dashboard.status.expired');
                         }
-                        if (!$record->is_paid && $record->date <= \Carbon\Carbon::today()->addDays(7)) {
+
+                        if (
+                            in_array($status, [PaymentStatus::PENDING, PaymentStatus::PARTIAL], true)
+                            && $record->date <= \Carbon\Carbon::today()->addDays(7)
+                        ) {
                             return __('dashboard.status.expiring');
                         }
+
                         return __('dashboard.status.paid');
                     })
                     ->color(fn(string $state): string => match ($state) {
@@ -70,7 +78,7 @@ class OverduePaymentsTable extends BaseWidget
     {
         return Payment::query()
             ->whereHas('rental', function ($q) {
-                $q->where('user_id', Auth::id())
+                $q->where('user_id', app(CurrentUserContextInterface::class)->id())
                     ->where('is_active', true);
             })
             ->where(function ($q) {

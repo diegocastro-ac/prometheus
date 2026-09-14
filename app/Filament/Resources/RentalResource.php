@@ -2,9 +2,14 @@
 
 namespace App\Filament\Resources;
 
+use App\Contracts\CurrentUserContextInterface;
 use App\Filament\Resources\RentalResource\Pages;
 use App\Filament\Resources\RentalResource\RelationManagers;
+use App\Models\Property;
 use App\Models\Rental;
+use App\Models\Tenant;
+use App\Rules\UniqueActiveRentalRule;
+use App\ValueObjects\RentalPeriod;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -12,7 +17,6 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
-use Illuminate\Support\Facades\Auth;
 use Filament\Forms\Components\Hidden;
 use Illuminate\Validation\Rule;
 use Filament\Resources\Pages\Page;
@@ -35,6 +39,16 @@ class RentalResource extends Resource
     protected static ?string $navigationIcon = 'heroicon-o-clipboard-document-list';
 
     protected static SubNavigationPosition $subNavigationPosition = SubNavigationPosition::Top;
+
+    private static ?CurrentUserContextInterface $userContext = null;
+
+    public static function getUserContext(): CurrentUserContextInterface
+    {
+        if (self::$userContext === null) {
+            self::$userContext = app(CurrentUserContextInterface::class);
+        }
+        return self::$userContext;
+    }
 
     public static function getNavigationGroup(): ?string
     {
@@ -70,10 +84,8 @@ class RentalResource extends Resource
                             ->afterStateUpdated(function (callable $get, callable $set) {
                                 $months = (int) $get('total_months');
                                 if ($get('start_date') && $months > 0) {
-                                    $end = \Carbon\Carbon::parse($get('start_date'))
-                                        ->addMonths($months)
-                                        ->format('Y-m-d');
-                                    $set('end_date', $end);
+                                    $period = new RentalPeriod(\Carbon\Carbon::parse($get('start_date')), $months);
+                                    $set('end_date', $period->endDateFormatted());
                                 }
                             }),
                         Forms\Components\DatePicker::make('end_date')
@@ -92,10 +104,8 @@ class RentalResource extends Resource
                             ->afterStateUpdated(function (callable $get, callable $set, $state) {
                                 $months = (int) $state;
                                 if ($get('start_date') && $months > 0) {
-                                    $end = \Carbon\Carbon::parse($get('start_date'))
-                                        ->addMonths($months)
-                                        ->format('Y-m-d');
-                                    $set('end_date', $end);
+                                    $period = new RentalPeriod(\Carbon\Carbon::parse($get('start_date')), $months);
+                                    $set('end_date', $period->endDateFormatted());
                                 }
                             }),
                         Forms\Components\Select::make('total_persons')
@@ -108,21 +118,31 @@ class RentalResource extends Resource
                             ->rules(['numeric', 'min:0']),
                         Forms\Components\Select::make('tenant_id')
                             ->label(__('rental.form.sections.main.tenant'))
-                            ->relationship('tenant', 'name')
+                            ->options(fn() => Tenant::query()
+                                ->where('user_id', self::getUserContext()->id())
+                                ->orderBy('name')
+                                ->pluck('name', 'id'))
+                            ->getOptionLabelUsing(fn($value) => Tenant::query()
+                                ->where('user_id', self::getUserContext()->id())
+                                ->find($value)?->name)
+                            ->searchable()
                             ->required()
                             ->rules(fn(?Rental $record) => [
-                                Rule::unique('rentals', 'tenant_id')
-                                    ->where('is_active', true)
-                                    ->ignore($record?->id),
+                                new UniqueActiveRentalRule('tenant_id', $record?->id),
                             ]),
                         Forms\Components\Select::make('property_id')
                             ->label(__('rental.form.sections.main.property'))
-                            ->relationship('property', 'name')
+                            ->options(fn() => Property::query()
+                                ->where('user_id', self::getUserContext()->id())
+                                ->orderBy('name')
+                                ->pluck('name', 'id'))
+                            ->getOptionLabelUsing(fn($value) => Property::query()
+                                ->where('user_id', self::getUserContext()->id())
+                                ->find($value)?->name)
+                            ->searchable()
                             ->required()
                             ->rules(fn(?Rental $record) => [
-                                Rule::unique('rentals', 'property_id')
-                                    ->where('is_active', true)
-                                    ->ignore($record?->id),
+                                new UniqueActiveRentalRule('property_id', $record?->id),
                             ]),
                         Forms\Components\Toggle::make('is_active')
                             ->label(__('rental.form.sections.main.is_active'))
@@ -134,7 +154,7 @@ class RentalResource extends Resource
                             ->autosize()
                             ->maxLength(255),
                         Hidden::make('user_id')
-                            ->default(fn() => Auth::id()),
+                            ->default(fn() => self::getUserContext()->id()),
                     ])
                     ->columns(2),
 
@@ -263,7 +283,7 @@ class RentalResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
-            ->where('user_id', Auth::id());
+            ->where('user_id', self::getUserContext()->id());
     }
 
     public static function infolist(Infolist $infolist): Infolist

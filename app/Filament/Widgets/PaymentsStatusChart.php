@@ -2,10 +2,11 @@
 
 namespace App\Filament\Widgets;
 
+use App\Contracts\CurrentUserContextInterface;
+use App\Enums\PaymentStatus;
 use App\Models\Payment;
 use Carbon\Carbon;
 use Filament\Widgets\ChartWidget;
-use Illuminate\Support\Facades\Auth;
 
 class PaymentsStatusChart extends ChartWidget
 {
@@ -24,7 +25,7 @@ class PaymentsStatusChart extends ChartWidget
 
     protected function getData(): array
     {
-        $userId = Auth::id();
+        $userId = app(CurrentUserContextInterface::class)->id();
         $today = Carbon::today();
 
         $startOfMonth = $today->copy()->startOfMonth()->toDateString();
@@ -36,16 +37,22 @@ class PaymentsStatusChart extends ChartWidget
         })
             ->whereBetween('date', [$startOfMonth, $endOfMonth]);
 
-        $paidCount = (int) (clone $baseQuery)->where('is_rent_paid', true)->count();
+        $payments = $baseQuery->get();
 
-        $overdueCount = (int) (clone $baseQuery)
-            ->whereDate('date', '<=', $today)
-            ->where('is_rent_paid', false)
+        $paidCount = $payments
+            ->filter(fn(Payment $payment) => $payment->status() === PaymentStatus::PAID)
             ->count();
 
-        $futureCount = (int) (clone $baseQuery)
-            ->whereDate('date', '>', $today)
-            ->where('is_rent_paid', false)
+        $overdueCount = $payments
+            ->filter(fn(Payment $payment) => $payment->status() === PaymentStatus::OVERDUE)
+            ->count();
+
+        $futureCount = $payments
+            ->filter(fn(Payment $payment) => in_array(
+                $payment->status(),
+                [PaymentStatus::PARTIAL, PaymentStatus::PENDING],
+                true,
+            ))
             ->count();
 
         return [

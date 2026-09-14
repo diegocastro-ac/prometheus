@@ -2,7 +2,10 @@
 
 namespace App\Filament\Resources\RentalResource\Pages;
 
+use App\Contracts\CurrentUserContextInterface;
+use App\Enums\PaymentStatus;
 use App\Filament\Resources\RentalResource;
+use App\Models\Payment;
 use Filament\Actions;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -14,7 +17,6 @@ use Filament\Infolists\Components\IconEntry;
 use Filament\Infolists\Components\TextEntry;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
-use Illuminate\Support\Facades\Auth;
 use Filament\Forms\Components\Hidden;
 use Illuminate\Contracts\Support\Htmlable;
 
@@ -25,6 +27,16 @@ class ManageRentalPayments extends ManageRelatedRecords
     protected static string $relationship = 'payments';
 
     protected static ?string $navigationIcon = 'heroicon-o-banknotes';
+
+    private static ?CurrentUserContextInterface $userContext = null;
+
+    public static function getUserContext(): CurrentUserContextInterface
+    {
+        if (self::$userContext === null) {
+            self::$userContext = app(CurrentUserContextInterface::class);
+        }
+        return self::$userContext;
+    }
 
     public function getTitle(): string | Htmlable
     {
@@ -74,7 +86,7 @@ class ManageRentalPayments extends ManageRelatedRecords
                     ->default(false)
                     ->required(),
                 Hidden::make('user_id')
-                    ->default(fn() => Auth::id()),
+                    ->default(fn() => self::getUserContext()->id()),
             ])
             ->columns(2);
     }
@@ -83,6 +95,24 @@ class ManageRentalPayments extends ManageRelatedRecords
     {
         return $infolist
             ->schema([
+                TextEntry::make('status')
+                    ->label(__('payments.infolist.status'))
+                    ->badge()
+                    ->state(fn(Payment $record) => $record->status()->value)
+                    ->color(fn(string $state): string => match ($state) {
+                        PaymentStatus::PAID->value => 'success',
+                        PaymentStatus::PARTIAL->value => 'info',
+                        PaymentStatus::PENDING->value => 'warning',
+                        PaymentStatus::OVERDUE->value => 'danger',
+                        default => 'gray',
+                    })
+                    ->formatStateUsing(fn(string $state): string => match ($state) {
+                        PaymentStatus::PAID->value => __('payments.status.paid'),
+                        PaymentStatus::PARTIAL->value => __('payments.status.partial'),
+                        PaymentStatus::PENDING->value => __('payments.status.pending'),
+                        PaymentStatus::OVERDUE->value => __('payments.status.overdue'),
+                        default => $state,
+                    }),
                 TextEntry::make('date')
                     ->label(__('payments.infolist.date'))
                     ->date(),
@@ -122,6 +152,24 @@ class ManageRentalPayments extends ManageRelatedRecords
                     ->label(__('payments.table.date'))
                     ->date()
                     ->sortable(),
+                Tables\Columns\TextColumn::make('status')
+                    ->label(__('payments.table.status'))
+                    ->badge()
+                    ->state(fn(Payment $record) => $record->status()->value)
+                    ->color(fn(string $state): string => match ($state) {
+                        PaymentStatus::PAID->value => 'success',
+                        PaymentStatus::PARTIAL->value => 'info',
+                        PaymentStatus::PENDING->value => 'warning',
+                        PaymentStatus::OVERDUE->value => 'danger',
+                        default => 'gray',
+                    })
+                    ->formatStateUsing(fn(string $state): string => match ($state) {
+                        PaymentStatus::PAID->value => __('payments.status.paid'),
+                        PaymentStatus::PARTIAL->value => __('payments.status.partial'),
+                        PaymentStatus::PENDING->value => __('payments.status.pending'),
+                        PaymentStatus::OVERDUE->value => __('payments.status.overdue'),
+                        default => $state,
+                    }),
                 Tables\Columns\TextColumn::make('amount')
                     ->label(__('payments.table.amount'))
                     ->numeric()
@@ -171,6 +219,6 @@ class ManageRentalPayments extends ManageRelatedRecords
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
-            ->where('user_id', Auth::id());
+            ->where('user_id', self::getUserContext()->id());
     }
 }

@@ -2,10 +2,10 @@
 
 namespace App\Filament\Widgets;
 
+use App\Contracts\CurrentUserContextInterface;
 use App\Models\Payment;
 use Carbon\Carbon;
 use Filament\Widgets\ChartWidget;
-use Illuminate\Support\Facades\Auth;
 
 class IncomeChart extends ChartWidget
 {
@@ -24,7 +24,7 @@ class IncomeChart extends ChartWidget
 
     protected function getData(): array
     {
-        $userId = Auth::id();
+        $userId = app(CurrentUserContextInterface::class)->id();
         $labels = [];
         $expected = []; // Scheduled payments
         $collected = []; // Payments marked as paid
@@ -47,6 +47,7 @@ class IncomeChart extends ChartWidget
                 $q->where('user_id', $userId);
             })
                 ->whereBetween('date', [$start, $end])
+                // No implementa manejo de estado de pago de la propia clase
                 ->where('is_rent_paid', true)
                 ->sum('amount');
 
