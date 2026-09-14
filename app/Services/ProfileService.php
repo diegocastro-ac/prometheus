@@ -11,14 +11,8 @@ class ProfileService
     /**
      * Update personal data for a user.
      */
-    public function updatePersonalData(int $userId, array $data): void
+    public function updatePersonalData(User $user, array $data): void
     {
-        $user = User::find($userId);
-
-        if (!$user) {
-            return;
-        }
-
         $user->name = $data['name'];
         $user->document_type = $data['document_type'];
         $user->document = $data['document'];
@@ -29,14 +23,8 @@ class ProfileService
     /**
      * Change password for a user.
      */
-    public function changePassword(int $userId, string $currentPassword, string $newPassword): bool
+    public function changePassword(User $user, string $currentPassword, string $newPassword): bool
     {
-        $user = User::find($userId);
-
-        if (!$user) {
-            return false;
-        }
-
         if (!Hash::check($currentPassword, $user->password)) {
             Notification::make()
                 ->danger()
@@ -64,14 +52,8 @@ class ProfileService
     /**
      * Apply email change for a user.
      */
-    public function applyEmailChange(int $userId, string $email): void
+    public function applyEmailChange(User $user, string $email): void
     {
-        $user = User::find($userId);
-
-        if (!$user) {
-            return;
-        }
-
         $user->email = $email;
         $user->email_verified_at = null;
         $user->save();
@@ -91,16 +73,16 @@ class ProfileService
         $passwordChanged = false;
 
         if (!empty($data['current_password'])) {
-            $passwordChanged = $this->changePassword($userId, $data['current_password'], $data['new_password']);
+            $passwordChanged = $this->changePassword($user, $data['current_password'], $data['new_password']);
             if (!$passwordChanged) {
                 return ['success' => false, 'message' => 'Password change failed'];
             }
         }
 
-        $this->updatePersonalData($userId, $data);
+        $this->updatePersonalData($user, $data);
 
         if ($emailChanged) {
-            $this->applyEmailChange($userId, $data['email']);
+            $this->applyEmailChange($user, $data['email']);
         }
 
         $message = __('profile.notifications.profile_updated');
@@ -112,5 +94,27 @@ class ProfileService
         }
 
         return ['success' => true, 'message' => $message];
+    }
+
+    /**
+     * Send the email verification notification for a user.
+     *
+     * @return array{success: bool, already_verified?: bool}
+     */
+    public function sendVerificationEmail(int $userId): array
+    {
+        $user = User::find($userId);
+
+        if (!$user) {
+            return ['success' => false];
+        }
+
+        if ($user->hasVerifiedEmail()) {
+            return ['success' => false, 'already_verified' => true];
+        }
+
+        $user->sendEmailVerificationNotification();
+
+        return ['success' => true];
     }
 }
