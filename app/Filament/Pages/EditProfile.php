@@ -177,9 +177,9 @@ class EditProfile extends Page
 
     public function sendVerificationEmail(): void
     {
-        $user = Auth::user();
+        $result = $this->profileService->sendVerificationEmail(Auth::id());
 
-        if ($user->hasVerifiedEmail()) {
+        if (($result['already_verified'] ?? false)) {
             Notification::make()
                 ->warning()
                 ->title(__('filament-panels::pages/auth/email-verification/email-verification-prompt.notifications.notification_already_sent.title'))
@@ -188,7 +188,9 @@ class EditProfile extends Page
             return;
         }
 
-        $user->sendEmailVerificationNotification();
+        if (!$result['success']) {
+            return;
+        }
 
         Notification::make()
             ->success()
