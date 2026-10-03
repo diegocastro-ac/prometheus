@@ -40,16 +40,6 @@ class RentalResource extends Resource
 
     protected static SubNavigationPosition $subNavigationPosition = SubNavigationPosition::Top;
 
-    private static ?CurrentUserContextInterface $userContext = null;
-
-    public static function getUserContext(): CurrentUserContextInterface
-    {
-        if (self::$userContext === null) {
-            self::$userContext = app(CurrentUserContextInterface::class);
-        }
-        return self::$userContext;
-    }
-
     public static function getNavigationGroup(): ?string
     {
         return __('rental.navigation.group');
@@ -119,11 +109,11 @@ class RentalResource extends Resource
                         Forms\Components\Select::make('tenant_id')
                             ->label(__('rental.form.sections.main.tenant'))
                             ->options(fn() => Tenant::query()
-                                ->where('user_id', self::getUserContext()->id())
+                                ->where('user_id', app(CurrentUserContextInterface::class)->id())
                                 ->orderBy('name')
                                 ->pluck('name', 'id'))
                             ->getOptionLabelUsing(fn($value) => Tenant::query()
-                                ->where('user_id', self::getUserContext()->id())
+                                ->where('user_id', app(CurrentUserContextInterface::class)->id())
                                 ->find($value)?->name)
                             ->searchable()
                             ->required()
@@ -133,11 +123,11 @@ class RentalResource extends Resource
                         Forms\Components\Select::make('property_id')
                             ->label(__('rental.form.sections.main.property'))
                             ->options(fn() => Property::query()
-                                ->where('user_id', self::getUserContext()->id())
+                                ->where('user_id', app(CurrentUserContextInterface::class)->id())
                                 ->orderBy('name')
                                 ->pluck('name', 'id'))
                             ->getOptionLabelUsing(fn($value) => Property::query()
-                                ->where('user_id', self::getUserContext()->id())
+                                ->where('user_id', app(CurrentUserContextInterface::class)->id())
                                 ->find($value)?->name)
                             ->searchable()
                             ->required()
@@ -154,7 +144,7 @@ class RentalResource extends Resource
                             ->autosize()
                             ->maxLength(255),
                         Hidden::make('user_id')
-                            ->default(fn() => self::getUserContext()->id()),
+                            ->default(fn() => app(CurrentUserContextInterface::class)->id()),
                     ])
                     ->columns(2),
 
@@ -283,7 +273,7 @@ class RentalResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
-            ->where('user_id', self::getUserContext()->id());
+            ->where('user_id', app(CurrentUserContextInterface::class)->id());
     }
 
     public static function infolist(Infolist $infolist): Infolist

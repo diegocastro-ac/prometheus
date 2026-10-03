@@ -60,12 +60,19 @@ class Payment extends Model
             return PaymentStatus::PAID;
         }
 
-        if ($paidCount > 0) {
-            return PaymentStatus::PARTIAL;
+        // La mora se evalua antes que el pago parcial. Si un pago esta a medias
+        // y su fecha ya paso, sigue debiendo dinero, por lo que lo que
+        // corresponde reportar es OVERDUE y no PARTIAL.
+        // La comparacion es por dia completo: un pago que vence hoy no esta
+        // vencido aunque la fecha se guarde a las 00:00.
+        $isPastDue = $this->date->startOfDay()->isBefore(today()->startOfDay());
+
+        if ($isPastDue) {
+            return PaymentStatus::OVERDUE;
         }
 
-        if ($this->date->isPast()) {
-            return PaymentStatus::OVERDUE;
+        if ($paidCount > 0) {
+            return PaymentStatus::PARTIAL;
         }
 
         return PaymentStatus::PENDING;

@@ -29,16 +29,6 @@ class TenantResource extends Resource
 
     protected static ?string $navigationIcon = 'heroicon-o-users';
 
-    private static ?CurrentUserContextInterface $userContext = null;
-
-    public static function getUserContext(): CurrentUserContextInterface
-    {
-        if (self::$userContext === null) {
-            self::$userContext = app(CurrentUserContextInterface::class);
-        }
-        return self::$userContext;
-    }
-
     public static function getNavigationGroup(): ?string
     {
         return __('tenant.navigation.group');
@@ -70,7 +60,7 @@ class TenantResource extends Resource
                     ->maxLength(15)
                     ->rule(
                         fn(Get $get) => Rule::unique('tenants', 'document')
-                            ->where(fn($query) => $query->where('user_id', self::getUserContext()->id()))
+                            ->where(fn($query) => $query->where('user_id', app(CurrentUserContextInterface::class)->id()))
                             ->ignore($get('id'))
                     ),
                 Forms\Components\TextInput::make('name')
@@ -83,7 +73,7 @@ class TenantResource extends Resource
                     ->maxLength(15)
                     ->rule(
                         fn(Get $get) => Rule::unique('tenants', 'phone_number')
-                            ->where(fn($query) => $query->where('user_id', self::getUserContext()->id()))
+                            ->where(fn($query) => $query->where('user_id', app(CurrentUserContextInterface::class)->id()))
                             ->ignore($get('id'))
                     ),
                 Forms\Components\TextInput::make('email')
@@ -91,11 +81,11 @@ class TenantResource extends Resource
                     ->maxLength(100)
                     ->rule(
                         fn(Get $get) => Rule::unique('tenants', 'email')
-                            ->where(fn($query) => $query->where('user_id', self::getUserContext()->id()))
+                            ->where(fn($query) => $query->where('user_id', app(CurrentUserContextInterface::class)->id()))
                             ->ignore($get('id'))
                     ),
                 Hidden::make('user_id')
-                    ->default(fn() => self::getUserContext()->id()),
+                    ->default(fn() => app(CurrentUserContextInterface::class)->id()),
             ]);
     }
 
@@ -181,6 +171,6 @@ class TenantResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
-            ->where('user_id', self::getUserContext()->id());
+            ->where('user_id', app(CurrentUserContextInterface::class)->id());
     }
 }

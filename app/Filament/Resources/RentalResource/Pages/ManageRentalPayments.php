@@ -28,16 +28,6 @@ class ManageRentalPayments extends ManageRelatedRecords
 
     protected static ?string $navigationIcon = 'heroicon-o-banknotes';
 
-    private static ?CurrentUserContextInterface $userContext = null;
-
-    public static function getUserContext(): CurrentUserContextInterface
-    {
-        if (self::$userContext === null) {
-            self::$userContext = app(CurrentUserContextInterface::class);
-        }
-        return self::$userContext;
-    }
-
     public function getTitle(): string | Htmlable
     {
         $recordTitle = $this->getRecordTitle();
@@ -86,7 +76,7 @@ class ManageRentalPayments extends ManageRelatedRecords
                     ->default(false)
                     ->required(),
                 Hidden::make('user_id')
-                    ->default(fn() => self::getUserContext()->id()),
+                    ->default(fn() => app(CurrentUserContextInterface::class)->id()),
             ])
             ->columns(2);
     }
@@ -219,6 +209,6 @@ class ManageRentalPayments extends ManageRelatedRecords
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
-            ->where('user_id', self::getUserContext()->id());
+            ->where('user_id', app(CurrentUserContextInterface::class)->id());
     }
 }

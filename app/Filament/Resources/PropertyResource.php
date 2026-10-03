@@ -31,16 +31,6 @@ class PropertyResource extends Resource
 
     protected static ?string $navigationIcon = 'heroicon-o-rectangle-stack';
 
-    private static ?CurrentUserContextInterface $userContext = null;
-
-    public static function getUserContext(): CurrentUserContextInterface
-    {
-        if (self::$userContext === null) {
-            self::$userContext = app(CurrentUserContextInterface::class);
-        }
-        return self::$userContext;
-    }
-
     public static function getNavigationGroup(): ?string
     {
         return __('property.navigation.group');
@@ -76,7 +66,7 @@ class PropertyResource extends Resource
                     ->maxLength(50)
                     ->rule(
                         fn(Get $get) => Rule::unique('properties', 'address')
-                            ->where(fn($query) => $query->where('user_id', self::getUserContext()->id()))
+                            ->where(fn($query) => $query->where('user_id', app(CurrentUserContextInterface::class)->id()))
                             ->ignore($get('id'))
                     ),
                 Forms\Components\Textarea::make('description')
@@ -85,7 +75,7 @@ class PropertyResource extends Resource
                     ->autosize()
                     ->maxLength(255),
                 Hidden::make('user_id')
-                    ->default(fn() => self::getUserContext()->id()),
+                    ->default(fn() => app(CurrentUserContextInterface::class)->id()),
             ]);
     }
 
@@ -164,6 +154,6 @@ class PropertyResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
-            ->where('user_id', self::getUserContext()->id());
+            ->where('user_id', app(CurrentUserContextInterface::class)->id());
     }
 }

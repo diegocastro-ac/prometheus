@@ -38,13 +38,15 @@ class IncomeChart extends ChartWidget
             $end   = $date->copy()->endOfMonth()->toDateString();
 
             $expectedSum = Payment::whereHas('rental', function ($q) use ($userId) {
-                $q->where('user_id', $userId);
+                $q->where('user_id', $userId)
+                    ->where('is_active', true);
             })
                 ->whereBetween('date', [$start, $end])
                 ->sum('amount');
 
             $collectedSum = Payment::whereHas('rental', function ($q) use ($userId) {
-                $q->where('user_id', $userId);
+                $q->where('user_id', $userId)
+                    ->where('is_active', true);
             })
                 ->whereBetween('date', [$start, $end])
                 // No implementa manejo de estado de pago de la propia clase
