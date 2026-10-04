@@ -29,6 +29,7 @@ class Rental extends Model
         'monthly_amount',
         'agreement_path',
         'is_active',
+        'billing_cadence',
         'user_id',
         'tenant_id',
         'property_id',
@@ -43,6 +44,7 @@ class Rental extends Model
         'start_date' => 'date',
         'end_date' => 'date',
         'monthly_amount' => 'float',
+        'billing_cadence' => \App\Enums\BillingCadence::class,
     ];
 
     protected static function booted()

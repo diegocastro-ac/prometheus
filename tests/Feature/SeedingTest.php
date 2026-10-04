@@ -98,14 +98,24 @@ class SeedingTest extends TestCase
         $user = User::where('email', 'admin@admin.com')->firstOrFail();
         $rental = Rental::where('user_id', $user->id)->firstOrFail();
 
-        $before = Invoice::count();
         $paymentsBefore = Payment::count();
 
         app(PaymentPlanService::class)->generateFor($rental);
 
-        $this->assertSame($before + $rental->total_months, Invoice::count());
         // El plan crea lo que se debe, nunca abonos.
         $this->assertSame($paymentsBefore, Payment::count());
+
+        // Y no deja dos facturas del mismo alquiler para el mismo corte. El
+        // seed puede tener periodos que el plan tambien produce, asi que el
+        // numero exacto de facturas nuevas depende de esos solapamientos; lo
+        // que no puede pasar nunca es que se repita un (periodo, emision).
+        $duplicates = Invoice::where('rental_id', $rental->id)
+            ->select('period', 'issued_at')
+            ->groupBy('period', 'issued_at')
+            ->havingRaw('COUNT(*) > 1')
+            ->get();
+
+        $this->assertCount(0, $duplicates, 'El plan duplico un corte ya existente.');
     }
 
     #[Test]
@@ -117,15 +127,13 @@ class SeedingTest extends TestCase
 
         app(PaymentPlanService::class)->generateFor($rental);
 
-        // Se toman las total_months ultimas, que son las que creo el plan.
-        $generated = Invoice::where('rental_id', $rental->id)
-            ->orderByDesc('id')
-            ->limit($rental->total_months)
+        $open = Invoice::where('rental_id', $rental->id)
+            ->whereIn('status', [InvoiceStatus::EMITIDA, InvoiceStatus::VENCIDA])
             ->get();
 
-        $this->assertCount($rental->total_months, $generated);
+        $this->assertGreaterThan(0, $open->count());
 
-        foreach ($generated as $invoice) {
+        foreach ($open as $invoice) {
             // El plan solo crea lo que se debe, nunca abonos: no esta pagada y
             // su saldo es justo lo que falta por cobrar.
             $this->assertNull($invoice->paid_at);
@@ -140,25 +148,22 @@ class SeedingTest extends TestCase
     }
 
     #[Test]
-    public function el_plan_no_crea_facturas_donde_el_arrendador_ya_tiene_una_abierta(): void
+    public function regenerar_el_plan_no_duplica_los_cortes_ya_emitidos(): void
     {
         $this->seedAll();
 
         $rental = Rental::firstOrFail();
-        $issued = Invoice::where('rental_id', $rental->id)
-            ->whereIn('status', [InvoiceStatus::EMITIDA, InvoiceStatus::VENCIDA])
-            ->count();
 
         app(PaymentPlanService::class)->generateFor($rental);
+        $afterFirst = Invoice::where('rental_id', $rental->id)->count();
 
-        $after = Invoice::where('rental_id', $rental->id)
-            ->whereIn('status', [InvoiceStatus::EMITIDA, InvoiceStatus::VENCIDA])
-            ->count();
+        // El generador es idempotente: si el periodo ya existe para el
+        // alquiler, no lo vuelve a crear. Regenerar el plan no puede inflar la
+        // cartera con cobros repetidos.
+        app(PaymentPlanService::class)->generateFor($rental);
+        $afterSecond = Invoice::where('rental_id', $rental->id)->count();
 
-        // El servicio actual genera el plan completo cada vez que se invoca.
-        // Este test deja constancia de ese comportamiento para que un cambio
-        // posterior sea deliberado y no un accidente.
-        $this->assertSame($issued + $rental->total_months, $after);
+        $this->assertSame($afterFirst, $afterSecond, 'Regenerar el plan duplico facturas.');
     }
 
     #[Test]

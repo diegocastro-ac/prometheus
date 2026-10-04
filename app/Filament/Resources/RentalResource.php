@@ -3,6 +3,7 @@
 namespace App\Filament\Resources;
 
 use App\Contracts\CurrentUserContextInterface;
+use App\Enums\BillingCadence;
 use App\Filament\Resources\RentalResource\Pages;
 use App\Models\Property;
 use App\Models\Rental;
@@ -101,6 +102,11 @@ class RentalResource extends Resource
                             ->required()
                             ->numeric()
                             ->rules(['numeric', 'min:0']),
+                        Forms\Components\Select::make('billing_cadence')
+                            ->label(__('rental.form.sections.main.billing_cadence'))
+                            ->options(BillingCadence::options())
+                            ->default(BillingCadence::MENSUAL->value)
+                            ->required(),
                         Forms\Components\Select::make('tenant_id')
                             ->label(__('rental.form.sections.main.tenant'))
                             ->options(fn () => Tenant::query()
@@ -198,6 +204,10 @@ class RentalResource extends Resource
                     ->label(__('rental.table.columns.monthly_amount'))
                     ->numeric()
                     ->sortable(),
+                Tables\Columns\TextColumn::make('billing_cadence')
+                    ->label(__('rental.table.columns.billing_cadence'))
+                    ->badge()
+                    ->formatStateUsing(fn (BillingCadence $state): string => $state->label()),
                 Tables\Columns\IconColumn::make('agreement_path')
                     ->label(__('rental.table.columns.agreement'))
                     ->boolean()
@@ -296,6 +306,10 @@ class RentalResource extends Resource
                                         Components\TextEntry::make('monthly_amount')
                                             ->label(__('rental.infolist.sections.main.monthly_amount'))
                                             ->numeric(),
+                                        Components\TextEntry::make('billing_cadence')
+                                            ->label(__('rental.infolist.sections.main.billing_cadence'))
+                                            ->badge()
+                                            ->formatStateUsing(fn (BillingCadence $state): string => $state->label()),
                                         Components\TextEntry::make('property.name')
                                             ->label(__('rental.infolist.sections.main.property')),
                                         Components\TextEntry::make('created_at')
