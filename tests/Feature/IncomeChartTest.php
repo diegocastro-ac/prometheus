@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Filament\Widgets\IncomeChart;
+use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Rental;
 use App\Models\User;
@@ -39,7 +40,6 @@ class IncomeChartTest extends TestCase
             'user_id' => $user->id,
             'date' => today(),
             'amount' => 1_000_000,
-            'is_rent_paid' => true,
         ]);
 
         Payment::factory()->create([
@@ -47,7 +47,20 @@ class IncomeChartTest extends TestCase
             'user_id' => $user->id,
             'date' => today(),
             'amount' => 9_000_000,
-            'is_rent_paid' => true,
+        ]);
+
+        Invoice::factory()->create([
+            'rental_id' => $activeRental->id,
+            'user_id' => $user->id,
+            'issued_at' => today(),
+            'amount' => 1_000_000,
+        ]);
+
+        Invoice::factory()->create([
+            'rental_id' => $inactiveRental->id,
+            'user_id' => $user->id,
+            'issued_at' => today(),
+            'amount' => 9_000_000,
         ]);
 
         $this->actingAs($user);
@@ -80,7 +93,6 @@ class IncomeChartTest extends TestCase
             'user_id' => $owner->id,
             'date' => today(),
             'amount' => 1_500_000,
-            'is_rent_paid' => true,
         ]);
 
         Payment::factory()->create([
@@ -88,7 +100,20 @@ class IncomeChartTest extends TestCase
             'user_id' => $other->id,
             'date' => today(),
             'amount' => 7_500_000,
-            'is_rent_paid' => true,
+        ]);
+
+        Invoice::factory()->create([
+            'rental_id' => $ownerRental->id,
+            'user_id' => $owner->id,
+            'issued_at' => today(),
+            'amount' => 1_500_000,
+        ]);
+
+        Invoice::factory()->create([
+            'rental_id' => $otherRental->id,
+            'user_id' => $other->id,
+            'issued_at' => today(),
+            'amount' => 7_500_000,
         ]);
 
         $this->actingAs($owner);
@@ -105,7 +130,7 @@ class IncomeChartTest extends TestCase
     {
         $method = new ReflectionMethod(IncomeChart::class, 'getData');
 
-        $data = $method->invoke(new IncomeChart());
+        $data = $method->invoke(new IncomeChart);
 
         return (float) $data['datasets'][$dataset]['data'][11];
     }

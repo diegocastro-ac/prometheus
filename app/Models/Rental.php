@@ -107,4 +107,33 @@ class Rental extends Model
     {
         return $this->hasMany(Payment::class);
     }
+
+    /**
+     * Reajustes del canon propuestos para este alquiler.
+     */
+    public function rentAdjustments(): HasMany
+    {
+        return $this->hasMany(RentAdjustment::class);
+    }
+
+    /**
+     * Facturas del alquiler en un periodo concreto (YYYY-MM).
+     *
+     * El estado de cuenta se arma con este metodo, que es el unico lugar donde
+     * se decide que facturas pertenecen a un periodo.
+     *
+     * El filtro por user_id parece redundante porque el alquiler ya tiene
+     * dueno, pero hace explicita la invariante: una factura es de un
+     * arrendador y de su alquiler. Sin esta condicion, una fila con datos
+     * inconsistentes se colaria en el estado de cuenta de otro.
+     *
+     * @return HasMany<Invoice>
+     */
+    public function invoicesForPeriod(string $period): HasMany
+    {
+        return $this->hasMany(Invoice::class)
+            ->where('user_id', $this->user_id)
+            ->where('period', $period)
+            ->orderBy('number');
+    }
 }

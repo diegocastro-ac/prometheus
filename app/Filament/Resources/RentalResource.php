@@ -4,27 +4,22 @@ namespace App\Filament\Resources;
 
 use App\Contracts\CurrentUserContextInterface;
 use App\Filament\Resources\RentalResource\Pages;
-use App\Filament\Resources\RentalResource\RelationManagers;
 use App\Models\Property;
 use App\Models\Rental;
 use App\Models\Tenant;
 use App\Rules\UniqueActiveRentalRule;
 use App\ValueObjects\RentalPeriod;
 use Filament\Forms;
+use Filament\Forms\Components\Hidden;
 use Filament\Forms\Form;
+use Filament\Infolists\Components;
+use Filament\Infolists\Infolist;
+use Filament\Pages\SubNavigationPosition;
+use Filament\Resources\Pages\Page;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\SoftDeletingScope;
-use Filament\Forms\Components\Hidden;
-use Illuminate\Validation\Rule;
-use Filament\Resources\Pages\Page;
-use Filament\Pages\SubNavigationPosition;
-use Filament\Infolists\Infolist;
-use Filament\Infolists\Components;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\Rules\Numeric;
 
 class RentalResource extends Resource
 {
@@ -108,30 +103,30 @@ class RentalResource extends Resource
                             ->rules(['numeric', 'min:0']),
                         Forms\Components\Select::make('tenant_id')
                             ->label(__('rental.form.sections.main.tenant'))
-                            ->options(fn() => Tenant::query()
+                            ->options(fn () => Tenant::query()
                                 ->where('user_id', app(CurrentUserContextInterface::class)->id())
                                 ->orderBy('name')
                                 ->pluck('name', 'id'))
-                            ->getOptionLabelUsing(fn($value) => Tenant::query()
+                            ->getOptionLabelUsing(fn ($value) => Tenant::query()
                                 ->where('user_id', app(CurrentUserContextInterface::class)->id())
                                 ->find($value)?->name)
                             ->searchable()
                             ->required()
-                            ->rules(fn(?Rental $record) => [
+                            ->rules(fn (?Rental $record) => [
                                 new UniqueActiveRentalRule('tenant_id', $record?->id),
                             ]),
                         Forms\Components\Select::make('property_id')
                             ->label(__('rental.form.sections.main.property'))
-                            ->options(fn() => Property::query()
+                            ->options(fn () => Property::query()
                                 ->where('user_id', app(CurrentUserContextInterface::class)->id())
                                 ->orderBy('name')
                                 ->pluck('name', 'id'))
-                            ->getOptionLabelUsing(fn($value) => Property::query()
+                            ->getOptionLabelUsing(fn ($value) => Property::query()
                                 ->where('user_id', app(CurrentUserContextInterface::class)->id())
                                 ->find($value)?->name)
                             ->searchable()
                             ->required()
-                            ->rules(fn(?Rental $record) => [
+                            ->rules(fn (?Rental $record) => [
                                 new UniqueActiveRentalRule('property_id', $record?->id),
                             ]),
                         Forms\Components\Toggle::make('is_active')
@@ -144,7 +139,7 @@ class RentalResource extends Resource
                             ->autosize()
                             ->maxLength(255),
                         Hidden::make('user_id')
-                            ->default(fn() => app(CurrentUserContextInterface::class)->id()),
+                            ->default(fn () => app(CurrentUserContextInterface::class)->id()),
                     ])
                     ->columns(2),
 
@@ -155,10 +150,9 @@ class RentalResource extends Resource
                             ->hiddenLabel()
                             ->disk('public')
                             ->directory(
-                                fn($get, $record) =>
-                                $record
+                                fn ($get, $record) => $record
                                     ? "users/{$get('user_id')}/rentals/{$record->id}/agreement"
-                                    : "temp/uploads"
+                                    : 'temp/uploads'
                             )
                             ->acceptedFileTypes([
                                 'application/pdf',
@@ -264,7 +258,6 @@ class RentalResource extends Resource
         return [
             'index' => Pages\ListRentals::route('/'),
             'create' => Pages\CreateRental::route('/create'),
-            'payments' => Pages\ManageRentalPayments::route('/{record}/payments'),
             'edit' => Pages\EditRental::route('/{record}/edit'),
             'view' => Pages\ViewRental::route('/{record}'),
         ];
@@ -339,7 +332,7 @@ class RentalResource extends Resource
                             ->formatStateUsing(function ($record) {
                                 $path = $record->agreement_path;
 
-                                if (!$path) {
+                                if (! $path) {
                                     return __('rental.infolist.sections.agreement.empty');
                                 }
 
@@ -361,6 +354,7 @@ class RentalResource extends Resource
                                 }
 
                                 $filename = basename($path);
+
                                 return <<<HTML
                                     <span style="font-size:1.25em; vertical-align:middle;">📄</span>
                                     <a href="{$url}" download class="text-sm text-primary-600 underline">
@@ -374,12 +368,16 @@ class RentalResource extends Resource
             ]);
     }
 
+    /**
+     * El alquiler ya no tiene una pantalla propia de pagos. Los pagos se
+     * registran contra la factura que los origina, y esa pantalla vive en el
+     * recurso de facturas.
+     */
     public static function getRecordSubNavigation(Page $page): array
     {
         return $page->generateNavigationItems([
             Pages\ViewRental::class,
             Pages\EditRental::class,
-            Pages\ManageRentalPayments::class,
         ]);
     }
 }

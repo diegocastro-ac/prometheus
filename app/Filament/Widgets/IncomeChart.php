@@ -3,13 +3,13 @@
 namespace App\Filament\Widgets;
 
 use App\Contracts\CurrentUserContextInterface;
+use App\Models\Invoice;
 use App\Models\Payment;
 use Carbon\Carbon;
 use Filament\Widgets\ChartWidget;
 
 class IncomeChart extends ChartWidget
 {
-
     protected static ?int $sort = 1;
 
     public function getHeading(): string
@@ -35,22 +35,23 @@ class IncomeChart extends ChartWidget
             $labels[] = $date->translatedFormat('M Y');
 
             $start = $date->copy()->startOfMonth()->toDateString();
-            $end   = $date->copy()->endOfMonth()->toDateString();
+            $end = $date->copy()->endOfMonth()->toDateString();
 
-            $expectedSum = Payment::whereHas('rental', function ($q) use ($userId) {
+            // Esperado: lo que se facturo en el mes.
+            $expectedSum = Invoice::whereHas('rental', function ($q) use ($userId) {
                 $q->where('user_id', $userId)
                     ->where('is_active', true);
             })
-                ->whereBetween('date', [$start, $end])
+                ->whereBetween('issued_at', [$start, $end])
                 ->sum('amount');
 
+            // Cobrado: los abonos registrados en el mes. Una fila de pagos es
+            // un abono real, asi que ya no hace falta filtrar por is_rent_paid.
             $collectedSum = Payment::whereHas('rental', function ($q) use ($userId) {
                 $q->where('user_id', $userId)
                     ->where('is_active', true);
             })
                 ->whereBetween('date', [$start, $end])
-                // No implementa manejo de estado de pago de la propia clase
-                ->where('is_rent_paid', true)
                 ->sum('amount');
 
             $expected[] = (float) $expectedSum;
@@ -61,12 +62,12 @@ class IncomeChart extends ChartWidget
             'labels' => $labels,
             'datasets' => [
                 [
-                    'label' =>  __('dashboard.charts.monthly_income.expected'),
+                    'label' => __('dashboard.charts.monthly_income.expected'),
                     'data' => $expected,
                     'borderDash' => [6, 4],
                 ],
                 [
-                    'label' =>  __('dashboard.charts.monthly_income.collected'),
+                    'label' => __('dashboard.charts.monthly_income.collected'),
                     'data' => $collected,
                     'fill' => true,
                 ],

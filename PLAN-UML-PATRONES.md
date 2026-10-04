@@ -49,7 +49,6 @@ classDiagram
         -string $address
         -string $currency
         -int $invoiceDueDays
-        -int $nextInvoiceNumber
         -string[] $spaceCatalog
         -constructor()
         +businessName() string
@@ -57,7 +56,6 @@ classDiagram
         +address() string
         +formatMoney(float $amount) string
         +spaceCatalog() string[]
-        +nextInvoiceNumber() int
     }
 
     class DeliveryActBuilder {
@@ -387,6 +385,8 @@ classDiagram
         +string $number
         +string $concept
         +float $amount
+        +string $period
+        -Carbon $issuedAt
         -Carbon $dueDate
         +InvoiceStatus $status
         +refreshStatus() void

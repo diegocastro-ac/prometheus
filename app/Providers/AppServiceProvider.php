@@ -4,12 +4,15 @@ namespace App\Providers;
 
 use App\Contracts\AgreementStorageInterface;
 use App\Contracts\CurrentUserContextInterface;
+use App\Documents\DocumentFactoryLocator;
+use App\Documents\Factories\DocumentFactory;
+use App\Documents\Factories\TextDocumentFactory;
 use App\Infrastructure\AuthUserContext;
 use App\Infrastructure\PublicDiskAgreementStorage;
 use App\Services\Acts\DeliveryActBuilder;
 use App\Settings\AppSettings;
-use Illuminate\Support\ServiceProvider;
 use BezhanSalleh\FilamentLanguageSwitch\LanguageSwitch;
+use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -37,6 +40,18 @@ class AppServiceProvider extends ServiceProvider
         $this->app->scoped(DeliveryActBuilder::class, fn ($app) => new DeliveryActBuilder(
             $app->make(AppSettings::class),
         ));
+
+        // Abstract Factory: la familia de documentos por defecto es la de texto
+        // plano, porque no depende de dompdf y por eso los tests y la vista
+        // previa funcionan siempre. La de PDF se pide por nombre con el locator
+        // cuando la pantalla elige formato.
+        //
+        // El locator se registra como singleton porque no tiene estado: solo
+        // mapea formato a implementacion. Las fabricas, en cambio, son scoped:
+        // cada documento memoriza su contenido renderizado y no conviene
+        // compartir un producto entre peticiones.
+        $this->app->singleton(DocumentFactoryLocator::class);
+        $this->app->bind(DocumentFactory::class, TextDocumentFactory::class);
     }
 
     /**

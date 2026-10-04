@@ -198,6 +198,14 @@ Ninguno de los patrones debe heredar estos dos defectos.
 - La pantalla de pagos de un alquiler reemplaza los cuatro interruptores por la selección de la factura a la que se aplica el pago.
 - Se actualizan las consultas que filtraban por los booleanos eliminados en los tres widgets y en el gráfico.
 
+**Decisiones tomadas al implementar este paso.**
+
+- *Opción A.* La factura es la fuente de verdad y el pago se administra desde ella. La pantalla de pagos por alquiler se elimina en vez de migrarse: `InvoiceResource` queda con la acción de registrar abono.
+- *El período es un campo aparte.* Se guarda como texto `AAAA-MM` y no se deriva de `issued_at`, porque una factura de marzo puede emitirse en febrero. Es el mes que se cobra, no el mes del documento.
+- *El consecutivo se reinicia cada año.* `invoice_sequences` es único por `(user_id, year)`, así que en enero vuelve a `0001`. El número no arrastra el del año anterior.
+- *El concepto se guarda como clave.* En la tabla queda `rent`, `services`, `rent_services` o `adjustment`; la etiqueta traducida la pone la vista. Guardar el texto haría que un filtro por concepto no encontrara nada.
+- *La pérdida de datos se acepta en desarrollo.*
+
 **Advertencia sobre los datos existentes.** Al quitar los booleanos se descarta información que hoy no es recuperable. El monto del canon sí está en el campo de monto del pago, así que de cada pago existente se puede crear la factura del canon con el estado que correspondía. Pero los booleanos de agua, energía y gas nunca tuvieron monto asociado, así que esa información se pierde. Es aceptable en desarrollo. Si llegara a haber datos reales, la migración tendría que hacerse a mano antes de aplicar el cambio.
 
 ### Paso 4. Abstract Factory
