@@ -27,7 +27,7 @@ abstract class AbstractDocument implements DocumentContract
      *                        suya, asi que el documento no conoce el formato.
      */
     public function __construct(
-        protected readonly DocumentBody $body,
+        protected DocumentBody $body,
         private readonly DocumentRenderer $renderer,
         private readonly string $slug,
     ) {}

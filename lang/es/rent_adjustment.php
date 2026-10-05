@@ -51,6 +51,7 @@ return [
         'ipc_outside_statutory_year_help' => 'El artículo 20 obliga a usar el IPC del año calendario anterior al de la vigencia. Si el año elegido no es ese, márquelo y explique el motivo en las observaciones; sin ambas cosas el registro se rechaza.',
         'notes' => 'Observaciones',
         'notes_help' => 'Si el incremento supera el tope, registre aquí el acuerdo escrito. Sin esa nota el ajuste no se aplica al alquiler.',
+        'select' => 'Seleccionar reajuste',
     ],
 
     'placeholders' => [

@@ -18,9 +18,19 @@ class AjustesPage extends Page
 
     public ?array $data = [];
 
+    public static function shouldRegisterNavigation(): bool
+    {
+        return false;
+    }
+
     public static function getNavigationLabel(): string
     {
         return __('settings.navigation_label');
+    }
+
+    public function getTitle(): string
+    {
+        return __('settings.title');
     }
 
     public function mount(): void

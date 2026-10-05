@@ -35,11 +35,11 @@ class DashboardPanelProvider extends PanelProvider
             ->favicon(asset('favicon.png'))
             ->userMenuItems([
                 'profile' => MenuItem::make()
-                    ->label(__('profile.title'))
+                    ->label(fn () => __('profile.title'))
                     ->url(fn(): string => EditProfile::getUrl())
                     ->icon('heroicon-o-user-circle'),
                 'settings' => MenuItem::make()
-                    ->label(__('settings.navigation_label'))
+                    ->label(fn () => __('settings.navigation_label'))
                     ->url(fn(): string => AjustesPage::getUrl())
                     ->icon('heroicon-o-cog-6-tooth'),
             ])

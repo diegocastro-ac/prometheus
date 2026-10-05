@@ -4,6 +4,7 @@ namespace App\Filament\Pages;
 
 use App\Documents\Contracts\Document;
 use App\Documents\DocumentService;
+use App\Documents\Money;
 use App\Enums\InvoiceStatus;
 use App\Models\Invoice;
 use App\Models\RentAdjustment;
@@ -30,15 +31,30 @@ class DocumentsPage extends Page
 {
     protected static ?string $navigationIcon = 'heroicon-o-document-duplicate';
 
-    protected static ?string $navigationGroup = 'Administración';
-
     protected static ?int $navigationSort = 5;
 
     protected static ?string $slug = 'administration/documents';
 
     protected static string $view = 'filament.pages.documents';
 
+    protected static ?string $title = null;
+
     public ?array $data = [];
+
+    public function getTitle(): string
+    {
+        return __('invoice.documents.title');
+    }
+
+    public static function getNavigationLabel(): string
+    {
+        return __('invoice.documents.title');
+    }
+
+    public static function getNavigationGroup(): ?string
+    {
+        return __('invoice.navigation.group');
+    }
 
     /**
      * Documento de texto abierto en pantalla, si hay alguno.
@@ -49,16 +65,11 @@ class DocumentsPage extends Page
      */
     public ?string $textPreview = null;
 
-    public static function getNavigationLabel(): string
-    {
-        return __('invoice.documents.title');
-    }
-
     public function mount(): void
     {
         $this->form->fill([
             'rental_id' => null,
-            'period' => now()->subMonth()->format('Y-m'),
+            'period' => null,
             'format' => 'text',
             'invoice_id' => null,
             'adjustment_id' => null,
@@ -89,17 +100,19 @@ class DocumentsPage extends Page
                             ->options(fn (): array => $this->rentalOptions())
                             ->searchable()
                             ->live()
-                            ->afterStateUpdated(fn () => $this->textPreview = null),
+                            ->afterStateUpdated(function (Forms\Set $set, ?string $state) {
+                                $set('period', $this->getDefaultPeriod($state));
+                                $this->textPreview = null;
+                            }),
 
-                        Forms\Components\TextInput::make('period')
+                        Forms\Components\Select::make('period')
                             ->label(__('invoice.form.period'))
-                            ->placeholder(__('invoice.placeholders.period'))
-                            ->maxLength(7)
-                            ->regex('/^\d{4}-(0[1-9]|1[0-2])$/')
-                            ->validationMessages([
-                                'regex' => __('invoice.validation.period'),
-                            ])
-                            ->default(now()->subMonth()->format('Y-m'))
+                            ->options(fn (Forms\Get $get): array => $this->periodOptions($get('rental_id')))
+                            ->searchable()
+                            ->live()
+                            ->disabled(fn (Forms\Get $get): bool => empty($get('rental_id')))
+                            ->afterStateUpdated(fn () => $this->textPreview = null)
+                            ->default(fn (Forms\Get $get): ?string => $this->getDefaultPeriod($get('rental_id')))
                             ->required(),
                     ])
                     ->columns(2),
@@ -119,7 +132,7 @@ class DocumentsPage extends Page
                     ->description(__('invoice.documents.hint.adjustment'))
                     ->schema([
                         Forms\Components\Select::make('adjustment_id')
-                            ->label(__('rent_adjustment.navigation.labels.singular'))
+                            ->label(__('rent_adjustment.form.select'))
                             ->options(fn (): array => $this->adjustmentOptions())
                             ->searchable()
                             ->live()
@@ -258,19 +271,39 @@ class DocumentsPage extends Page
     private function deliver(Document $document): mixed
     {
         if ($document->isDownload()) {
-            // La respuesta se devuelve, no solo se crea. Livewire envia el
-            // archivo al navegador unicamente cuando el metodo retorna la
-            // respuesta; devolverla sin retornar deja el boton sin hacer nada.
+            // Usar el mismo enfoque que DocumentAction para PDFs
+            $view = self::selectView($document);
+            $settings = app(\App\Settings\AppSettings::class);
+
+            $pdfBytes = \FlexPDF\Facades\Pdf::view($view, [
+                'body' => $document->body(),
+                'document' => $document,
+                'settings' => $settings,
+            ])->page('a4')->output();
+
             return response()->streamDownload(
-                fn () => print ($document->content()),
+                function () use ($pdfBytes) {
+                    echo $pdfBytes;
+                },
                 $document->filename(),
-                ['Content-Type' => $document->mimeType()],
+                ['Content-Type' => 'application/pdf']
             );
         }
 
         $this->textPreview = $document->content();
 
         return null;
+    }
+
+    private static function selectView(\App\Documents\AbstractDocument $document): string
+    {
+        return match($document::class) {
+            \App\Documents\RentInvoice::class => 'documents.invoice',
+            \App\Documents\PaymentReceipt::class => 'documents.receipt',
+            \App\Documents\AdjustmentLetter::class => 'documents.adjustment-letter',
+            \App\Documents\MonthlyStatement::class => 'documents.monthly-statement',
+            default => 'documents.document',
+        };
     }
 
     /**
@@ -326,12 +359,48 @@ class DocumentsPage extends Page
             ->get()
             ->mapWithKeys(fn (RentAdjustment $adjustment): array => [
                 $adjustment->id => sprintf(
-                    '#%s · %s → %s',
+                    '%s · %s → %s',
                     $adjustment->rental?->name ?? '—',
-                    number_format((float) $adjustment->previous_rent, 0, ',', '.'),
-                    number_format((float) $adjustment->new_rent, 0, ',', '.'),
+                    Money::pesos($adjustment->previous_rent),
+                    Money::pesos($adjustment->new_rent),
                 ),
             ])
             ->all();
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function periodOptions(?string $rentalId): array
+    {
+        if ($rentalId === null) {
+            return [];
+        }
+
+        return Invoice::query()
+            ->where('rental_id', $rentalId)
+            ->where('user_id', auth()->id())
+            ->whereNotNull('period')
+            ->orderByDesc('period')
+            ->limit(60)
+            ->pluck('period', 'period')
+            ->unique()
+            ->all();
+    }
+
+    private function getDefaultPeriod(?string $rentalId): ?string
+    {
+        if ($rentalId === null) {
+            return null;
+        }
+
+        $lastPeriod = Invoice::query()
+            ->where('rental_id', $rentalId)
+            ->where('user_id', auth()->id())
+            ->whereNotNull('period')
+            ->orderByDesc('period')
+            ->value('period');
+
+        return $lastPeriod;
     }
 }

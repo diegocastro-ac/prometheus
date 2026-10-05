@@ -51,6 +51,7 @@ return [
         'ipc_outside_statutory_year_help' => 'Article 20 requires the CPI of the calendar year before the effective date. If the chosen year is not that one, tick this and explain the reason in the notes; without both the record is rejected.',
         'notes' => 'Notes',
         'notes_help' => 'If the increase exceeds the cap, record the written agreement here. Without that note the adjustment is not applied to the rental.',
+        'select' => 'Select adjustment',
     ],
 
     'placeholders' => [

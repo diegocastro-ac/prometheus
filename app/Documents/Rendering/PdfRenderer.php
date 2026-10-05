@@ -48,6 +48,16 @@ class PdfRenderer implements DocumentRenderer
         $settings = app(AppSettings::class);
         $document = $body->document();
 
+        // Si el documento no está adjunto al body, usar una vista genérica
+        if ($document === null) {
+            return Pdf::view('documents.document', [
+                'body' => $body,
+                'settings' => $settings,
+            ])
+            ->page('a4')
+            ->output();
+        }
+
         // Seleccionar plantilla según tipo de documento
         $view = $this->selectView($document);
 

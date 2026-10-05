@@ -38,6 +38,24 @@ class MonthlyStatement extends AbstractDocument
      */
     public static function forPeriod(string $period, array $invoices, DocumentRenderer $renderer): self
     {
+        $body = self::buildBody($period, $invoices);
+
+        $document = new self(
+            body: $body,
+            renderer: $renderer,
+            slug: 'estado-de-cuenta-'.$period,
+            period: $period,
+            invoices: $invoices,
+        );
+
+        // Adjuntar el documento al body después de la instanciación
+        $document->body = $document->body->withDocument($document);
+
+        return $document;
+    }
+
+    private static function buildBody(string $period, array $invoices): DocumentBody
+    {
         $billed = array_sum(array_map(fn (Invoice $invoice): float => $invoice->amount, $invoices));
         $paid = array_sum(array_map(fn (Invoice $invoice): float => $invoice->paidAmount(), $invoices));
 
@@ -53,7 +71,7 @@ class MonthlyStatement extends AbstractDocument
             'status_class' => $invoice->status->value,
         ], $invoices);
 
-        $body = DocumentBody::make('Estado de cuenta')
+        $body = DocumentBody::make(__('document.monthly_statement'))
             ->withFields([
                 'Total facturado' => Money::exact($billed),
                 'Total abonado' => Money::exact($paid),
@@ -67,23 +85,14 @@ class MonthlyStatement extends AbstractDocument
             );
         }
 
-        $document = new self(
-            body: $body
-                ->withDocument($invoices)
-                ->withNotes(
-                    'Las fechas de vencimiento se consultan en cada factura. Las facturas anuladas '
-                    .'no se cobran y se muestran solo como registro.',
-                )
-                ->withFooter(
-                    'Documento generado por Prometheus el '.now()->format('d/m/Y \a \l\a\s H:i'),
-                ),
-            renderer: $renderer,
-            slug: 'estado-de-cuenta-'.$period,
-            period: $period,
-            invoices: $invoices,
-        );
-
-        return $document;
+        return $body
+            ->withNotes(
+                'Las fechas de vencimiento se consultan en cada factura. Las facturas anuladas '
+                .'no se cobran y se muestran solo como registro.',
+            )
+            ->withFooter(
+                __('document.generated_by').' '.now()->format('d/m/Y \a \l\a\s H:i'),
+            );
     }
 
     public function period(): string
@@ -133,9 +142,11 @@ class MonthlyStatement extends AbstractDocument
     public function transactions(): array
     {
         return array_map(fn (Invoice $invoice): array => [
-            'date' => $invoice->issued_at?->format('d M Y') ?? '-',
-            'description' => $invoice->number . ' - ' . $invoice->conceptLabel(),
+            'number' => $invoice->number,
+            'period' => $invoice->period,
+            'concept' => $invoice->conceptLabel(),
             'status' => $invoice->status->value,
+            'status_class' => $invoice->status->value,
             'amount' => $invoice->amount,
             'paid' => $invoice->paidAmount(),
             'balance' => $invoice->balance(),
