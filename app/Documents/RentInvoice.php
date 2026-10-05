@@ -48,6 +48,9 @@ class RentInvoice extends AbstractDocument
 
     private static function buildBody(Invoice $invoice): DocumentBody
     {
+        // Cargar relaciones para evitar N+1
+        $invoice->load(['rental', 'user', 'payments' => fn($q) => $q->orderBy('date')]);
+
         $body = DocumentBody::make('Factura de arrendamiento')
             ->withFields([
                 'Numero' => $invoice->number,
@@ -63,13 +66,12 @@ class RentInvoice extends AbstractDocument
         if ($invoice->hasPartialPayment()) {
             $body = $body->withTable(
                 ['Fecha', 'Abono', 'Forma de pago', 'Referencia'],
-                $invoice->payments()->orderBy('date')->get()
-                    ->map(fn ($payment): array => [
-                        $payment->date->format('d/m/Y'),
-                        Money::exact($payment->amount),
-                        $payment->methodLabel(),
-                        $payment->reference ?? '-',
-                    ])->all(),
+                $invoice->payments->map(fn ($payment): array => [
+                    $payment->date->format('d/m/Y'),
+                    Money::exact($payment->amount),
+                    $payment->methodLabel(),
+                    $payment->reference ?? '-',
+                ])->all(),
             );
         }
 
@@ -78,6 +80,7 @@ class RentInvoice extends AbstractDocument
         }
 
         return $body
+            ->withDocument($invoice)
             ->withNotes(
                 __('invoice.descriptions.legal'),
             )

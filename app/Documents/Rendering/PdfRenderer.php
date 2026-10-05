@@ -2,7 +2,12 @@
 
 namespace App\Documents\Rendering;
 
-use Barryvdh\DomPDF\Facade\Pdf;
+use App\Documents\AdjustmentLetter;
+use App\Documents\MonthlyStatement;
+use App\Documents\PaymentReceipt;
+use App\Documents\RentInvoice;
+use App\Settings\AppSettings;
+use FlexPDF\Facades\Pdf;
 
 /**
  * Renderizador en PDF.
@@ -40,13 +45,33 @@ class PdfRenderer implements DocumentRenderer
 
     public function render(DocumentBody $body): string
     {
-        return Pdf::loadView('documents.document', ['body' => $body])
-            ->setPaper('letter')
-            ->setOptions([
-                'isRemoteEnabled' => false,
-                'isHtml5ParserEnabled' => true,
-                'defaultFont' => 'DejaVu Sans',
-            ])
-            ->output();
+        $settings = app(AppSettings::class);
+        $document = $body->document();
+
+        // Seleccionar plantilla según tipo de documento
+        $view = $this->selectView($document);
+
+        return Pdf::view($view, [
+            'body' => $body,
+            'document' => $document,
+            'settings' => $settings,
+        ])
+        ->page('a4')
+        ->output();
+    }
+
+    private function selectView(?object $document): string
+    {
+        if ($document === null) {
+            return 'documents.document';
+        }
+
+        return match($document::class) {
+            RentInvoice::class => 'documents.invoice',
+            PaymentReceipt::class => 'documents.receipt',
+            AdjustmentLetter::class => 'documents.adjustment-letter',
+            MonthlyStatement::class => 'documents.monthly-statement',
+            default => 'documents.document',
+        };
     }
 }

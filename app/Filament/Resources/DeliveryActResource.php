@@ -52,7 +52,7 @@ class DeliveryActResource extends Resource
                 Forms\Components\Section::make(__('act.sections.parties'))
                     ->schema([
                         Forms\Components\Select::make('rental_id')
-                            ->label(__('rental.title'))
+                            ->label(__('act.form.rental'))
                             ->relationship('rental', 'name')
                             ->options(fn () => self::rentalOptions())
                             ->required()

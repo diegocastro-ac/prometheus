@@ -32,6 +32,7 @@ final class DocumentBody
         public readonly array $notes = [],
         public readonly array $warnings = [],
         public readonly ?string $footer = null,
+        private ?object $document = null,
     ) {}
 
     /**
@@ -82,6 +83,16 @@ final class DocumentBody
         return $this->clone(footer: $footer);
     }
 
+    public function withDocument(object $document): self
+    {
+        return $this->clone(document: $document);
+    }
+
+    public function document(): ?object
+    {
+        return $this->document;
+    }
+
     private function clone(
         ?array $fields = null,
         ?array $headers = null,
@@ -89,6 +100,7 @@ final class DocumentBody
         ?array $notes = null,
         ?array $warnings = null,
         ?string $footer = null,
+        ?object $document = null,
     ): self {
         return new self(
             title: $this->title,
@@ -98,6 +110,7 @@ final class DocumentBody
             notes: $notes ?? $this->notes,
             warnings: $warnings ?? $this->warnings,
             footer: $footer ?? $this->footer,
+            document: $document ?? $this->document,
         );
     }
 }

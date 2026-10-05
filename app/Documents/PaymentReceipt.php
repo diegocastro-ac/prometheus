@@ -63,6 +63,9 @@ class PaymentReceipt extends AbstractDocument
 
     private static function buildBody(Invoice $invoice): DocumentBody
     {
+        // Cargar relaciones para evitar N+1
+        $invoice->load(['rental', 'user', 'payments' => fn($q) => $q->orderBy('date')->orderBy('id')]);
+
         $body = DocumentBody::make('Comprobante de pago')
             ->withFields([
                 'Factura' => $invoice->number,
@@ -76,12 +79,10 @@ class PaymentReceipt extends AbstractDocument
                 'Saldo' => Money::exact($invoice->balance()),
             ]);
 
-        $payments = $invoice->payments()->orderBy('date')->orderBy('id')->get();
-
-        if ($payments->isNotEmpty()) {
+        if ($invoice->payments->isNotEmpty()) {
             $body = $body->withTable(
                 ['Fecha', 'Abono', 'Forma de pago', 'Referencia'],
-                $payments->map(fn ($payment): array => [
+                $invoice->payments->map(fn ($payment): array => [
                     $payment->date->format('d/m/Y'),
                     Money::exact($payment->amount),
                     $payment->methodLabel(),
@@ -91,6 +92,7 @@ class PaymentReceipt extends AbstractDocument
         }
 
         return $body
+            ->withDocument($invoice)
             ->withNotes(
                 'Este comprobante acredita el pago de la factura '.$invoice->number
                 .' y no sustituye la factura electronica de venta.',

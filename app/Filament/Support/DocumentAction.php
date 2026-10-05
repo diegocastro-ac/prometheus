@@ -46,7 +46,36 @@ class DocumentAction
         return $actionClass::make($name)
             ->label($label ?? __('invoice.buttons.download_document_pdf'))
             ->icon('heroicon-o-arrow-down-tray')
-            ->action(fn (mixed $record) => self::download($builder($record, 'pdf')));
+            ->action(function (mixed $record) use ($builder) {
+                $document = $builder($record, 'pdf');
+                $view = self::selectView($document);
+                $settings = app(\App\Settings\AppSettings::class);
+
+                $pdfBytes = \FlexPDF\Facades\Pdf::view($view, [
+                    'body' => $document->body(),
+                    'document' => $document,
+                    'settings' => $settings,
+                ])->page('a4')->output();
+
+                return response()->streamDownload(
+                    function () use ($pdfBytes) {
+                        echo $pdfBytes;
+                    },
+                    $document->filename(),
+                    ['Content-Type' => 'application/pdf']
+                );
+            });
+    }
+
+    private static function selectView(\App\Documents\AbstractDocument $document): string
+    {
+        return match($document::class) {
+            \App\Documents\RentInvoice::class => 'documents.invoice',
+            \App\Documents\PaymentReceipt::class => 'documents.receipt',
+            \App\Documents\AdjustmentLetter::class => 'documents.adjustment-letter',
+            \App\Documents\MonthlyStatement::class => 'documents.monthly-statement',
+            default => 'documents.document',
+        };
     }
 
     /**
@@ -79,9 +108,11 @@ class DocumentAction
             ->icon('heroicon-o-clipboard-document')
             ->modalWidth(MaxWidth::TwoExtraLarge)
             ->modalHeading(fn (mixed $record): string => $resolve($record)->preview())
-            ->modalContent(fn (mixed $record): string => view('filament.documents.text-preview', [
-                'content' => $resolve($record)->content(),
-            ]))
+            ->modalContent(function (mixed $record) use ($resolve) {
+                return view('filament.documents.text-preview', [
+                    'content' => $resolve($record)->content(),
+                ]);
+            })
             ->modalSubmitAction(false);
     }
 

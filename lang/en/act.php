@@ -1,8 +1,8 @@
 <?php
 
 return [
-    'title' => 'Delivery acts',
-    'navigation_label' => 'Delivery acts',
+    'title' => 'Delivery Acts',
+    'navigation_label' => 'Delivery Acts',
 
     'navigation' => [
         'group' => 'Administration',
@@ -27,12 +27,13 @@ return [
     ],
 
     'descriptions' => [
-        'inventory' => 'Group the items by the spaces catalog configured in Settings.',
-        'commitments' => 'Leave the section empty if there are no commitments. It will not be printed.',
+        'inventory' => 'Group items by the space catalog configured in Settings.',
+        'commitments' => 'If there are no commitments, leave the section blank. It will not be printed.',
         'readings' => 'Only fill in the meters that were read during the visit.',
     ],
 
     'form' => [
+        'rental' => 'Rental',
         'type' => 'Act type',
         'occurred_at' => 'Visit date',
         'scheduled_at' => 'Scheduled time',
@@ -40,14 +41,14 @@ return [
         'landlord_document' => 'Landlord document',
         'tenant_name' => 'Tenant name',
         'tenant_document' => 'Tenant document',
-        'water_reading' => 'Water',
-        'energy_reading' => 'Energy',
-        'gas_reading' => 'Gas',
+        'water_reading' => 'Water reading',
+        'energy_reading' => 'Energy reading',
+        'gas_reading' => 'Gas reading',
         'commitments' => 'Commitments',
         'observations' => 'Observations',
         'space' => 'Space',
-        'item_name' => 'Item',
-        'item_state' => 'Condition',
+        'item_name' => 'Item name',
+        'item_state' => 'Item state',
         'item_note' => 'Note',
         'item_photo' => 'Photo',
         'landlord_signature' => 'Landlord signature',
@@ -59,8 +60,8 @@ return [
         'nuevo' => 'New',
         'bueno' => 'Good',
         'reparable' => 'Repairable',
-        'por_reemplazar' => 'To be replaced',
-        'destruido' => 'Damaged beyond repair',
+        'por_reemplazar' => 'Needs replacement',
+        'destruido' => 'Destroyed',
     ],
 
     'table' => [
@@ -73,7 +74,7 @@ return [
 
     'placeholders' => [
         'commitments' => 'The tenant commits to report the water leak before the 15th.',
-        'item_note' => 'Painting the main patio door is recommended.',
+        'item_note' => 'Painting the patio front door is recommended.',
     ],
 
     'buttons' => [
@@ -82,5 +83,5 @@ return [
     ],
 
     'created' => 'Act created',
-    'no_catalog' => 'No spaces catalog configured. Add it in Settings to be able to inventory items.',
+    'no_catalog' => 'No space catalog configured. Add it in Settings to inventory items.',
 ];

@@ -45,32 +45,65 @@ class PlainTextRenderer implements DocumentRenderer
 
     public function render(DocumentBody $body): string
     {
-        $lines = [$body->title, str_repeat('=', mb_strlen($body->title)), ''];
+        $lines = [];
+        $title = $body->title;
+        $titleLength = mb_strlen($title);
+        $border = str_repeat('═', $titleLength + 4);
 
+        $lines[] = '╔'.$border.'╗';
+        $lines[] = '║  '.str_pad($title, $titleLength).'  ║';
+        $lines[] = '╚'.$border.'╝';
+        $lines[] = '';
+
+        // Header con datos del negocio si es comprobante
+        if ($body->document() instanceof \App\Documents\PaymentReceipt) {
+            $lines[] = '┌────────────────────────────────────────────────────────────────┐';
+            $lines[] = '│ ✓ FACTURA PAGADA COMPLETAMENTE                                   │';
+            $lines[] = '└────────────────────────────────────────────────────────────────┘';
+            $lines[] = '';
+        }
+
+        $sectionNumber = 1;
         $labelWidth = $this->labelWidth($body->fields);
 
-        foreach ($body->fields as $label => $value) {
-            $lines[] = str_pad($label.':', $labelWidth + 1).' '.$value;
+        if ($body->fields !== []) {
+            $lines[] = sprintf('%d. DATOS GENERALES', $sectionNumber++);
+            $lines[] = str_repeat('─', 60);
+            foreach ($body->fields as $label => $value) {
+                $lines[] = sprintf('  %-'.($labelWidth).'s : %s', $label.':', $value);
+            }
+            $lines[] = '';
         }
 
         if ($body->headers !== [] && $body->rows !== []) {
-            $lines[] = '';
+            $lines[] = sprintf('%d. DETALLE', $sectionNumber++);
+            $lines[] = str_repeat('─', 60);
             $lines[] = $this->table($body);
+            $lines[] = '';
         }
 
-        foreach ($body->warnings as $warning) {
+        if ($body->warnings !== []) {
+            $lines[] = sprintf('%d. AVISOS', $sectionNumber++);
+            $lines[] = str_repeat('─', 60);
+            foreach ($body->warnings as $warning) {
+                $lines[] = '  ⚠ '.$warning;
+            }
             $lines[] = '';
-            $lines[] = 'AVISO: '.$warning;
         }
 
-        foreach ($body->notes as $note) {
+        if ($body->notes !== []) {
+            $lines[] = sprintf('%d. NOTAS', $sectionNumber++);
+            $lines[] = str_repeat('─', 60);
+            foreach ($body->notes as $note) {
+                $lines[] = '  '.$note;
+            }
             $lines[] = '';
-            $lines[] = $note;
         }
 
         if ($body->footer !== null) {
-            $lines[] = '';
-            $lines[] = $body->footer;
+            $lines[] = '╔'.str_repeat('═', 72).'╗';
+            $lines[] = '║  '.$body->footer.'  ║';
+            $lines[] = '╚'.str_repeat('═', 72).'╝';
         }
 
         return implode(PHP_EOL, $lines);

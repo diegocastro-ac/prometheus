@@ -65,6 +65,21 @@ class AjustesPage extends Page
                             ->directory('logos')
                             ->disk('public')
                             ->visibility('public'),
+
+                        Forms\Components\ColorPicker::make('primary_color')
+                            ->label(__('settings.form.primary_color'))
+                            ->default('#3b82f6')
+                            ->hex(),
+
+                        Forms\Components\ColorPicker::make('secondary_color')
+                            ->label(__('settings.form.secondary_color'))
+                            ->default('#6366f1')
+                            ->hex(),
+
+                        Forms\Components\TextInput::make('font_family')
+                            ->label(__('settings.form.font_family'))
+                            ->default('Inter')
+                            ->maxLength(50),
                     ])
                     ->columns(2),
 

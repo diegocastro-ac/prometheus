@@ -29,6 +29,9 @@ return [
         'invoice_due_days' => 'Días de vencimiento',
         'legal_footer' => 'Texto legal de los documentos',
         'space_catalog' => 'Espacios',
+        'primary_color' => 'Color principal',
+        'secondary_color' => 'Color secundario',
+        'font_family' => 'Fuente',
     ],
 
     'placeholders' => [

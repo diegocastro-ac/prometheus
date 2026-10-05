@@ -201,8 +201,13 @@ class InvoiceResource extends Resource
                     )),
             ])
             ->actions([
-                ...self::receiptDocumentActions(),
-                ...self::invoiceDocumentActions(),
+                Tables\Actions\ActionGroup::make([
+                    ...self::receiptDocumentActions(),
+                    ...self::invoiceDocumentActions(),
+                ])
+                ->label(__('invoice.buttons.download_document_pdf'))
+                ->icon('heroicon-o-ellipsis-vertical')
+                ->color('primary'),
                 self::recordPaymentAction(),
                 self::annulAction(),
             ])
@@ -234,7 +239,7 @@ class InvoiceResource extends Resource
 
             DocumentAction::text(
                 name: 'receipt_text',
-                label: __('invoice.buttons.copy_document_text'),
+                label: __('invoice.buttons.copy_receipt'),
                 builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
                     ->receiptFor($record, $format),
             )->visible(fn (Invoice $record): bool => $record->isPaid()),
@@ -261,7 +266,7 @@ class InvoiceResource extends Resource
 
             DocumentAction::text(
                 name: 'invoice_text',
-                label: __('invoice.buttons.copy_document_text'),
+                label: __('invoice.buttons.copy_invoice'),
                 builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
                     ->invoiceFor($record, $format),
             ),

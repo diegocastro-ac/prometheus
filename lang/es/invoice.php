@@ -89,6 +89,8 @@ return [
         'annul' => 'Anular',
         'download_receipt' => 'Comprobante',
         'download_invoice' => 'Factura',
+        'copy_receipt' => 'Copiar comprobante',
+        'copy_invoice' => 'Copiar factura',
         'statement' => 'Estado de cuenta',
         'adjustment_letter' => 'Carta de reajuste',
         'download_document_pdf' => 'Descargar PDF',

@@ -32,6 +32,9 @@ final class AppSettings
         private readonly int $invoiceDueDays,
         private readonly ?string $legalFooter,
         private readonly array $spaceCatalog,
+        private readonly string $primaryColor,
+        private readonly string $secondaryColor,
+        private readonly string $fontFamily,
     ) {}
 
     /**
@@ -57,6 +60,9 @@ final class AppSettings
             invoiceDueDays: (int) ($row->invoice_due_days ?? 5),
             legalFooter: $row->legal_footer,
             spaceCatalog: self::decodeSpaceCatalog($row->space_catalog),
+            primaryColor: $row->primary_color ?? '#3b82f6',
+            secondaryColor: $row->secondary_color ?? '#6366f1',
+            fontFamily: $row->font_family ?? 'Inter',
         );
     }
 
@@ -76,6 +82,9 @@ final class AppSettings
             invoiceDueDays: 5,
             legalFooter: null,
             spaceCatalog: [],
+            primaryColor: '#3b82f6',
+            secondaryColor: '#6366f1',
+            fontFamily: 'Inter',
         );
     }
 
@@ -130,6 +139,33 @@ final class AppSettings
     public function spaceCatalog(): array
     {
         return $this->spaceCatalog;
+    }
+
+    public function primaryColor(): string
+    {
+        return $this->primaryColor;
+    }
+
+    public function secondaryColor(): string
+    {
+        return $this->secondaryColor;
+    }
+
+    public function fontFamily(): string
+    {
+        return $this->fontFamily;
+    }
+
+    /**
+     * Devuelve las variables CSS para inline en PDFs
+     */
+    public function cssVariables(): string
+    {
+        return sprintf(
+            '--color-primary: %s; --color-secondary: %s;',
+            $this->primaryColor,
+            $this->secondaryColor
+        );
     }
 
     /**

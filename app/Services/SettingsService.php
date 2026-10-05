@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\DB;
 class SettingsService
 {
     /**
-     * @param  array{business_name: string, tax_id: string, address?: string|null, currency?: string|null, logo_path?: string|null, email?: string|null, phone?: string|null, invoice_due_days?: int|null, legal_footer?: string|null, space_catalog?: array<int, string>|null}  $data
+     * @param  array{business_name: string, tax_id: string, address?: string|null, currency?: string|null, logo_path?: string|null, email?: string|null, phone?: string|null, invoice_due_days?: int|null, legal_footer?: string|null, space_catalog?: array<int, string>|null, primary_color?: string|null, secondary_color?: string|null, font_family?: string|null}  $data
      */
     public function save(array $data): void
     {
@@ -38,6 +38,9 @@ class SettingsService
                     ))),
                     JSON_UNESCAPED_UNICODE,
                 ),
+                'primary_color' => $data['primary_color'] ?? '#3b82f6',
+                'secondary_color' => $data['secondary_color'] ?? '#6366f1',
+                'font_family' => $data['font_family'] ?? 'Inter',
                 'updated_at' => now(),
                 'created_at' => now(),
             ],
@@ -66,6 +69,9 @@ class SettingsService
             'invoice_due_days' => $settings->invoiceDueDays(),
             'legal_footer' => $settings->legalFooter(),
             'space_catalog' => $settings->spaceCatalog(),
+            'primary_color' => $settings->primaryColor(),
+            'secondary_color' => $settings->secondaryColor(),
+            'font_family' => $settings->fontFamily(),
         ];
     }
 

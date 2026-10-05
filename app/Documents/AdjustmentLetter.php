@@ -36,12 +36,16 @@ class AdjustmentLetter extends AbstractDocument
 
     public static function forAdjustment(RentAdjustment $adjustment, DocumentRenderer $renderer): self
     {
-        return new self(
+        $document = new self(
             body: self::buildBody($adjustment),
             renderer: $renderer,
             slug: 'reajuste-'.$adjustment->id,
             adjustment: $adjustment,
         );
+
+        $document->body->setDocument($document);
+
+        return $document;
     }
 
     public function adjustment(): RentAdjustment
@@ -54,6 +58,81 @@ class AdjustmentLetter extends AbstractDocument
         return 'Carta de reajuste del alquiler '.$this->adjustment->rental?->name
             .': canon de '.Money::pesos($this->adjustment->previous_rent)
             .' a '.Money::pesos($this->adjustment->new_rent);
+    }
+
+    public function tenantName(): string
+    {
+        return $this->adjustment->rental?->tenant?->name ?? 'No indicado';
+    }
+
+    public function propertyName(): string
+    {
+        return $this->adjustment->rental?->property?->name ?? 'No indicado';
+    }
+
+    public function propertyAddress(): string
+    {
+        return $this->adjustment->rental?->property?->address ?? 'No indicado';
+    }
+
+    public function previousAmount(): float
+    {
+        return (float) $this->adjustment->previous_rent;
+    }
+
+    public function newAmount(): float
+    {
+        return (float) $this->adjustment->new_rent;
+    }
+
+    public function ipcYear(): ?int
+    {
+        return $this->adjustment->ipc_year;
+    }
+
+    public function ipcRate(): ?float
+    {
+        return $this->adjustment->ipc_percentage;
+    }
+
+    public function inflationAmount(): float
+    {
+        return $this->adjustment->increase();
+    }
+
+    public function exceedsLegalCap(): bool
+    {
+        return $this->adjustment->exceedsCap();
+    }
+
+    public function legalCapRate(): float
+    {
+        return $this->adjustment->ipc_percentage + 1.0;
+    }
+
+    public function legalAdjustedAmount(): float
+    {
+        return (float) ($this->adjustment->legal_cap_rent ?? $this->adjustment->new_rent);
+    }
+
+    public function date(): \Illuminate\Support\Carbon
+    {
+        return $this->adjustment->effective_from ?? now();
+    }
+
+    public function effectiveDate(): \Illuminate\Support\Carbon
+    {
+        return $this->adjustment->effective_from ?? now();
+    }
+
+    public function period(): string
+    {
+        return $this->adjustment->effective_from?->format('Y-m') ?? 'No indicado';
+    }
+
+    public function adjustmentDate(): \Illuminate\Support\Carbon
+    {
+        return $this->adjustment->effective_from ?? now();
     }
 
     private static function buildBody(RentAdjustment $adjustment): DocumentBody

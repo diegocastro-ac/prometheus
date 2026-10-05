@@ -35,6 +35,7 @@ class DatabaseSeeder extends Seeder
             PropertySeeder::class,
             RentalSeeder::class,
             PaymentSeeder::class,
+            DeliveryActSeeder::class,
 
             // Los reajustes van al final porque se apoyan en un alquiler con
             // canon vigente y en el IPC del año anterior.

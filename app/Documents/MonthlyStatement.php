@@ -42,36 +42,36 @@ class MonthlyStatement extends AbstractDocument
         $paid = array_sum(array_map(fn (Invoice $invoice): float => $invoice->paidAmount(), $invoices));
 
         $rows = array_map(fn (Invoice $invoice): array => [
-            $invoice->number,
-            $invoice->conceptLabel(),
-            Money::exact($invoice->amount),
-            Money::exact($invoice->paidAmount()),
-            Money::exact($invoice->balance()),
-            __('invoice.statuses.'.$invoice->status->value),
+            'number' => $invoice->number,
+            'concept' => $invoice->conceptLabel(),
+            'period' => $invoice->period,
+            'issued_at' => $invoice->issued_at?->format('d/m/Y') ?? '-',
+            'amount' => $invoice->amount,
+            'paid' => $invoice->paidAmount(),
+            'balance' => $invoice->balance(),
+            'status' => __('invoice.statuses.'.$invoice->status->value),
+            'status_class' => $invoice->status->value,
         ], $invoices);
 
         $body = DocumentBody::make('Estado de cuenta')
             ->withFields([
-                'Alquiler' => $invoices[0]->rental?->name ?? 'no indicado',
-                'Periodo' => $period,
-                'Facturas' => (string) count($invoices),
                 'Total facturado' => Money::exact($billed),
                 'Total abonado' => Money::exact($paid),
-                'Saldo' => Money::exact($billed - $paid),
+                'Saldo pendiente' => Money::exact($billed - $paid),
             ]);
 
         if ($rows !== []) {
             $body = $body->withTable(
-                ['Factura', 'Concepto', 'Total', 'Abonado', 'Saldo', 'Estado'],
+                ['Factura', 'Concepto', 'Periodo', 'Fecha', 'Total', 'Pagado', 'Saldo', 'Estado'],
                 $rows,
             );
         }
 
-        return new self(
+        $document = new self(
             body: $body
                 ->withNotes(
                     'Las fechas de vencimiento se consultan en cada factura. Las facturas anuladas '
-                    .'no secobran y se muestran solo como registro.',
+                    .'no se cobran y se muestran solo como registro.',
                 )
                 ->withFooter(
                     'Documento generado por Prometheus el '.now()->format('d/m/Y \a \l\a\s H:i'),
@@ -81,6 +81,10 @@ class MonthlyStatement extends AbstractDocument
             period: $period,
             invoices: $invoices,
         );
+
+        $document->body->setDocument($document);
+
+        return $document;
     }
 
     public function period(): string
@@ -105,5 +109,52 @@ class MonthlyStatement extends AbstractDocument
 
         return 'Estado de cuenta '.$this->period
             .' con '.count($this->invoices).' factura(s), saldo '.Money::exact($balance);
+    }
+
+    public function tenantName(): string
+    {
+        return $this->invoices[0]->rental?->tenant?->name ?? 'No indicado';
+    }
+
+    public function propertyName(): string
+    {
+        return $this->invoices[0]->rental?->property?->name ?? 'No indicado';
+    }
+
+    public function periodStart(): \Illuminate\Support\Carbon
+    {
+        return \Illuminate\Support\Carbon::parse($this->period . '-01');
+    }
+
+    public function periodEnd(): \Illuminate\Support\Carbon
+    {
+        return \Illuminate\Support\Carbon::parse($this->period . '-01')->endOfMonth();
+    }
+
+    public function transactions(): array
+    {
+        return array_map(fn (Invoice $invoice): array => [
+            'date' => $invoice->issued_at?->format('d M Y') ?? '-',
+            'description' => $invoice->number . ' - ' . $invoice->conceptLabel(),
+            'status' => $invoice->status->value,
+            'amount' => $invoice->amount,
+            'paid' => $invoice->paidAmount(),
+            'balance' => $invoice->balance(),
+        ], $this->invoices);
+    }
+
+    public function totalInvoiced(): float
+    {
+        return array_sum(array_map(fn (Invoice $invoice): float => $invoice->amount, $this->invoices));
+    }
+
+    public function totalPaid(): float
+    {
+        return array_sum(array_map(fn (Invoice $invoice): float => $invoice->paidAmount(), $this->invoices));
+    }
+
+    public function outstandingBalance(): float
+    {
+        return array_sum(array_map(fn (Invoice $invoice): float => $invoice->balance(), $this->invoices));
     }
 }
