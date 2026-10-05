@@ -25,6 +25,7 @@ class PaymentRecordingService
         ?string $method = null,
         ?string $reference = null,
         ?Carbon $paidAt = null,
+        ?string $receiptImage = null,
     ): array {
         if (! $invoice->canReceivePayments()) {
             throw new \DomainException('La factura '.$invoice->number.' no admite mas pagos.');
@@ -38,6 +39,7 @@ class PaymentRecordingService
             'amount' => $amount,
             'method' => $method ?: 'efectivo',
             'reference' => $reference,
+            'receipt_image' => $receiptImage,
             'date' => ($paidAt ?? now())->format('Y-m-d'),
         ]);
 

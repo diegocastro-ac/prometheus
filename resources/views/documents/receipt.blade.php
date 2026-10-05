@@ -219,7 +219,11 @@
     <div class="header">
         <div class="company-info">
             <div class="company-header">
-                <img src="{{ public_path('favicon.png') }}" alt="" class="logo">
+                @if($settings->logoPath())
+                    <img src="{{ asset($settings->logoPath()) }}" alt="" class="logo">
+                @else
+                    <img src="/favicon.png" alt="" class="logo">
+                @endif
                 <h1 class="company-name">{{ $settings->businessName() }}</h1>
             </div>
             <p class="company-details">
@@ -344,6 +348,15 @@
             </tbody>
         </table>
     </div>
+
+    @if(isset($body->meta()['receipt_image']) && $body->meta()['receipt_image'])
+    <div class="section">
+        <h3 class="section-title">{{ __('document.receipt_image') }}</h3>
+        <div style="text-align: center; padding: 20px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px;">
+            <img src="{{ $body->meta()['receipt_image'] }}" alt="Receipt Image" style="max-width: 100%; max-height: 300px; border-radius: 4px;">
+        </div>
+    </div>
+    @endif
 
     @if($body->notes !== [])
     <div class="section">

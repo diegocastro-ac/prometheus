@@ -28,6 +28,7 @@
         readonly
         rows="20"
         spellcheck="false"
-        style="width: 100%; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.4; padding: 12px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; resize: vertical; white-space: pre; overflow-x: auto;"
+        class="fi-px mt-4 block w-full rounded-lg border-0 bg-white py-2.5 px-3 text-sm text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-inset focus:ring-primary-600 dark:bg-gray-800 dark:text-gray-100 dark:ring-gray-600 dark:focus:ring-white/50"
+        style="font-family: 'Courier New', monospace; line-height: 1.4; white-space: pre; overflow-x: auto; resize: vertical;"
     >{{ $content }}</textarea>
 </div>

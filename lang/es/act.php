@@ -27,7 +27,7 @@ return [
     ],
 
     'descriptions' => [
-        'inventory' => 'Agrupa los elementos por el catálogo de espacios configurado en Ajustes.',
+        'inventory' => 'Agrupa los elementos por espacio. Puedes crear nuevos espacios al escribir.',
         'commitments' => 'Si no hay compromisos, deja la sección en blanco. No se imprimirá.',
         'readings' => 'Solo llena los medidores que se lean en la visita.',
     ],
@@ -47,6 +47,7 @@ return [
         'commitments' => 'Compromisos',
         'observations' => 'Observaciones',
         'space' => 'Espacio',
+        'space_name' => 'Nombre del espacio',
         'item_name' => 'Nombre del elemento',
         'item_state' => 'Estado del elemento',
         'item_note' => 'Nota',

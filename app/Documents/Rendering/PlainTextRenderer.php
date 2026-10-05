@@ -58,7 +58,7 @@ class PlainTextRenderer implements DocumentRenderer
         // Header con datos del negocio si es comprobante
         if ($body->document() instanceof \App\Documents\PaymentReceipt) {
             $lines[] = '┌────────────────────────────────────────────────────────────────┐';
-            $lines[] = '│ ✓ FACTURA PAGADA COMPLETAMENTE                                   │';
+            $lines[] = '│ ✓ '.__('document.paid_in_full').'                                   │';
             $lines[] = '└────────────────────────────────────────────────────────────────┘';
             $lines[] = '';
         }
@@ -67,7 +67,7 @@ class PlainTextRenderer implements DocumentRenderer
         $labelWidth = $this->labelWidth($body->fields);
 
         if ($body->fields !== []) {
-            $lines[] = sprintf('%d. DATOS GENERALES', $sectionNumber++);
+            $lines[] = sprintf('%d. %s', $sectionNumber++, __('document.general_data'));
             $lines[] = str_repeat('─', 60);
             foreach ($body->fields as $label => $value) {
                 $lines[] = sprintf('  %-'.($labelWidth).'s : %s', $label.':', $value);
@@ -76,14 +76,14 @@ class PlainTextRenderer implements DocumentRenderer
         }
 
         if ($body->headers !== [] && $body->rows !== []) {
-            $lines[] = sprintf('%d. DETALLE', $sectionNumber++);
+            $lines[] = sprintf('%d. %s', $sectionNumber++, __('document.details'));
             $lines[] = str_repeat('─', 60);
             $lines[] = $this->table($body);
             $lines[] = '';
         }
 
         if ($body->warnings !== []) {
-            $lines[] = sprintf('%d. AVISOS', $sectionNumber++);
+            $lines[] = sprintf('%d. %s', $sectionNumber++, __('document.warnings'));
             $lines[] = str_repeat('─', 60);
             foreach ($body->warnings as $warning) {
                 $lines[] = '  ⚠ '.$warning;
@@ -92,7 +92,7 @@ class PlainTextRenderer implements DocumentRenderer
         }
 
         if ($body->notes !== []) {
-            $lines[] = sprintf('%d. NOTAS', $sectionNumber++);
+            $lines[] = sprintf('%d. %s', $sectionNumber++, __('document.notes'));
             $lines[] = str_repeat('─', 60);
             foreach ($body->notes as $note) {
                 $lines[] = '  '.$note;

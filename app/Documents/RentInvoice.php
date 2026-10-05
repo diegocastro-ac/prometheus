@@ -51,21 +51,21 @@ class RentInvoice extends AbstractDocument
         // Cargar relaciones para evitar N+1
         $invoice->load(['rental', 'user', 'payments' => fn($q) => $q->orderBy('date')]);
 
-        $body = DocumentBody::make('Factura de arrendamiento')
+        $body = DocumentBody::make(__('document.invoice'))
             ->withFields([
-                'Numero' => $invoice->number,
-                'Concepto' => $invoice->conceptLabel(),
-                'Alquiler' => $invoice->rental?->name ?? 'no indicado',
-                'Periodo' => $invoice->period ?? 'no indicado',
-                'Emision' => $invoice->issued_at->format('d/m/Y'),
-                'Vence' => $invoice->due_at->format('d/m/Y'),
-                'Estado' => __('invoice.statuses.'.$invoice->status->value),
-                'Total' => Money::exact($invoice->amount),
+                __('document.invoice_number') => $invoice->number,
+                __('document.concept') => $invoice->conceptLabel(),
+                __('document.rental') => $invoice->rental?->name ?? 'no indicado',
+                __('document.period') => $invoice->period ?? 'no indicado',
+                __('document.issued_date') => $invoice->issued_at->format('d/m/Y'),
+                __('document.due_date') => $invoice->due_at->format('d/m/Y'),
+                __('document.status') => __('invoice.statuses.'.$invoice->status->value),
+                __('document.total_due') => Money::exact($invoice->amount),
             ]);
 
         if ($invoice->hasPartialPayment()) {
             $body = $body->withTable(
-                ['Fecha', 'Abono', 'Forma de pago', 'Referencia'],
+                [__('document.date'), __('document.amount_paid'), __('document.method'), __('document.reference')],
                 $invoice->payments->map(fn ($payment): array => [
                     $payment->date->format('d/m/Y'),
                     Money::exact($payment->amount),
@@ -85,7 +85,7 @@ class RentInvoice extends AbstractDocument
                 __('invoice.descriptions.legal'),
             )
             ->withFooter(
-                'Documento generado por Prometheus el '.now()->format('d/m/Y \a \l\a\s H:i'),
+                __('document.generated_by').' '.now()->format('d/m/Y \a \l\a\s H:i'),
             );
     }
 }

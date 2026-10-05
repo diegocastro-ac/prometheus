@@ -17,6 +17,7 @@ class ActItem extends Model
      */
     protected $fillable = [
         'space',
+        'space_id',
         'name',
         'state',
         'note',
@@ -34,5 +35,10 @@ class ActItem extends Model
     public function deliveryAct(): BelongsTo
     {
         return $this->belongsTo(DeliveryAct::class);
+    }
+
+    public function space(): BelongsTo
+    {
+        return $this->belongsTo(Space::class);
     }
 }

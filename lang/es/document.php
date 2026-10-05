@@ -79,6 +79,7 @@ return [
     'payment_breakdown' => 'Desglose de Pagos',
     'method' => 'Método',
     'reference' => 'Referencia',
+    'receipt_image' => 'Imagen del Comprobante',
 
     // Account Information
     'account_information' => 'Información de Cuenta',
@@ -108,6 +109,29 @@ return [
 
     // Notes
     'notes' => 'Notas',
+
+    // Plain text sections
+    'general_data' => 'Datos Generales',
+    'details' => 'Detalle',
+    'warnings' => 'Avisos',
+    'paid_in_full' => 'PAGADA COMPLETAMENTE',
+
+    // Receipt fields
+    'rental' => 'Alquiler',
+    'receipt_note' => 'Este comprobante acredita el pago de la factura',
+    'receipt_note_suffix' => 'y no sustituye la factura electronica de venta.',
+
+    // Invoice fields
+    'total_due' => 'Total a Pagar',
+
+    // Adjustment fields
+    'effective_from' => 'Vigencia desde',
+    'ipc_applied' => 'IPC aplicado',
+    'legal_cap' => 'Tope legal',
+    'warning_exceeds_cap' => 'AVISO: el incremento pedido supera en %s el tope legal del IPC. Según el artículo 20 de la Ley 820 de 2003, un incremento por encima del IPC solo opera si existe acuerdo escrito entre las partes. Sin ese acuerdo, el canon que queda vigente es el de %s.',
+    'note_communication' => 'Esta carta cumple el deber de comunicación del artículo 20 de la Ley 820 de 2003. Si no se comunica el monto ni la fecha de vigencia, el reajuste es inoponible al arrendatario.',
+    'note_ipc_source' => 'Fuente del indicador: %s, IPC del %s (%s).',
+    'notified_on' => 'Comunicada el',
 
     // Footer
     'generated_by' => 'Generado por Prometheus el',

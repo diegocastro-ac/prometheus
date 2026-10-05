@@ -5,6 +5,7 @@ namespace App\Services\Acts;
 use App\Enums\ActItemState;
 use App\Models\DeliveryAct;
 use App\Models\Rental;
+use App\Models\Space;
 use App\Settings\AppSettings;
 use RuntimeException;
 
@@ -176,34 +177,37 @@ class DeliveryActBuilder
         $act->save();
 
         if ($this->inventoryRequested && $this->items !== []) {
-            $act->items()->createMany($this->items);
+            $itemsWithSpaceId = array_map(function ($item) {
+                $space = Space::query()
+                    ->where('user_id', auth()->id())
+                    ->where('name', $item['space'])
+                    ->first();
+
+                $item['space_id'] = $space->id ?? null;
+                return $item;
+            }, $this->items);
+
+            $act->items()->createMany($itemsWithSpaceId);
         }
 
         return $act->load('items');
     }
 
     /**
-     * @throws RuntimeException
+     * Asegura que el espacio exista en el catálogo. Si no existe, lo crea.
      */
     private function assertSpaceIsCatalogued(string $space): void
     {
-        $catalog = $this->settings->spaceCatalog();
+        $existingSpace = Space::query()
+            ->where('user_id', auth()->id())
+            ->where('name', $space)
+            ->first();
 
-        if ($catalog === []) {
-            throw new RuntimeException(
-                'No hay catalogo de espacios configurado en Ajustes, no se puede inventariar.'
-            );
-        }
-
-        $normalized = array_map(
-            static fn (string $known): string => mb_strtolower(trim($known)),
-            $catalog,
-        );
-
-        if (! in_array(mb_strtolower($space), $normalized, true)) {
-            throw new RuntimeException(
-                "El espacio [{$space}] no esta en el catalogo de Ajustes."
-            );
+        if (!$existingSpace) {
+            Space::query()->create([
+                'name' => $space,
+                'user_id' => auth()->id(),
+            ]);
         }
     }
 }

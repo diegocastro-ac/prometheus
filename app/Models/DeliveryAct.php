@@ -67,8 +67,9 @@ class DeliveryAct extends Model
     public function itemsBySpace(): array
     {
         return $this->items
-            ->sortBy('space')
-            ->groupBy('space')
+            ->load('space')
+            ->sortBy(fn ($item) => $item->space?->name ?? $item->space)
+            ->groupBy(fn ($item) => $item->space?->name ?? $item->space)
             ->all();
     }
 
@@ -85,6 +86,8 @@ class DeliveryAct extends Model
 
     public function isSigned(): bool
     {
-        return $this->signed_at !== null;
+        // Se considera firmada si tiene ambas firmas subidas O si tiene fecha de firma
+        return ($this->landlord_signature_path !== null && $this->tenant_signature_path !== null)
+            || $this->signed_at !== null;
     }
 }

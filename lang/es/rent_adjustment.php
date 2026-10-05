@@ -62,6 +62,7 @@ return [
         'letter' => 'Carta de reajuste',
         'apply' => 'Aplicar al alquiler',
         'mark_notified' => 'Marcar como comunicado',
+        'actions' => 'Acciones',
     ],
 
     'notifications' => [

@@ -73,6 +73,8 @@ class InvoiceResource extends Resource
                                     ->where('user_id', app(CurrentUserContextInterface::class)->id())
                                     ->orderBy('name'),
                             )
+                            ->searchable()
+                            ->preload()
                             ->required()
                             ->live()
                             ->afterStateUpdated(fn ($state, Forms\Set $set) => self::suggestAmount($state, $set)),
@@ -204,12 +206,12 @@ class InvoiceResource extends Resource
                 Tables\Actions\ActionGroup::make([
                     ...self::receiptDocumentActions(),
                     ...self::invoiceDocumentActions(),
+                    self::recordPaymentAction(),
+                    self::annulAction(),
                 ])
                 ->label(__('invoice.buttons.download_document_pdf'))
                 ->icon('heroicon-o-ellipsis-vertical')
                 ->color('primary'),
-                self::recordPaymentAction(),
-                self::annulAction(),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
@@ -306,6 +308,14 @@ class InvoiceResource extends Resource
                 Forms\Components\TextInput::make('reference')
                     ->label(__('invoice.form.payment_reference'))
                     ->maxLength(100),
+
+                Forms\Components\FileUpload::make('receipt_image')
+                    ->label(__('invoice.form.receipt_image'))
+                    ->image()
+                    ->directory('payments/receipts')
+                    ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+                    ->maxSize(5120) // 5MB
+                    ->nullable(),
             ])
             ->action(function (Invoice $record, array $data): void {
                 try {
@@ -315,6 +325,7 @@ class InvoiceResource extends Resource
                         method: $data['method'] ?? null,
                         reference: $data['reference'] ?? null,
                         paidAt: \Illuminate\Support\Carbon::parse($data['date']),
+                        receiptImage: $data['receipt_image'] ?? null,
                     );
                 } catch (DomainException $exception) {
                     Notification::make()

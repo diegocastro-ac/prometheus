@@ -12,9 +12,7 @@ class AjustesPage extends Page
 {
     protected static ?string $navigationIcon = 'heroicon-o-cog-6-tooth';
 
-    protected static ?string $navigationGroup = 'Administration';
-
-    protected static ?int $navigationSort = 90;
+    protected static bool $isGloballySearchable = false;
 
     protected static string $view = 'filament.pages.ajustes';
 
@@ -65,21 +63,6 @@ class AjustesPage extends Page
                             ->directory('logos')
                             ->disk('public')
                             ->visibility('public'),
-
-                        Forms\Components\ColorPicker::make('primary_color')
-                            ->label(__('settings.form.primary_color'))
-                            ->default('#3b82f6')
-                            ->hex(),
-
-                        Forms\Components\ColorPicker::make('secondary_color')
-                            ->label(__('settings.form.secondary_color'))
-                            ->default('#6366f1')
-                            ->hex(),
-
-                        Forms\Components\TextInput::make('font_family')
-                            ->label(__('settings.form.font_family'))
-                            ->default('Inter')
-                            ->maxLength(50),
                     ])
                     ->columns(2),
 
@@ -115,20 +98,6 @@ class AjustesPage extends Page
                             ->columnSpanFull(),
                     ])
                     ->columns(2),
-
-                Forms\Components\Section::make(__('settings.sections.inventory'))
-                    ->description(__('settings.descriptions.inventory'))
-                    ->schema([
-                        Forms\Components\Repeater::make('space_catalog')
-                            ->label(__('settings.form.space_catalog'))
-                            ->simple(
-                                Forms\Components\TextInput::make('space')
-                                    ->required()
-                                    ->maxLength(100),
-                            )
-                            ->addActionLabel('+')
-                            ->default([]),
-                    ]),
             ])
             ->statePath('data');
     }

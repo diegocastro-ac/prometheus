@@ -37,13 +37,11 @@ class AdjustmentLetter extends AbstractDocument
     public static function forAdjustment(RentAdjustment $adjustment, DocumentRenderer $renderer): self
     {
         $document = new self(
-            body: self::buildBody($adjustment),
+            body: self::buildBody($adjustment)->withDocument($adjustment),
             renderer: $renderer,
             slug: 'reajuste-'.$adjustment->id,
             adjustment: $adjustment,
         );
-
-        $document->body->setDocument($document);
 
         return $document;
     }
@@ -139,40 +137,35 @@ class AdjustmentLetter extends AbstractDocument
     {
         $rental = $adjustment->rental;
 
-        $body = DocumentBody::make('Comunicacion de reajuste del canon')
+        $body = DocumentBody::make(__('document.adjustment_letter'))
             ->withFields([
-                'Alquiler' => $rental?->name ?? 'no indicado',
-                'Canon anterior' => Money::pesos($adjustment->previous_rent),
-                'Canon reajustado' => Money::pesos($adjustment->new_rent),
-                'Incremento' => Money::pesos($adjustment->increase())
+                __('document.rental') => $rental?->name ?? 'no indicado',
+                __('document.previous_rent') => Money::pesos($adjustment->previous_rent),
+                __('document.new_rent_amount') => Money::pesos($adjustment->new_rent),
+                __('document.adjustment') => Money::pesos($adjustment->increase())
                     .' ('.Money::percent($adjustment->increasePercentage()).')',
-                'Vigencia desde' => $adjustment->effective_from?->format('d/m/Y')
+                __('document.effective_from') => $adjustment->effective_from?->format('d/m/Y')
                     ?? 'sin fecha definida',
-                'IPC aplicado' => $adjustment->ipc_percentage === null
+                __('document.ipc_applied') => $adjustment->ipc_percentage === null
                     ? 'no disponible'
                     : Money::percentPlain($adjustment->ipc_percentage).' del '.$adjustment->ipc_year,
-                'Tope legal' => $adjustment->legal_cap_rent === null
+                __('document.legal_cap') => $adjustment->legal_cap_rent === null
                     ? 'no disponible'
                     : Money::pesos($adjustment->legal_cap_rent),
             ]);
 
         if ($adjustment->exceedsCap()) {
             $body = $body->withWarning(sprintf(
-                'AVISO: el incremento pedido supera en %s el tope legal del IPC. '
-                .'Segun el articulo 20 de la Ley 820 de 2003, un incremento por encima del IPC '
-                .'solo opera si existe acuerdo escrito entre las partes. Sin ese acuerdo, el canon '
-                .'que queda vigente es el de %s.',
+                __('document.warning_exceeds_cap'),
                 Money::pesos($adjustment->excess_over_cap),
                 Money::pesos((float) $adjustment->legal_cap_rent),
             ));
         }
 
         $notes = [
-            'Esta carta cumple el deber de comunicacion del articulo 20 de la Ley 820 de 2003. '
-            .'Si no se comunica el monto ni la fecha de vigencia, el reajuste es inoponible al '
-            .'arrendatario.',
+            __('document.note_communication'),
             sprintf(
-                'Fuente del indicador: %s, IPC del %s (%s).',
+                __('document.note_ipc_source'),
                 $adjustment->ipcRate?->source_name ?? 'DANE',
                 $adjustment->ipc_year ?? 'no disponible',
                 $adjustment->ipcRate?->source_url ?? 'sin enlace registrado',
@@ -184,13 +177,14 @@ class AdjustmentLetter extends AbstractDocument
         }
 
         if ($adjustment->notified_on !== null) {
-            $notes[] = 'Comunicada el '.$adjustment->notified_on->format('d/m/Y').'.';
+            $notes[] = __('document.notified_on').' '.$adjustment->notified_on->format('d/m/Y').'.';
         }
 
         return $body
+            ->withDocument($adjustment)
             ->withNotes(...$notes)
             ->withFooter(
-                'Documento generado por Prometheus el '.now()->format('d/m/Y \a \l\a\s H:i'),
+                __('document.generated_by').' '.now()->format('d/m/Y \a \l\a\s H:i'),
             );
     }
 }

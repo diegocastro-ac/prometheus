@@ -27,7 +27,7 @@ return [
     ],
 
     'descriptions' => [
-        'inventory' => 'Group items by the space catalog configured in Settings.',
+        'inventory' => 'Group items by space. You can create new spaces by typing.',
         'commitments' => 'If there are no commitments, leave the section blank. It will not be printed.',
         'readings' => 'Only fill in the meters that were read during the visit.',
     ],
@@ -47,6 +47,7 @@ return [
         'commitments' => 'Commitments',
         'observations' => 'Observations',
         'space' => 'Space',
+        'space_name' => 'Space name',
         'item_name' => 'Item name',
         'item_state' => 'Item state',
         'item_note' => 'Note',

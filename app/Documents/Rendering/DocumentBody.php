@@ -32,6 +32,7 @@ final class DocumentBody
         public readonly array $notes = [],
         public readonly array $warnings = [],
         public readonly ?string $footer = null,
+        public readonly array $meta = [],
         private ?object $document = null,
     ) {}
 
@@ -88,9 +89,19 @@ final class DocumentBody
         return $this->clone(document: $document);
     }
 
+    public function withMeta(array $meta): self
+    {
+        return $this->clone(meta: array_merge($this->meta, $meta));
+    }
+
     public function document(): ?object
     {
         return $this->document;
+    }
+
+    public function meta(): array
+    {
+        return $this->meta;
     }
 
     private function clone(
@@ -100,6 +111,7 @@ final class DocumentBody
         ?array $notes = null,
         ?array $warnings = null,
         ?string $footer = null,
+        ?array $meta = null,
         ?object $document = null,
     ): self {
         return new self(
@@ -110,6 +122,7 @@ final class DocumentBody
             notes: $notes ?? $this->notes,
             warnings: $warnings ?? $this->warnings,
             footer: $footer ?? $this->footer,
+            meta: $meta ?? $this->meta,
             document: $document ?? $this->document,
         );
     }

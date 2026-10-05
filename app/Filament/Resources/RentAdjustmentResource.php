@@ -259,9 +259,14 @@ private static function effectiveFromForIpcYear(mixed $ipcYear): ?string
             ])
             ->defaultSort('effective_from', 'desc')
             ->actions([
-                ...self::letterActions(),
-                self::applyAction(),
-                self::markNotifiedAction(),
+                Tables\Actions\ActionGroup::make([
+                    ...self::letterActions(),
+                    self::applyAction(),
+                    self::markNotifiedAction(),
+                ])
+                ->label(__('rent_adjustment.buttons.actions'))
+                ->icon('heroicon-o-ellipsis-horizontal')
+                ->color('gray'),
             ]);
     }
 

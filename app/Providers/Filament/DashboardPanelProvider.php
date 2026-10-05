@@ -19,6 +19,7 @@ use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 use Filament\Navigation\MenuItem;
 use App\Filament\Pages\EditProfile;
+use App\Filament\Pages\AjustesPage;
 
 class DashboardPanelProvider extends PanelProvider
 {
@@ -37,6 +38,10 @@ class DashboardPanelProvider extends PanelProvider
                     ->label(__('profile.title'))
                     ->url(fn(): string => EditProfile::getUrl())
                     ->icon('heroicon-o-user-circle'),
+                'settings' => MenuItem::make()
+                    ->label(__('settings.navigation_label'))
+                    ->url(fn(): string => AjustesPage::getUrl())
+                    ->icon('heroicon-o-cog-6-tooth'),
             ])
             ->colors([
                 'primary' => Color::Amber,

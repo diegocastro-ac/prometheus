@@ -58,6 +58,7 @@ return [
         'payment_date' => 'Payment date',
         'payment_method' => 'Payment method',
         'payment_reference' => 'Reference',
+        'receipt_image' => 'Receipt image',
         'status' => 'Status',
     ],
 

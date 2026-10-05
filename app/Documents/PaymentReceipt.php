@@ -66,22 +66,35 @@ class PaymentReceipt extends AbstractDocument
         // Cargar relaciones para evitar N+1
         $invoice->load(['rental', 'user', 'payments' => fn($q) => $q->orderBy('date')->orderBy('id')]);
 
-        $body = DocumentBody::make('Comprobante de pago')
+        // Obtener la imagen del comprobante del último pago
+        $receiptImage = null;
+        $lastPayment = $invoice->payments->last();
+        if ($lastPayment && $lastPayment->receipt_image) {
+            $imagePath = public_path('storage/' . $lastPayment->receipt_image);
+            if (file_exists($imagePath)) {
+                // Convertir a data URI (base64)
+                $imageData = base64_encode(file_get_contents($imagePath));
+                $mimeType = mime_content_type($imagePath);
+                $receiptImage = 'data:' . $mimeType . ';base64,' . $imageData;
+            }
+        }
+
+        $body = DocumentBody::make(__('document.payment_receipt'))
             ->withFields([
-                'Factura' => $invoice->number,
-                'Concepto' => $invoice->conceptLabel(),
-                'Periodo' => $invoice->period ?? 'no indicado',
-                'Alquiler' => $invoice->rental?->name ?? 'no indicado',
-                'Emision' => $invoice->issued_at->format('d/m/Y'),
-                'Pago' => $invoice->paid_at?->format('d/m/Y') ?? 'sin fecha registrada',
-                'Total facturado' => Money::exact($invoice->amount),
-                'Total abonado' => Money::exact($invoice->paidAmount()),
-                'Saldo' => Money::exact($invoice->balance()),
+                __('document.invoice_number') => $invoice->number,
+                __('document.concept') => $invoice->conceptLabel(),
+                __('document.period') => $invoice->period ?? 'no indicado',
+                __('document.rental') => $invoice->rental?->name ?? 'no indicado',
+                __('document.issued_date') => $invoice->issued_at->format('d/m/Y'),
+                __('document.payment_date') => $invoice->paid_at?->format('d/m/Y') ?? 'sin fecha registrada',
+                __('document.invoice_amount') => Money::exact($invoice->amount),
+                __('document.paid_amount') => Money::exact($invoice->paidAmount()),
+                __('document.balance') => Money::exact($invoice->balance()),
             ]);
 
         if ($invoice->payments->isNotEmpty()) {
             $body = $body->withTable(
-                ['Fecha', 'Abono', 'Forma de pago', 'Referencia'],
+                [__('document.date'), __('document.amount_paid'), __('document.method'), __('document.reference')],
                 $invoice->payments->map(fn ($payment): array => [
                     $payment->date->format('d/m/Y'),
                     Money::exact($payment->amount),
@@ -93,12 +106,13 @@ class PaymentReceipt extends AbstractDocument
 
         return $body
             ->withDocument($invoice)
+            ->withMeta(['receipt_image' => $receiptImage])
             ->withNotes(
-                'Este comprobante acredita el pago de la factura '.$invoice->number
-                .' y no sustituye la factura electronica de venta.',
+                __('document.receipt_note').' '.$invoice->number
+                .' '.__('document.receipt_note_suffix'),
             )
             ->withFooter(
-                'Documento generado por Prometheus el '.now()->format('d/m/Y \a \l\a\s H:i'),
+                __('document.generated_by').' '.now()->format('d/m/Y \a \l\a\s H:i'),
             );
     }
 }

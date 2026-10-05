@@ -25,6 +25,7 @@ class Payment extends Model
         'amount',
         'method',
         'reference',
+        'receipt_image',
         'invoice_id',
         'rental_id',
         'user_id',

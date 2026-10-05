@@ -270,7 +270,11 @@
     <div class="header">
         <div class="company-info">
             <div class="company-header">
-                <img src="{{ public_path('favicon.png') }}" alt="" class="logo">
+                @if($settings->logoPath())
+                    <img src="{{ asset($settings->logoPath()) }}" alt="" class="logo">
+                @else
+                    <img src="/favicon.png" alt="" class="logo">
+                @endif
                 <h1 class="company-name">{{ $settings->businessName() }}</h1>
             </div>
             <p class="company-details">

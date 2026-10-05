@@ -7,6 +7,7 @@ use App\Enums\ActItemState;
 use App\Filament\Resources\DeliveryActResource\Pages;
 use App\Models\DeliveryAct;
 use App\Models\Rental;
+use App\Models\Space;
 use App\Settings\AppSettings;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -63,11 +64,10 @@ class DeliveryActResource extends Resource
 
                         Forms\Components\Select::make('type')
                             ->label(__('act.form.type'))
-                            ->options(collect(self::actTypes())->mapWithKeys(
-                                fn (string $key, string $label): array => [$key => $label],
-                            ))
+                            ->options(self::actTypes())
                             ->default('entrega')
-                            ->required(),
+                            ->required()
+                            ->searchable(),
 
                         Forms\Components\TextInput::make('landlord_name')
                             ->label(__('act.form.landlord_name'))
@@ -100,8 +100,6 @@ class DeliveryActResource extends Resource
 
                 Forms\Components\Section::make(__('act.sections.readings'))
                     ->description(__('act.descriptions.readings'))
-                    // Las secciones opcionales se colapsan: si el arrendador
-                    // no midio nada, no tiene que abrirlas.
                     ->collapsible()
                     ->collapsed()
                     ->schema([
@@ -127,40 +125,51 @@ class DeliveryActResource extends Resource
                         Forms\Components\Repeater::make('items')
                             ->label(__('act.sections.inventory'))
                             ->schema([
-                                Forms\Components\Select::make('space')
-                                    ->label(__('act.form.space'))
-                                    ->options(fn () => collect(self::spaceCatalog())->mapWithKeys(
-                                        fn (string $space): array => [$space => $space],
-                                    ))
-                                    ->required()
-                                    ->searchable(),
+                                Forms\Components\Section::make()
+                                    ->schema([
+                                        Forms\Components\Grid::make(2)
+                                            ->schema([
+                                                Forms\Components\TextInput::make('space')
+                                                    ->label(__('act.form.space'))
+                                                    ->datalist(fn () => Space::query()
+                                                        ->where('user_id', app(CurrentUserContextInterface::class)->id())
+                                                        ->orderBy('name')
+                                                        ->pluck('name')
+                                                        ->all())
+                                                    ->required()
+                                                    ->maxLength(255),
 
-                                Forms\Components\TextInput::make('name')
-                                    ->label(__('act.form.item_name'))
-                                    ->required()
-                                    ->maxLength(255),
+                                                Forms\Components\TextInput::make('name')
+                                                    ->label(__('act.form.item_name'))
+                                                    ->required()
+                                                    ->maxLength(255),
+                                            ]),
 
-                                Forms\Components\Select::make('state')
-                                    ->label(__('act.form.item_state'))
-                                    ->options(fn () => collect(ActItemState::cases())->mapWithKeys(
-                                        fn (ActItemState $state): array => [$state->value => $state->label()],
-                                    ))
-                                    ->default(ActItemState::BUENO->value)
-                                    ->required(),
+                                        Forms\Components\Grid::make(2)
+                                            ->schema([
+                                                Forms\Components\Select::make('state')
+                                                    ->label(__('act.form.item_state'))
+                                                    ->options(fn () => collect(ActItemState::cases())->mapWithKeys(
+                                                        fn (ActItemState $state): array => [$state->value => $state->label()],
+                                                    ))
+                                                    ->default(ActItemState::BUENO->value)
+                                                    ->required(),
 
-                                Forms\Components\TextInput::make('note')
-                                    ->label(__('act.form.item_note'))
-                                    ->placeholder(__('act.placeholders.item_note'))
-                                    ->maxLength(255),
+                                                Forms\Components\TextInput::make('note')
+                                                    ->label(__('act.form.item_note'))
+                                                    ->placeholder(__('act.placeholders.item_note'))
+                                                    ->maxLength(255),
+                                            ]),
 
-                                Forms\Components\FileUpload::make('photo_path')
-                                    ->label(__('act.form.item_photo'))
-                                    ->image()
-                                    ->directory('act-items')
-                                    ->disk('public')
-                                    ->visibility('public'),
+                                        Forms\Components\FileUpload::make('photo_path')
+                                            ->label(__('act.form.item_photo'))
+                                            ->image()
+                                            ->directory('act-items')
+                                            ->disk('public')
+                                            ->visibility('public')
+                                            ->columnSpanFull(),
+                                    ]),
                             ])
-                            ->columns(2)
                             ->defaultItems(0)
                             ->addActionLabel('+')
                             ->itemLabel(fn (array $state): ?string => $state['name'] ?? null),
@@ -227,15 +236,16 @@ class DeliveryActResource extends Resource
                     ->date()
                     ->sortable(),
 
+                Tables\Columns\IconColumn::make('is_signed')
+                    ->label(__('act.table.signed'))
+                    ->boolean()
+                    ->getStateUsing(fn (DeliveryAct $record): bool => $record->isSigned())
+                    ->sortable(),
+
                 Tables\Columns\TextColumn::make('items_count')
                     ->label(__('act.table.items'))
                     ->counts('items')
                     ->badge(),
-
-                Tables\Columns\IconColumn::make('signed_at')
-                    ->label(__('act.table.signed'))
-                    ->boolean()
-                    ->getStateUsing(fn (DeliveryAct $record): bool => $record->isSigned()),
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),
@@ -316,6 +326,21 @@ class DeliveryActResource extends Resource
 
         if ($rental?->tenant !== null) {
             $set('tenant_name', $rental->tenant->name);
+        }
+    }
+
+    /**
+     * Agrega un nuevo espacio al catálogo de espacios.
+     */
+    private static function addToSpaceCatalog(string $newSpace): void
+    {
+        $currentCatalog = self::spaceCatalog();
+
+        if (!in_array($newSpace, $currentCatalog, true)) {
+            $currentCatalog[] = $newSpace;
+            \DB::table('app_settings')
+                ->where('id', 1)
+                ->update(['space_catalog' => json_encode($currentCatalog)]);
         }
     }
 }

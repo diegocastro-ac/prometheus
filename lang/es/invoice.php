@@ -58,6 +58,7 @@ return [
         'payment_date' => 'Fecha del pago',
         'payment_method' => 'Medio de pago',
         'payment_reference' => 'Referencia',
+        'receipt_image' => 'Imagen del comprobante',
         'status' => 'Estado',
     ],
 

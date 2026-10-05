@@ -69,6 +69,7 @@ class MonthlyStatement extends AbstractDocument
 
         $document = new self(
             body: $body
+                ->withDocument($invoices)
                 ->withNotes(
                     'Las fechas de vencimiento se consultan en cada factura. Las facturas anuladas '
                     .'no se cobran y se muestran solo como registro.',
@@ -81,8 +82,6 @@ class MonthlyStatement extends AbstractDocument
             period: $period,
             invoices: $invoices,
         );
-
-        $document->body->setDocument($document);
 
         return $document;
     }
