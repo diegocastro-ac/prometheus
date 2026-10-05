@@ -207,7 +207,11 @@ class RentalResource extends Resource
                 Tables\Columns\TextColumn::make('billing_cadence')
                     ->label(__('rental.table.columns.billing_cadence'))
                     ->badge()
-                    ->formatStateUsing(fn (string $state): string => BillingCadence::tryFrom($state)?->label() ?? $state),
+                    ->formatStateUsing(function ($state) {
+                        return is_object($state) && method_exists($state, 'label') 
+                            ? $state->label() 
+                            : BillingCadence::tryFrom($state)?->label() ?? $state;
+                    }),
                 Tables\Columns\IconColumn::make('agreement_path')
                     ->label(__('rental.table.columns.agreement'))
                     ->boolean()
@@ -307,9 +311,14 @@ class RentalResource extends Resource
                                             ->label(__('rental.infolist.sections.main.monthly_amount'))
                                             ->numeric(),
                                         Components\TextEntry::make('billing_cadence')
-                                            ->label(__('rental.infolist.sections.main.billing_cadence'))
+                                            ->label('Cadencia de cobro')
                                             ->badge()
-                                            ->formatStateUsing(fn (string $state): string => BillingCadence::tryFrom($state)?->label() ?? $state),
+                                            ->formatStateUsing(function ($state) {
+                                                if ($state instanceof BillingCadence) {
+                                                    return $state->label();
+                                                }
+                                                return BillingCadence::tryFrom($state)?->label() ?? $state;
+                                            }),
                                         Components\TextEntry::make('property.name')
                                             ->label(__('rental.infolist.sections.main.property')),
                                         Components\TextEntry::make('created_at')
