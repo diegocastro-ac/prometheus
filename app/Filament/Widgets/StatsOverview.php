@@ -2,12 +2,14 @@
 
 namespace App\Filament\Widgets;
 
+use App\Contracts\CurrentUserContextInterface;
+use App\Enums\InvoiceStatus;
+use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Rental;
+use Carbon\Carbon;
 use Filament\Widgets\StatsOverviewWidget as BaseWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
-use Illuminate\Support\Facades\Auth;
-use Carbon\Carbon;
 
 class StatsOverview extends BaseWidget
 {
@@ -15,37 +17,31 @@ class StatsOverview extends BaseWidget
 
     protected function getStats(): array
     {
-        $userId = Auth::id();
+        $userId = app(CurrentUserContextInterface::class)->id();
 
         // Active rentals
         $activeRentals = Rental::where('user_id', $userId)
             ->where('is_active', true)
             ->count();
 
-        // Income collected this month from rent
+        // Income collected this month. A payment row is an abono, so summing it is
+        // enough: there is no longer a flag deciding whether it counted.
         $startOfMonth = Carbon::now()->startOfMonth()->toDateString();
-        $endOfMonth   = Carbon::now()->endOfMonth()->toDateString();
+        $endOfMonth = Carbon::now()->endOfMonth()->toDateString();
 
         $collectedThisMonth = Payment::whereHas('rental', function ($q) use ($userId) {
-            $q->where('user_id', $userId);
+            $q->where('user_id', $userId)
+                ->where('is_active', true);
         })
             ->whereBetween('date', [$startOfMonth, $endOfMonth])
-            ->where('is_rent_paid', true)
             ->sum('amount');
 
-        // Past due payments on rentals
-        $today = Carbon::today()->toDateString();
-
-        $overduePaymentsCount = Payment::whereDate('date', '<=', $today)
-            ->whereHas('rental', function ($q) use ($userId) {
-                $q->where('user_id', $userId);
-            })
-            ->where(function ($q) {
-                $q->where('is_rent_paid', false)
-                    ->orWhere('is_water_paid', false)
-                    ->orWhere('is_energy_paid', false)
-                    ->orWhere('is_gas_paid', false);
-            })
+        // Outstanding invoices. An invoice that still has balance is what the
+        // landlord has to act on, so that is what gets counted.
+        $overduePaymentsCount = Invoice::whereHas('rental', function ($q) use ($userId) {
+            $q->where('user_id', $userId);
+        })
+            ->whereIn('status', [InvoiceStatus::EMITIDA, InvoiceStatus::VENCIDA])
             ->count();
 
         return [
@@ -55,7 +51,7 @@ class StatsOverview extends BaseWidget
                 ->chart([7, 2, 10, 3, 15, 4, 17])
                 ->color('success'),
 
-            Stat::make(__('dashboard.kpis.monthly_income'), '$' . number_format($collectedThisMonth, 0, ',', '.'))
+            Stat::make(__('dashboard.kpis.monthly_income'), '$'.number_format($collectedThisMonth, 0, ',', '.'))
                 ->description(__('dashboard.kpis.monthly_income_desciption'))
                 ->descriptionIcon('heroicon-m-arrow-trending-up')
                 ->chart([7, 2, 10, 3, 15, 4, 17])

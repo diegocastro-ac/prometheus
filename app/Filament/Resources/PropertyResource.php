@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources;
 
+use App\Contracts\CurrentUserContextInterface;
 use App\Filament\Resources\PropertyResource\Pages;
 use App\Filament\Resources\PropertyResource\RelationManagers;
 use App\Models\Property;
@@ -18,7 +19,6 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
 
 class PropertyResource extends Resource
@@ -66,7 +66,7 @@ class PropertyResource extends Resource
                     ->maxLength(50)
                     ->rule(
                         fn(Get $get) => Rule::unique('properties', 'address')
-                            ->where(fn($query) => $query->where('user_id', Auth::id()))
+                            ->where(fn($query) => $query->where('user_id', app(CurrentUserContextInterface::class)->id()))
                             ->ignore($get('id'))
                     ),
                 Forms\Components\Textarea::make('description')
@@ -75,7 +75,7 @@ class PropertyResource extends Resource
                     ->autosize()
                     ->maxLength(255),
                 Hidden::make('user_id')
-                    ->default(fn() => Auth::id()),
+                    ->default(fn() => app(CurrentUserContextInterface::class)->id()),
             ]);
     }
 
@@ -154,6 +154,6 @@ class PropertyResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
-            ->where('user_id', Auth::id());
+            ->where('user_id', app(CurrentUserContextInterface::class)->id());
     }
 }

@@ -2,14 +2,18 @@
 
 namespace App\Filament\Widgets;
 
-use App\Models\Payment;
+use App\Contracts\CurrentUserContextInterface;
+use App\Enums\InvoiceStatus;
+use App\Models\Invoice;
 use Carbon\Carbon;
 use Filament\Widgets\ChartWidget;
-use Illuminate\Support\Facades\Auth;
 
+/**
+ * El grafico muestra la situacion de las facturas del mes, no la de los pagos.
+ * Un pago no dice si la factura quedo cubierta; la factura si.
+ */
 class PaymentsStatusChart extends ChartWidget
 {
-
     protected static ?int $sort = 2;
 
     public function getHeading(): string
@@ -24,42 +28,47 @@ class PaymentsStatusChart extends ChartWidget
 
     protected function getData(): array
     {
-        $userId = Auth::id();
+        $userId = app(CurrentUserContextInterface::class)->id();
         $today = Carbon::today();
 
         $startOfMonth = $today->copy()->startOfMonth()->toDateString();
-        $endOfMonth   = $today->copy()->endOfMonth()->toDateString();
+        $endOfMonth = $today->copy()->endOfMonth()->toDateString();
 
-        $baseQuery = Payment::whereHas('rental', function ($q) use ($userId) {
+        $invoices = Invoice::whereHas('rental', function ($q) use ($userId) {
             $q->where('user_id', $userId)
                 ->where('is_active', true);
         })
-            ->whereBetween('date', [$startOfMonth, $endOfMonth]);
+            ->whereBetween('issued_at', [$startOfMonth, $endOfMonth])
+            ->get();
 
-        $paidCount = (int) (clone $baseQuery)->where('is_rent_paid', true)->count();
-
-        $overdueCount = (int) (clone $baseQuery)
-            ->whereDate('date', '<=', $today)
-            ->where('is_rent_paid', false)
+        $paidCount = $invoices
+            ->filter(fn (Invoice $invoice) => $invoice->status === InvoiceStatus::PAGADA)
             ->count();
 
-        $futureCount = (int) (clone $baseQuery)
-            ->whereDate('date', '>', $today)
-            ->where('is_rent_paid', false)
+        $overdueCount = $invoices
+            ->filter(fn (Invoice $invoice) => $invoice->isOverdue())
+            ->count();
+
+        $futureCount = $invoices
+            ->filter(fn (Invoice $invoice) => in_array(
+                $invoice->status,
+                [InvoiceStatus::EMITIDA, InvoiceStatus::ANULADA],
+                true,
+            ))
             ->count();
 
         return [
             'labels' => [
                 __('dashboard.charts.payment_status.paid'),
                 __('dashboard.charts.payment_status.due'),
-                __('dashboard.charts.payment_status.pending')
+                __('dashboard.charts.payment_status.pending'),
             ],
             'datasets' => [
                 [
                     'data' => [
                         $paidCount,
                         $overdueCount,
-                        $futureCount
+                        $futureCount,
                     ],
                     'backgroundColor' => [
                         'rgba(34,197,94,0.8)',

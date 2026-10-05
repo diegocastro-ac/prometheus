@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\AgreementStorageService;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -28,6 +29,7 @@ class Rental extends Model
         'monthly_amount',
         'agreement_path',
         'is_active',
+        'billing_cadence',
         'user_id',
         'tenant_id',
         'property_id',
@@ -42,14 +44,15 @@ class Rental extends Model
         'start_date' => 'date',
         'end_date' => 'date',
         'monthly_amount' => 'float',
+        'billing_cadence' => \App\Enums\BillingCadence::class,
     ];
 
     protected static function booted()
     {
         static::created(function (Rental $rental) {
             if ($rental->agreement_path && str_starts_with($rental->agreement_path, 'temp/uploads')) {
-                $newPath = "users/{$rental->user_id}/rentals/{$rental->id}/agreement/" . basename($rental->agreement_path);
-                Storage::disk('public')->move($rental->agreement_path, $newPath);
+                $storageService = app(AgreementStorageService::class);
+                $newPath = $storageService->persist($rental->agreement_path, $rental->user_id, $rental->id);
                 $rental->updateQuietly(['agreement_path' => $newPath]);
             }
         });
@@ -59,17 +62,17 @@ class Rental extends Model
             $current = $rental->agreement_path;
 
             if ($original && $original !== $current) {
-                Storage::disk('public')->delete($original);
+                $storageService = app(AgreementStorageService::class);
+                $storageService->remove($original);
             }
         });
 
         static::deleted(function (Rental $rental) {
-            Storage::disk('public')
-                ->deleteDirectory("users/{$rental->user_id}/rentals/{$rental->id}");
+            $storageService = app(AgreementStorageService::class);
+            $storageService->removeAllFor($rental->user_id, $rental->id);
         });
     }
 
-    // ? Necessary?
     public function getAgreementUrlAttribute(): string
     {
         return Storage::url($this->agreement_path);
@@ -105,5 +108,34 @@ class Rental extends Model
     public function payments(): HasMany
     {
         return $this->hasMany(Payment::class);
+    }
+
+    /**
+     * Reajustes del canon propuestos para este alquiler.
+     */
+    public function rentAdjustments(): HasMany
+    {
+        return $this->hasMany(RentAdjustment::class);
+    }
+
+    /**
+     * Facturas del alquiler en un periodo concreto (YYYY-MM).
+     *
+     * El estado de cuenta se arma con este metodo, que es el unico lugar donde
+     * se decide que facturas pertenecen a un periodo.
+     *
+     * El filtro por user_id parece redundante porque el alquiler ya tiene
+     * dueno, pero hace explicita la invariante: una factura es de un
+     * arrendador y de su alquiler. Sin esta condicion, una fila con datos
+     * inconsistentes se colaria en el estado de cuenta de otro.
+     *
+     * @return HasMany<Invoice>
+     */
+    public function invoicesForPeriod(string $period): HasMany
+    {
+        return $this->hasMany(Invoice::class)
+            ->where('user_id', $this->user_id)
+            ->where('period', $period)
+            ->orderBy('number');
     }
 }

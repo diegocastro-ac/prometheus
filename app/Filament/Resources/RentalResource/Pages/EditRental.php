@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\RentalResource\Pages;
 
 use App\Filament\Resources\RentalResource;
+use App\ValueObjects\RentalPeriod;
 use Filament\Actions;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
@@ -35,7 +36,8 @@ class EditRental extends EditRecord
 
     protected function mutateFormDataBeforeSave(array $data): array
     {
-        $data['end_date'] = Carbon::parse($data['start_date'])->addMonths((int) $data['total_months']);
+        $period = new RentalPeriod(Carbon::parse($data['start_date']), (int) $data['total_months']);
+        $data['end_date'] = $period->endDateFormatted();
         return $data;
     }
 
