@@ -78,11 +78,16 @@ return [
         'item_note' => 'Painting the patio front door is recommended.',
     ],
 
+    'actions' => [
+        'derive' => 'Create act from this one',
+    ],
+
     'buttons' => [
         'create' => 'Create act',
         'save' => 'Save',
     ],
 
     'created' => 'Act created',
+    'derived' => 'Act copied into the form',
     'no_catalog' => 'No space catalog configured. Add it in Settings to inventory items.',
 ];

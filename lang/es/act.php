@@ -78,11 +78,16 @@ return [
         'item_note' => 'Se recomienda pintar la puerta del patio principal.',
     ],
 
+    'actions' => [
+        'derive' => 'Crear acta a partir de esta',
+    ],
+
     'buttons' => [
         'create' => 'Crear acta',
         'save' => 'Guardar',
     ],
 
     'created' => 'Acta creada',
+    'derived' => 'Acta copiada en el formulario',
     'no_catalog' => 'No hay catálogo de espacios configurado. Agrégalo en Ajustes para poder inventariar.',
 ];

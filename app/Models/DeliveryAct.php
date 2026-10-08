@@ -2,12 +2,13 @@
 
 namespace App\Models;
 
+use App\Contracts\Prototype;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-class DeliveryAct extends Model
+class DeliveryAct extends Model implements Prototype
 {
     /** @use HasFactory<\Database\Factories\DeliveryActFactory> */
     use HasFactory;
@@ -89,5 +90,40 @@ class DeliveryAct extends Model
         // Se considera firmada si tiene ambas firmas subidas O si tiene fecha de firma
         return ($this->landlord_signature_path !== null && $this->tenant_signature_path !== null)
             || $this->signed_at !== null;
+    }
+
+    /**
+     * Prototype: copia en profundidad. El inventario es lo caro de rehacer, asi
+     * que cada fila se clona por separado; si no, la copia seguira apuntando a
+     * la misma coleccion que el acta original.
+     *
+     * Se limpia lo que describe un evento concreto: identidad, firmas,
+     * lecturas, compromisos y programacion. La fecha de visita pasa a ser hoy.
+     */
+    public function __clone(): void
+    {
+        // Se leen antes de borrar el id: es la llave con la que carga la
+        // relacion, y sin ella la coleccion llegaria vacia.
+        $items = $this->items
+            ->map(fn (ActItem $item): ActItem => clone $item)
+            ->values();
+
+        $this->id = null;
+        $this->exists = false;
+
+        $this->scheduled_at = null;
+        $this->water_reading = null;
+        $this->energy_reading = null;
+        $this->gas_reading = null;
+        $this->commitments = null;
+        $this->observations = null;
+
+        $this->landlord_signature_path = null;
+        $this->tenant_signature_path = null;
+        $this->signed_at = null;
+
+        $this->occurred_at = today();
+
+        $this->setRelation('items', $items);
     }
 }

@@ -2,12 +2,13 @@
 
 namespace App\Models;
 
+use App\Contracts\Prototype;
 use App\Enums\ActItemState;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class ActItem extends Model
+class ActItem extends Model implements Prototype
 {
     /** @use HasFactory<\Database\Factories\ActItemFactory> */
     use HasFactory;
@@ -40,5 +41,19 @@ class ActItem extends Model
     public function space(): BelongsTo
     {
         return $this->belongsTo(Space::class);
+    }
+
+    /**
+     * Prototype: la copia conserva el contenido (espacio, elemento, estado,
+     * nota y foto) y descarta la identidad: id, existencia y las llaves que la
+     * ataban al acta original. La resolucion del espacio por nombre la hace el
+     * Builder al guardar, no aqui.
+     */
+    public function __clone(): void
+    {
+        $this->id = null;
+        $this->exists = false;
+        $this->delivery_act_id = null;
+        $this->space_id = null;
     }
 }

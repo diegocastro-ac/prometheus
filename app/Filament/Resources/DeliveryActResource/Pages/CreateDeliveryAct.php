@@ -7,6 +7,7 @@ use App\Filament\Resources\DeliveryActResource;
 use App\Models\DeliveryAct;
 use App\Models\Rental;
 use App\Services\Acts\DeliveryActBuilder;
+use App\Services\Acts\DeliveryActDraft;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Support\Carbon;
@@ -28,6 +29,43 @@ class CreateDeliveryAct extends CreateRecord
     public function getTitle(): string
     {
         return __('act.buttons.create');
+    }
+
+    /**
+     * Con ?from=<id> el formulario arranca prellenado con una copia del acta
+     * indicado. Sin ese parametro el comportamiento es el de siempre.
+     */
+    public function mount(): void
+    {
+        parent::mount();
+
+        $this->fillFromSourceAct();
+    }
+
+    private function fillFromSourceAct(): void
+    {
+        $sourceId = request()->query('from');
+
+        if (! is_numeric($sourceId)) {
+            return;
+        }
+
+        // El mismo alcance por usuario que usa la lista: una acta ajena no se
+        // copia, se finje que no existe.
+        $source = DeliveryActResource::getEloquentQuery()
+            ->whereKey((int) $sourceId)
+            ->first();
+
+        if ($source === null) {
+            return;
+        }
+
+        $this->form->fill((new DeliveryActDraft($source))->formState());
+
+        Notification::make()
+            ->success()
+            ->title(__('act.derived'))
+            ->send();
     }
 
     /**

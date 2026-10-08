@@ -249,6 +249,14 @@ class DeliveryActResource extends Resource
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),
+
+                // Entrada del Prototype: no guarda nada, solo abre el
+                // formulario de creacion con ?from= para que la copia se haga
+                // en el cliente y el guardado siga siendo del Builder.
+                Tables\Actions\Action::make('derive')
+                    ->label(__('act.actions.derive'))
+                    ->icon('heroicon-o-document-duplicate')
+                    ->url(fn (DeliveryAct $record): string => self::getUrl('create', ['from' => $record->id])),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
@@ -336,7 +344,7 @@ class DeliveryActResource extends Resource
     {
         $currentCatalog = self::spaceCatalog();
 
-        if (!in_array($newSpace, $currentCatalog, true)) {
+        if (! in_array($newSpace, $currentCatalog, true)) {
             $currentCatalog[] = $newSpace;
             \DB::table('app_settings')
                 ->where('id', 1)
