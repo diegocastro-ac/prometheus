@@ -16,12 +16,12 @@ Cada diagrama incluye **solo las clases necesarias para que el patrón se entien
 
 ## Resumen
 
-| Patrón | Dónde se aplica | Diagrama |
-| --- | --- | --- |
-| Singleton | Configuración de la aplicación y el constructor del acta | Clases |
-| Builder | Acta de entrega y recepción del inmueble | Clases y secuencia |
-| Abstract Factory | Los cuatro documentos en PDF y en texto | Clases y secuencia |
-| Factory Method | Cadencia de cobro de los alquileres | Clases y secuencia |
+| Patrón          | Dónde se aplica                                           | Diagrama           |
+| ---------------- | ---------------------------------------------------------- | ------------------ |
+| Singleton        | Configuración de la aplicación y el constructor del acta | Clases             |
+| Builder          | Acta de entrega y recepción del inmueble                  | Clases y secuencia |
+| Abstract Factory | Los cuatro documentos en PDF y en texto                    | Clases y secuencia |
+| Factory Method   | Cadencia de cobro de los alquileres                        | Clases y secuencia |
 
 ---
 

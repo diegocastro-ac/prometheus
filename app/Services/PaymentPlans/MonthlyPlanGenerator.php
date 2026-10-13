@@ -2,6 +2,7 @@
 
 namespace App\Services\PaymentPlans;
 
+use App\Contracts\BusinessCalendar;
 use App\Enums\InvoiceStatus;
 use App\Models\Invoice;
 use App\Models\Rental;
@@ -23,8 +24,9 @@ class MonthlyPlanGenerator extends PaymentPlanGenerator
         Rental $rental,
         private readonly InvoiceNumberService $numbers,
         private readonly AppSettings $settings,
+        BusinessCalendar $calendar,
     ) {
-        parent::__construct($rental);
+        parent::__construct($rental, $calendar);
     }
 
     /**
@@ -58,7 +60,7 @@ class MonthlyPlanGenerator extends PaymentPlanGenerator
                     'amount' => $this->rental->monthly_amount,
                     'period' => $periodKey,
                     'issued_at' => $period->toDateString(),
-                    'due_at' => $period->copy()->addDays($dueDays)->toDateString(),
+                    'due_at' => $this->dueDateFrom($period, $dueDays),
                     'status' => InvoiceStatus::EMITIDA,
                     'rental_id' => $this->rental->id,
                     'user_id' => $this->rental->user_id,

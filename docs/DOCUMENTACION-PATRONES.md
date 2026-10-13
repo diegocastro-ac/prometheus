@@ -1,6 +1,6 @@
 # Documentación de Patrones de Diseño en Prometheus
 
-Este documento explica cómo se implementaron los 4 patrones de diseño principales en el proyecto Prometheus: Singleton, Builder, Abstract Factory y Factory Method.
+Este documento explica cómo se implementaron los 5 patrones de diseño principales en el proyecto Prometheus: Singleton, Builder, Abstract Factory, Factory Method y Adapter.
 
 ---
 
@@ -278,6 +278,134 @@ class PaymentReceipt extends AbstractDocument
 
 ---
 
+## 5. Adapter
+
+### Propósito
+Convertir la interfaz de una clase en otra que el cliente espera. Permite que clases con interfaces incompatibles trabajen juntas, envolviendo a una de ellas con un adaptador.
+
+### Implementación en Prometheus
+
+#### Problema que resuelve
+
+Al generar el plan de cobros de un alquiler, cada factura calculaba su vencimiento así:
+
+```php
+'due_at' => $period->copy()->addDays($dueDays)->toDateString(),
+```
+
+Es decir, fecha de emisión + días de plazo. El problema: si el vencimiento cae en sábado, domingo o festivo colombiano, la factura vence un día en que no se puede pagar. El dominio necesitaba saber si un día es **hábil**, pero:
+
+- Los festivos son datos que viven fuera del sistema (calendario oficial).
+- La única fuente confiable es una API externa (Nager.Date), cuya interfaz es un `GET` HTTP con JSON, no un método de dominio.
+- No se puede (ni se debe) modificar la API externa, ni acoplar las tres cadencias de cobro a un cliente HTTP.
+
+#### Los cuatro roles del patrón
+
+| Rol GoF | Clase en Prometheus | Responsabilidad |
+| --- | --- | --- |
+| **Target** | `BusinessCalendar` (interfaz) | Lo que el dominio espera: `isBusinessDay()` y `nextBusinessDay()`. |
+| **Adapter** | `NagerDateBusinessCalendar` | Envuelve la API externa y traduce su JSON a `BusinessCalendar`. |
+| **Adaptee** | API Nager.Date | Servicio externo con interfaz incompatible (HTTP + JSON). No se toca. |
+| **Client** | `PaymentPlanGenerator` y sus subclases | Consumen `BusinessCalendar` sin saber que detrás hay una API. |
+
+**Ubicaciones:**
+- `app/Contracts/BusinessCalendar.php` (Target)
+- `app/Infrastructure/Holidays/NagerDateBusinessCalendar.php` (Adapter)
+- `app/Infrastructure/Holidays/WeekendBusinessCalendar.php` (implementación de respaldo)
+
+#### Target: BusinessCalendar
+
+```php
+interface BusinessCalendar
+{
+    public function isBusinessDay(CarbonInterface $date): bool;
+
+    public function nextBusinessDay(CarbonInterface $date): CarbonInterface;
+}
+```
+
+#### Adapter: NagerDateBusinessCalendar
+
+Es el **único** punto del sistema que sabe que los festivos llegan como un arreglo JSON, con el código de país en la URL. Traduce ese formato a la interfaz del dominio:
+
+```php
+public function isBusinessDay(CarbonInterface $date): bool
+{
+    if ($date->isWeekend()) {
+        return false;
+    }
+
+    return ! in_array($date->toDateString(), $this->holidaysFor((int) $date->year), true);
+}
+
+public function nextBusinessDay(CarbonInterface $date): CarbonInterface
+{
+    $candidate = Carbon::instance($date);
+
+    while (! $this->isBusinessDay($candidate)) {
+        $candidate = $candidate->copy()->addDay();
+    }
+
+    return $candidate;
+}
+
+private function fetchHolidays(int $year): ?array
+{
+    $response = Http::timeout(5)->get("{$this->baseUrl}/PublicHolidays/{$year}/{$this->country}");
+
+    return collect($response->json())->pluck('date')->all();
+}
+```
+
+**Características del adaptador:**
+1. **Aísla la API externa:** la URL, el país y el formato del JSON solo existen aquí.
+2. **Cachea por año:** `Cache::remember()` evita golpear la API en cada factura.
+3. **Degrada con elegancia:** si la API falla o no responde, no cachea el error y delega en `WeekendBusinessCalendar`, para que generar facturas nunca dependa de la red.
+
+#### Cliente: PaymentPlanGenerator
+
+El cliente ya no calcula fechas a mano. La clase base expone un método compartido que delega en el Target:
+
+```php
+protected function dueDateFrom(Carbon $issued, int $dueDays): string
+{
+    return $this->calendar
+        ->nextBusinessDay($issued->copy()->addDays($dueDays))
+        ->toDateString();
+}
+```
+
+Cada generador (mensual, quincenal, anticipo) lo usa sin saber de festivos:
+
+```php
+'due_at' => $this->dueDateFrom($period, $dueDays),
+```
+
+#### Registro en el contenedor
+
+`AppServiceProvider` decide qué implementación del Target se inyecta:
+
+```php
+if ($this->app->environment('testing')) {
+    $this->app->bind(BusinessCalendar::class, WeekendBusinessCalendar::class);
+} else {
+    $this->app->bind(BusinessCalendar::class, fn () => new NagerDateBusinessCalendar(
+        (string) config('services.holidays.base_url'),
+        (string) config('services.holidays.country'),
+    ));
+}
+```
+
+En pruebas se usa el calendario de fin de semana para no depender de la red; en producción, el adaptador de Nager.Date.
+
+**Por qué Adapter y no poner el `Http::get()` dentro del generador:**
+- El generador de cobros no debe saber que existe una API de festivos.
+- Cambiar de fuente (otra API, tabla local) toca una sola clase.
+- Se puede probar la generación de facturas sin red (basta con cambiar el binding).
+- La API externa queda encapsulada detrás de una interfaz propia del dominio.
+
+---
+
 ## Interacción entre Patrones
 
 ### Flujo completo de generación de un documento:
@@ -312,6 +440,7 @@ class PaymentReceipt extends AbstractDocument
 - **Factory Method** usa **Singleton** (AppSettings) para datos globales
 - **Builder** usa **Singleton** (AppSettings) para catálogo de espacios
 - **Singleton** (CurrentUserContext) se usa en todas las consultas para filtrar por usuario
+- **Factory Method** (los generadores de cobro) usa **Adapter** (BusinessCalendar) para calcular el vencimiento en día hábil
 
 ---
 
@@ -407,11 +536,59 @@ class PaymentReceipt extends AbstractDocument
 └──────────────┘ └──────────┘ └───────────────┘
 ```
 
+### Adapter - BusinessCalendar
+
+**Antes (sin Adapter):** cada generador calculaba `due_at = emisión + dueDays` a mano, sin conocer festivos.
+
+```
+┌──────────────────────────────┐
+│   MonthlyPlanGenerator       │
+├──────────────────────────────┤
+│ 'due_at' => $period          │
+│   ->addDays($dueDays)        │
+│   (sin mirar festivos)       │
+└──────────────────────────────┘
+```
+
+**Después (con Adapter):**
+
+```
+        ┌───────────────────────────────┐
+        │      BusinessCalendar         │
+        │        <<interface>>          │
+        ├───────────────────────────────┤
+        │ + isBusinessDay(date): bool   │
+        │ + nextBusinessDay(date): date │
+        └───────────────┬───────────────┘
+                        │ implementa
+        ┌───────────────┴────────────────┐
+        ↓                                ↓
+┌────────────────────────┐   ┌─────────────────────────┐
+│ NagerDateBusinessCal.  │   │ WeekendBusinessCalendar │
+│      <<Adapter>>       │   │      <<respaldo>>       │
+├────────────────────────┤   ├─────────────────────────┤
+│ - baseUrl: string      │   │ (solo fines de semana)  │
+│ - country: string      │   └─────────────────────────┘
+├────────────────────────┤
+│ ...traduce JSON...     │
+└───────────┬────────────┘
+            │ usa al Adaptee
+            ↓
+┌────────────────────────┐
+│   API Nager.Date       │
+│      <<Adaptee>>       │
+│ GET PublicHolidays/... │
+└────────────────────────┘
+
+PaymentPlanGenerator (Client)
+   └── dueDateFrom() ..> BusinessCalendar (Target)
+```
+
 ---
 
 ## Conclusión
 
-Los 4 patrones trabajan juntos para lograr:
+Los 5 patrones trabajan juntos para lograr:
 
 1. **SOLID - Single Responsibility:** Cada clase tiene una razón única para cambiar
 2. **SOLID - Open/Closed:** Fácil agregar nuevas familias de documentos sin modificar código existente

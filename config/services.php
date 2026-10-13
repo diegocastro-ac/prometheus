@@ -35,4 +35,20 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Festivos para el calendario de dias habiles
+    |--------------------------------------------------------------------------
+    |
+    | Fuente publica de festivos (Nager.Date) que el Adapter consulta para correr
+    | el vencimiento de una factura cuando cae en dia no habil. La respuesta se
+    | cachea por anio y, si el servicio no responde, se degrada a fin de semana.
+    |
+    */
+
+    'holidays' => [
+        'base_url' => env('HOLIDAYS_BASE_URL', 'https://date.nager.at/api/v3'),
+        'country' => env('HOLIDAYS_COUNTRY', 'CO'),
+    ],
+
 ];

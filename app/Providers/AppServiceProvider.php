@@ -3,11 +3,14 @@
 namespace App\Providers;
 
 use App\Contracts\AgreementStorageInterface;
+use App\Contracts\BusinessCalendar;
 use App\Contracts\CurrentUserContextInterface;
 use App\Documents\DocumentFactoryLocator;
 use App\Documents\Factories\DocumentFactory;
 use App\Documents\Factories\TextDocumentFactory;
 use App\Infrastructure\AuthUserContext;
+use App\Infrastructure\Holidays\NagerDateBusinessCalendar;
+use App\Infrastructure\Holidays\WeekendBusinessCalendar;
 use App\Infrastructure\PublicDiskAgreementStorage;
 use App\Services\Acts\DeliveryActBuilder;
 use App\Settings\AppSettings;
@@ -52,6 +55,19 @@ class AppServiceProvider extends ServiceProvider
         // compartir un producto entre peticiones.
         $this->app->singleton(DocumentFactoryLocator::class);
         $this->app->bind(DocumentFactory::class, TextDocumentFactory::class);
+
+        // Adapter: el dominio pregunta "es dia habil?" sin conocer la fuente de
+        // festivos. En produccion la respuesta la da el adaptador de Nager.Date;
+        // en las pruebas se usa el calendario de fin de semana para no depender
+        // de la red.
+        if ($this->app->environment('testing')) {
+            $this->app->bind(BusinessCalendar::class, WeekendBusinessCalendar::class);
+        } else {
+            $this->app->bind(BusinessCalendar::class, fn (): NagerDateBusinessCalendar => new NagerDateBusinessCalendar(
+                (string) config('services.holidays.base_url'),
+                (string) config('services.holidays.country'),
+            ));
+        }
     }
 
     /**

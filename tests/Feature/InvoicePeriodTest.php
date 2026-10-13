@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Contracts\BusinessCalendar;
 use App\Models\Invoice;
 use App\Models\Rental;
 use App\Models\User;
@@ -82,17 +83,19 @@ class InvoicePeriodTest extends TestCase
         $this->actingAs($this->user);
 
         $dueDays = app(\App\Settings\AppSettings::class)->invoiceDueDays();
+        $calendar = app(BusinessCalendar::class);
 
         app(PaymentPlanService::class)->generateFor($this->rental);
 
         Invoice::where('rental_id', $this->rental->id)
             ->get()
-            ->each(function (Invoice $invoice) use ($dueDays): void {
+            ->each(function (Invoice $invoice) use ($dueDays, $calendar): void {
                 // El vencimiento sale de la fecha de emision mas los dias de
-                // Ajustes. Si se calculara desde hoy, todas las facturas del
-                // contrato tendrian la misma fecha de vencimiento.
+                // Ajustes, corrido al siguiente dia habil por el calendario. Si
+                // se calculara desde hoy, todas las facturas del contrato
+                // tendrian la misma fecha de vencimiento.
                 $this->assertSame(
-                    $invoice->issued_at->copy()->addDays($dueDays)->toDateString(),
+                    $calendar->nextBusinessDay($invoice->issued_at->copy()->addDays($dueDays))->toDateString(),
                     $invoice->due_at->toDateString(),
                 );
             });
