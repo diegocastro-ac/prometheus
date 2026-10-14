@@ -3,8 +3,10 @@
 namespace App\Filament\Resources\IpcSeriesResource\Pages;
 
 use App\Dto\Geography;
+use App\Events\IpcSeriesSynchronized;
 use App\Filament\Resources\IpcSeriesResource;
 use App\Services\Ipc\IpcSeriesRepository;
+use App\Services\Ipc\IpcSynchronizer;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
@@ -32,6 +34,15 @@ class ListIpcSeries extends ListRecords
      * dato y cuantos dias lleva sin actualizarse. Quien tenga que ejecutar el
      * comando ya lo sabe, porque administra el sistema; quien no, lo que
      * necesita saber es si la cifra que ve es reciente.
+     *
+     * LA FECHA DE CABECERA TAMBIÉN SINCRONIZA
+     * --------------------------------------
+     * La acción de cabecera que dice "Última carga: ..." es la que descarga la
+     * serie. No hay dos acciones (una informativa y una que sincroniza) porque
+     * describirían la misma fecha en dos lugares: la cabecera es, a la vez, el
+     * hecho y la acción. Pide confirmación porque la llamada tarda minutos y
+     * dispara la reconstrucción de tasas y el recálculo de cadenas; un clic
+     * accidental no debería lanzar ese trabajo.
      */
     protected function getHeaderActions(): array
     {
@@ -39,14 +50,77 @@ class ListIpcSeries extends ListRecords
         $lastSynced = $repository->lastSyncedAt(Geography::nationalCode());
 
         $actions = [
-            Action::make('ipc_last_sync')
-                ->label(__('ipc.messages.last_sync', [
-                    'date' => $lastSynced?->format('d/m/Y') ?? __('ipc.messages.never'),
-                ]))
+            Action::make('ipc_sync')
+                ->label(__('ipc.messages.sync'))
                 ->icon('heroicon-o-arrow-down-tray')
-                ->color('gray')
-                ->disabled()
-                ->button(),
+                ->color('primary')
+                ->button()
+                ->requiresConfirmation()
+                ->modalHeading(__('ipc.messages.sync_confirm_title'))
+                ->modalDescription(__('ipc.messages.sync_confirm_body'))
+                ->modalSubmitActionLabel(__('ipc.messages.sync'))
+                ->action(function (IpcSynchronizer $synchronizer): void {
+                    // Para no depender de una cola que hoy no corre, se ejecuta
+                    // síncrono en la misma petición, pero con un plazo amplio:
+                    // la llamada al DANE es lenta e intermitente (502).
+                    set_time_limit(300);
+
+                    try {
+                        $result = $synchronizer->syncGeography(
+                            Geography::nationalCode(),
+                        );
+                    } catch (\Throwable $exception) {
+                        report($exception);
+
+                        Notification::make()
+                            ->danger()
+                            ->title(__('ipc.messages.sync_fail'))
+                            ->body($exception->getMessage())
+                            ->persistent()
+                            ->send();
+
+                        return;
+                    }
+
+                    // La sync manual trae solo el nacional y corre en la misma
+                    // petición (no hay cola hoy): primero descarga y guarda, y
+                    // si el nacional quedó bien se dispara la misma
+                    // reconstrucción que corre el proceso automático. Las
+                    // ciudades siguen en el proceso automático: una sola
+                    // pantalla de tabla no es el lugar para lanzar esas 23+
+                    // descargas.
+                    $stored = (int) ($result['stored'] ?? 0);
+
+                    if (! ($result['ok'] ?? false)) {
+                        Notification::make()
+                            ->danger()
+                            ->title(__('ipc.messages.sync_fail'))
+                            ->body((string) ($result['message'] ?? ''))
+                            ->persistent()
+                            ->send();
+
+                        return;
+                    }
+
+                    event(new IpcSeriesSynchronized(
+                        geographies: [$result['geography']],
+                        storedPeriods: $stored,
+                        nationalOnly: true,
+                    ));
+
+                    Notification::make()
+                        ->success()
+                        ->title(__('ipc.messages.sync_ok'))
+                        ->body(__('ipc.messages.sync_ok_body', ['periods' => $stored]))
+                        ->send();
+
+                    $this->redirect(static::getUrl(), navigate: true);
+                })
+                ->extraAttributes([
+                    'title' => __('ipc.messages.last_sync', [
+                        'date' => $lastSynced?->format('d/m/Y') ?? __('ipc.messages.never'),
+                    ]),
+                ]),
         ];
 
         if ($lastSynced === null) {

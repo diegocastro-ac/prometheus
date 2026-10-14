@@ -188,6 +188,50 @@ class IpcSeriesResourceTest extends DocumentTestCase
     }
 
     #[Test]
+    public function la_cabecera_permite_sincronizar_manualmente_el_nacional(): void
+    {
+        // El botón de cabecera sincroniza solo el total nacional y usa el
+        // mismo sincronizador del proceso automático; aquí se le inyecta un
+        // proveedor en memoria para no tocar la red del DANE.
+        $code = (string) config('dane_ipc_sql.national_code', '50');
+
+        $this->app->bind(
+            \App\Services\Ipc\IpcSynchronizer::class,
+            fn (): \App\Services\Ipc\IpcSynchronizer => new \App\Services\Ipc\IpcSynchronizer(
+                (new \App\Infrastructure\Ipc\InMemoryIpcProvider)->withSeries([
+                    new \App\Dto\IpcObservation(
+                        geographyCode: $code,
+                        geographyName: 'NACIONAL',
+                        year: 2025,
+                        month: 12,
+                        index: 148.49,
+                        variationMonthly: 0.30,
+                        variationYoY: 5.10,
+                        variationYear: 5.10,
+                    ),
+                ]),
+            ),
+        );
+
+        \Illuminate\Support\Facades\Event::fake([\App\Events\IpcSeriesSynchronized::class]);
+
+        Livewire::test(ListIpcSeries::class)
+            ->callAction('ipc_sync')
+            ->assertSuccessful();
+
+        $this->assertTrue(
+            IpcSeries::query()
+                ->where('geography_code', $code)
+                ->where('year', 2025)
+                ->where('month', 12)
+                ->exists(),
+            'la sync manual debe guardar el diciembre en la copia local',
+        );
+
+        \Illuminate\Support\Facades\Event::assertDispatched(\App\Events\IpcSeriesSynchronized::class);
+    }
+
+    #[Test]
     public function la_pantalla_no_permite_crear_ni_editar_datos_del_ipc(): void
     {
         // Es la garantia mas importante de esta pantalla. El IPC es un dato

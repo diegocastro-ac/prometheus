@@ -234,52 +234,39 @@ class ReajusteCalculationTest extends TestCase
     }
 
     #[Test]
-    public function la_seccion_se_pliega_sola_cuando_el_usuario_ya_confirmo(): void
+    public function la_seccion_no_se_pliega_al_confirmar_para_no_mover_el_formulario(): void
     {
-        // Volver a pedir la confirmación cada vez que se toca un campo sería una
-        // molestia. Una vez aceptada, la sección se pliega y deja de estorbar.
-        //
-        // El estado de plegado vive en Alpine y no se puede leer del HTML, así
-        // que se pregunta al propio componente del formulario.
-        $component = $this->form()
+        /*
+         * Antes, al aceptar, la sección se plegaba sola. Eso provocaba un salto
+         * de tamaño en el formulario cada vez que se tocaba el interruptor de
+         * confirmación: el contenido desaparecía de golpe y las secciones de
+         * abajo subían.
+         *
+         * Ahora la sección se queda abierta. Este test lo comprueba por el
+         * resultado observable: tras marcar la confirmación, los campos de la
+         * sección (el porcentaje pactado y las observaciones) siguen presentes
+         * en el HTML, en lugar de desaparecer con el plegado.
+         */
+        $html = $this->form()
             ->fillForm([
                 'rental_id' => $this->rental->id,
                 'effective_from' => '2027-06-01',
                 'ipc_basis' => IpcBasis::National->value,
+                'ipc_year' => 2025,
+                'ipc_outside_statutory_year' => true,
             ])
-            ->fillForm(['ipc_year' => 2025]);
+            ->html();
 
-        $this->assertTrue(
-            $this->partySection($component)->isCollapsed() === false,
-            'con motivos sin confirmar, la sección debe estar abierta',
+        // La sección sigue desplegada: sus campos se siguen renderizando.
+        $this->assertStringContainsString(
+            __('rent_adjustment.form.pactado_pct'),
+            $html,
+            'la sección de partes debe seguir abierta tras confirmar, sin plegarse',
         );
-
-        $component->fillForm(['ipc_outside_statutory_year' => true]);
-
-        $this->assertTrue(
-            $this->partySection($component)->isCollapsed(),
-            'la sección debe quedar plegada tras aceptar',
+        $this->assertStringContainsString(
+            __('rent_adjustment.form.notes'),
+            $html,
+            'las observaciones deben seguir visibles: la sección no se pliega',
         );
-    }
-
-    /**
-     * El componente de la sección de decisiones de las partes.
-     */
-    private function partySection(\Livewire\Features\SupportTesting\Testable $component): \Filament\Forms\Components\Section
-    {
-        $section = $component
-            ->instance()
-            ->form
-            ->getComponents()
-            ->first(fn ($c): bool => $c instanceof \Filament\Forms\Components\Section
-                && $c->getLabel() === __('rent_adjustment.sections.party_decisions'));
-
-        $this->assertInstanceOf(
-            \Filament\Forms\Components\Section::class,
-            $section,
-            'la sección de decisiones de las partes debe existir en el esquema',
-        );
-
-        return $section;
     }
 }

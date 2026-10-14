@@ -36,6 +36,9 @@ use App\Services\Ipc\CdaQueryFactory;
 use App\Services\Ipc\IpcSeriesRepository;
 use App\Settings\AppSettings;
 use BezhanSalleh\FilamentLanguageSwitch\LanguageSwitch;
+use Filament\Support\Facades\FilamentView;
+use Filament\View\PanelsRenderHook;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 
@@ -160,5 +163,25 @@ class AppServiceProvider extends ServiceProvider
             $switch
                 ->locales(['en', 'es']);
         });
+
+        /*
+        |----------------------------------------------------------------------
+        | CSS propio del panel de Filament
+        |----------------------------------------------------------------------
+        |
+        | El panel NO carga resources/css/app.css (ese se usa en welcome). Las
+        | reglas .ajuste-* de resources/css/filament.css —la tabla del cálculo,
+        | los motivos y las comprobaciones legales— no llegaban a la pantalla y
+        | se veían sin estilo.
+        |
+        | Se inyectan en el <head> de cada página del panel con un render hook.
+        | Es la vía que documenta Filament para añadir assets propios sin tocar
+        | el theme por defecto. @vite apunta al manifest de Vite, así que en
+        | desarrollo usa el servidor de Vite y en producción el build.
+        */
+        FilamentView::registerRenderHook(
+            PanelsRenderHook::HEAD_START,
+            fn (): string => Blade::render('@vite([\'resources/css/filament.css\'])'),
+        );
     }
 }

@@ -3,17 +3,13 @@
 namespace App\Filament\Support;
 
 /**
- * El aviso de comprobaciones legales, como bloque en línea y no como sección.
+ * La lista de comprobaciones legales que se renderiza DENTRO de una sección.
  *
- * POR QUÉ NO ES UNA SECCIÓN
- * ------------------------
- * Una sección de Filament es un contenedor con título, descripción y opción de
- * plegarse. Eso comunica «aquí hay una parte más del formulario que hay que
- * revisar», y para un aviso que aparece y desaparece no es lo que quiere decir.
- *
- * Lo que hay que comunicar es otro: *esto es una observación sobre lo que estás
- * escribiendo*, que se lee y se cierra. Por eso es una lista de avisos
- * insertada entre los campos, sin caja propia.
+ * AHORA VA DENTRO DE UNA SECCIÓN
+ * ------------------------------
+ * El título y la descripción los pone el heading de la sección que envuelve este
+ * bloque. Por eso aquí NO se pinta título: hacerlo lo mostraba dos veces seguidas
+ * en pantalla. Esta clase solo dibuja la lista de avisos.
  *
  * EL ARTÍCULO VA DENTRO, NO PEGADO AL FINAL
  * -----------------------------------------
@@ -21,12 +17,12 @@ namespace App\Filament\Support;
  * parece una errata; separado en su propia línea, con su propio estilo, se lee
  * como lo que es: el artículo en que se apoya.
  *
- * LA SEVERIDAD ES UNA PALABRA, NO UN SÍMBOLO
- * -------------------------------------------
+ * LA SEVERIDAD ES UN COLOR, NO UN SÍMBOLO
+ * ---------------------------------------
  * Un emoji en un texto legal es un adorno, y en una impresión en blanco y negro
- * se convierte en un cuadrado negro al lado de la palabra que explica el recuadro.
- * El color comunica lo mismo, se ve bien en cualquier impresión, y la palabra dice
- * además qué hacer con el aviso: «impeditivo» no es «referencia».
+ * se convierte en un cuadrado negro al lado de la frase. El punto de color
+ * comunica lo mismo, se ve bien en cualquier impresión, y la severidad queda
+ * además como title accesible del aviso: «impeditivo» no es «referencia».
  *
  * El color sale de las variables del panel y no de una paleta propia. Si estos
  * avisos tuvieran su propio color, cambiar el tema de la aplicación los dejaría
@@ -103,7 +99,6 @@ final class LegalChecksPanel
         }
 
         return '<div class="ajuste-checks">'
-            .'<p class="ajuste-checks__title">'.e(__('rent_adjustment.checks.title')).'</p>'
             .'<ul class="ajuste-checks__list">'.$items.'</ul>'
             .'</div>';
     }

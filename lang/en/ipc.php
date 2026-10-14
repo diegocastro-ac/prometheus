@@ -58,6 +58,12 @@ return [
         'stale' => 'Series out of date',
         'stale_title' => 'The CPI series is out of date',
         'stale_body' => 'The last load from DANE is older than the date shown. Adjustment ceilings are calculated from that series, so a recent CPI may not yet be in the system.',
+        'sync' => 'Sync with DANE',
+        'sync_confirm_title' => 'Sync the CPI with DANE',
+        'sync_confirm_body' => 'Downloads the monthly CPI series and stores it locally. Manual mode only brings the national total; cities keep running on the scheduled process. It may take a few minutes.',
+        'sync_ok' => 'Sync completed',
+        'sync_ok_body' => ':periods national total periods stored.',
+        'sync_fail' => 'The sync could not be completed',
     ],
 
 ];

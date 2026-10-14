@@ -58,6 +58,12 @@ return [
         'stale' => 'Serie desactualizada',
         'stale_title' => 'La serie del IPC está desactualizada',
         'stale_body' => 'La última carga de datos del DANE es anterior a la fecha indicada. Los topes de los reajustes se calculan con esa serie, de modo que unIPC reciente puede no estar todavía en el sistema.',
+        'sync' => 'Sincronizar con el DANE',
+        'sync_confirm_title' => 'Sincronizar el IPC con el DANE',
+        'sync_confirm_body' => 'Descarga la serie mensual del IPC y la guarda en la copia local. En modo manual trae solo el total nacional; las ciudades siguen corriendo en el proceso automático. Puede tardar unos minutos.',
+        'sync_ok' => 'Sincronización completada',
+        'sync_ok_body' => 'Se guardaron :periods periodos del total nacional.',
+        'sync_fail' => 'La sincronización no pudo completarse',
     ],
 
 ];

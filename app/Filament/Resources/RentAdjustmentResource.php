@@ -174,11 +174,12 @@ class RentAdjustmentResource extends Resource
 
                 /*
                 |--------------------------------------------------------------------
-                | Sección 2 — CON QUÉ CIFRA, y a su lado el resultado
+                | Sección 2 — CON QUÉ CIFRA, y debajo el resultado
                 |--------------------------------------------------------------------
                 |
-                | Campos a la izquierda, tabla del cálculo a la derecha, y en pantallas
-                | estrechas cada uno ocupa la fila entera.
+                | Los campos van de a dos por fila (columns(2)) y la tabla del cálculo
+                | ocupa la fila completa debajo de ellos. En pantallas estrechas todo
+                | pasa a una columna.
                 |
                 | El resultado va pegado a los campos porque cambia cada vez que se toca
                 | cualquiera de ellos. Ponerlo al final obligaría a subir y bajar la
@@ -192,29 +193,44 @@ class RentAdjustmentResource extends Resource
                 | ya esté elegido muestra un porcentaje que después cambia sin avisar. Por
                 | eso base y ciudad van primero, y el año, que depende de ellas, después.
                 |
-                | La ciudad ocupa media fila. Con base nacional el campo está oculto, de
-                | modo que el espacio que deja libre lo ocupa el año del IPC, y la fila
-                | queda siempre pareja en las dos configuraciones.
+                | REJILLA PLANA, SIN SUB-SECCIONES ANIDADAS
+                |
+                | Los campos cuelgan directo de la sección y fluyen en el grid de dos
+                | columnas. Cuando la base es nacional el campo ciudad se oculta y los
+                | demás se reacomodan solos: no queda una columna vacía porque no hay
+                | una rejilla interna rígida que deje el hueco.
                 */
-                Forms\Components\Grid::make(2)
+                Forms\Components\Section::make(__('rent_adjustment.sections.with_which_number'))
+                    ->columns(2)
                     ->schema([
-                        Forms\Components\Section::make(__('rent_adjustment.sections.with_which_number'))
-                            ->schema([
-                                Forms\Components\Select::make('ipc_basis')
-                                    ->label(__('rent_adjustment.form.ipc_basis'))
-                                    ->helperText(__('rent_adjustment.form.ipc_basis_help'))
-                                    ->options(IpcBasis::options())
-                                    ->default(IpcBasis::National->value)
-                                    ->live()
-                                    ->afterStateUpdated(function (Set $set, Get $get): void {
-                                        // Al cambiar la base hay que volver a resolver el
-                                        // año: el que era válido para el total nacional
-                                        // puede no existir para una ciudad concreta.
-                                        $set('ipc_year', self::statutoryYearFor(
-                                            \Carbon\Carbon::parse($get('effective_from') ?: today()->toDateString()),
-                                        ));
+                        /*
+                        |----------------------------------------
+                        | Los campos, de a dos por fila
+                        |----------------------------------------
+                        |
+                        | Van directos en la sección, sin sub-sección que los envuelva.
+                        | La sección trae columns(2), así que cada campo ocupa media
+                        | anchura y caben dos por fila. Cuando la base es nacional la
+                        | ciudad se oculta y los demás se reacomodan solos en el grid.
+                        |
+                        | La tabla del cálculo va aparte, a ancho completo, para no
+                        | competir por el espacio con estos campos.
+                        */
+                        Forms\Components\Select::make('ipc_basis')
+                            ->label(__('rent_adjustment.form.ipc_basis'))
+                            ->helperText(__('rent_adjustment.form.ipc_basis_help'))
+                            ->options(IpcBasis::options())
+                            ->default(IpcBasis::National->value)
+                            ->live()
+                            ->afterStateUpdated(function (Set $set, Get $get): void {
+                                // Al cambiar la base hay que volver a resolver el
+                                // año: el que era válido para el total nacional
+                                // puede no existir para una ciudad concreta.
+                                $set('ipc_year', self::statutoryYearFor(
+                                    \Carbon\Carbon::parse($get('effective_from') ?: today()->toDateString()),
+                                ));
 
-                                        /*
+                                /*
                                         | Este es el orden en que ocurre de verdad: se elige el
                                         | alquiler con la base nacional, y DESPUÉS se cambia a
                                         | ciudad. Por eso la ciudad se propone desde los dos
@@ -223,25 +239,24 @@ class RentAdjustmentResource extends Resource
                                         | en un solo lado, cambiar la base después dejaba el
                                         | selector vacío aunque la propiedad tuviera ciudad.
                                         */
-                                        if ($get('ipc_basis') === IpcBasis::City->value) {
-                                            $city = self::propertyCityFor($get('rental_id'));
+                                if ($get('ipc_basis') === IpcBasis::City->value) {
+                                    $city = self::propertyCityFor($get('rental_id'));
 
-                                            if ($city !== null) {
-                                                $set('geography_code', $city);
-                                            }
-                                        }
+                                    if ($city !== null) {
+                                        $set('geography_code', $city);
+                                    }
+                                }
 
-                                        self::refreshSuggestions($set, $get);
-                                    })
-                                    ->columnSpanFull(),
+                                self::refreshSuggestions($set, $get);
+                            }),
 
-                                Forms\Components\Select::make('geography_code')
-                                    ->label(__('rent_adjustment.form.geography_code'))
-                                    // Solo cuando la base es ciudad. Oculto evita que
-                                    // quede un valor guardado que no aplica.
-                                    ->visible(fn (Get $get): bool => $get('ipc_basis') === IpcBasis::City->value)
-                                    ->options(fn (): array => self::cityOptions())
-                                    /*
+                        Forms\Components\Select::make('geography_code')
+                            ->label(__('rent_adjustment.form.geography_code'))
+                            // Solo cuando la base es ciudad. Oculto evita que
+                            // quede un valor guardado que no aplica.
+                            ->visible(fn (Get $get): bool => $get('ipc_basis') === IpcBasis::City->value)
+                            ->options(fn (): array => self::cityOptions())
+                            /*
                                     | La ciudad NO se propone con default().
                                     |
                                     | Un default() se evalúa al construir el formulario, que
@@ -254,50 +269,55 @@ class RentAdjustmentResource extends Resource
                                     | Solo cuando la base es ciudad: con base nacional el campo
                                     | está oculto y guardar un valor ahí sería un dato sin uso.
                                     */
-                                    ->helperText(fn (Get $get): string => self::cityHelper($get))
-                                    ->searchable()
-                                    ->live()
-                                    ->afterStateUpdated(function (Set $set, Get $get): void {
-                                        self::refreshSuggestions($set, $get);
-                                    })
-                                    ->required(fn (Get $get): bool => $get('ipc_basis') === IpcBasis::City->value),
+                            ->helperText(fn (Get $get): string => self::cityHelper($get))
+                            ->searchable()
+                            ->live()
+                            ->afterStateUpdated(function (Set $set, Get $get): void {
+                                self::refreshSuggestions($set, $get);
+                            })
+                            ->required(fn (Get $get): bool => $get('ipc_basis') === IpcBasis::City->value),
 
+                        Forms\Components\Grid::make(12)
+                            ->schema([
                                 Forms\Components\Select::make('ipc_year')
                                     ->label(__('rent_adjustment.form.ipc_year'))
-                                    /*
-                                    | EL PORCENTAJE SE RESUELVE SOBRE LA GEOGRAFÍA ELEGIDA.
-                                    |
-                                    | yearOptions() recibe un código de geografía como
-                                    | argumento, y la opción se resuelve con Get para leer la
-                                    | base y la ciudad del momento. live() en esos dos campos
-                                    | hace que Filament vuelva a pintar las opciones al
-                                    | cambiarlos, que es lo que hace que el porcentaje que se
-                                    | ve corresponda a la base elegida.
-                                    */
                                     ->options(fn (Get $get): array => app(IpcSeriesRepository::class)
                                         ->yearOptions(self::geographyCodeFor($get)))
                                     ->helperText(fn (Get $get): string => self::ipcHelper($get))
-                                    /*
-                                    | El año por defecto se resuelve SIEMPRE sobre el total
-                                    | nacional, aunque la base sea ciudad.
-                                    |
-                                    | No es una inconsistencia: es el último año cerrado que
-                                    | existe, y es la única cifra defendible cuando la ciudad
-                                    | aún no tiene ese año. Si en su lugar se tomara el año
-                                    | de la ciudad, una ciudad con la serie incompleta
-                                    | devolvería un año distinto (o ninguno) y el formulario
-                                    | nacería con una combinación que el artículo 20 no pide.
-                                    |
-                                    | La diferencia entre ese año y el que exige la ley la
-                                    | reporta el panel de comprobaciones, que es donde
-                                    | corresponde.
-                                    */
                                     ->default(fn (): ?int => self::defaultIpcYear())
                                     ->live()
                                     ->afterStateUpdated(function (Set $set, Get $get): void {
                                         self::refreshSuggestions($set, $get);
+
+                                        // Auto-completar el porcentaje pactado con el del año
+                                        // seleccionado, solo si el usuario no lo ha escrito.
+                                        if ($get('pactado_pct') === null || $get('pactado_pct') === '') {
+                                            $ipcYear = (int) $set->getValue('ipc_year');
+
+                                            if ($ipcYear > 0) {
+                                                $pct = self::percentageForYear(
+                                                    geography: self::geographyCodeFor($get),
+                                                    year: $ipcYear,
+                                                );
+
+                                                if ($pct !== null) {
+                                                    $set('pactado_pct', number_format($pct, 2, ',', '.'));
+                                                }
+                                            }
+                                        }
                                     })
-                                    ->required(),
+                                    ->required()
+                                    ->columnSpan(3),
+
+                                Forms\Components\TextInput::make('pactado_pct')
+                                    ->label(__('rent_adjustment.form.pactado_pct'))
+                                    ->helperText(__('rent_adjustment.form.pactado_pct_help'))
+                                    ->numeric()
+                                    ->minValue(0)
+                                    ->maxValue(100)
+                                    ->step(0.01)
+                                    ->suffix('%')
+                                    ->columnSpan(3),
 
                                 Forms\Components\TextInput::make('new_rent')
                                     ->label(__('rent_adjustment.form.new_rent'))
@@ -307,40 +327,43 @@ class RentAdjustmentResource extends Resource
                                     ->minValue(1)
                                     ->required()
                                     ->live(onBlur: true)
-                                    /*
-                                    | Aquí NO se vuelve a proponer el canon.
-                                    |
-                                    | Los demás campos sí lo hacen, porque cambiar cualquiera de
-                                    | ellos cambia el tope y lo escrito quedaría desactualizado.
-                                    | Este campo es distinto: el usuario está DICHA qué canon
-                                    | pacta. Volver a escribirle el tope encima borraría lo que
-                                    | acababa de escribir, y haría imposible registrar un
-                                    | incremento distinto del IPC que es justo lo que el
-                                    | artículo 20 permite cuando las partes lo acuerdan por
-                                    | escrito.
-                                    */
-                                    ->columnSpanFull(),
-                            ])
-                            ->columns(2),
+                                    ->columnSpan(6),
+                            ]),
+
+
+
+
+
 
                         /*
-                        |----------------------------------------------------------------
-                        | La tabla del cálculo
-                        |----------------------------------------------------------------
+                        |----------------------------------------
+                        | La tabla del cálculo, a ancho completo
+                        |----------------------------------------
                         |
-                        | Va pegada a los campos, y no debajo, por una razón que es de uso
-                        | y no de estética: la tabla cambia cada vez que se toca cualquiera de
-                        | ellos. Ponerla al final obligaría a subir y bajar la pantalla para
-                        | ver el efecto de lo que se acaba de escribir, que es justo lo que
-                        | hace que una vista previa se lea.
+                        | Es una sección propia DEBAJO de los campos, con el título de
+                        | la vista previa como encabezado. Va a ancho completo
+                        | (columnSpanFull) porque una cuenta con tres columnas necesita
+                        | su espacio; apretada a media anchura junto a los campos se
+                        | partiría el importe, que es justo la cifra que hay que leer.
                         |
-                        | Ocupa media fila y toma la fila completa en pantallas estrechas,
-                        | donde dos columnas estrechas no aportan nada.
+                        | Sigue pegada a los campos, y no al final del formulario, por
+                        | una razón de uso: la tabla cambia cada vez que se toca
+                        | cualquiera de ellos. Ver el efecto de lo que se acaba de
+                        | escribir sin bajar la pantalla es lo que hace que una vista
+                        | previa se lea.
                         */
-                        Forms\Components\Placeholder::make('rent_preview')
-                            ->label('')
-                            ->content(fn (Get $get): HtmlString => new HtmlString(self::rentPreview($get)))
-                            ->columnSpan(['default' => 1, 'lg' => 1]),
+                        Forms\Components\Section::make(__('rent_adjustment.preview.title'))
+                            ->compact()
+                            ->columnSpanFull()
+                            // Sin alquiler elegido no hay canon vigente que mostrar,
+                            // así que la tabla ni aparece: mejor que un recuadro
+                            // vacío colgando del formulario.
+                            ->visible(fn (Get $get): bool => self::calculationFor($get) !== null)
+                            ->schema([
+                                Forms\Components\Placeholder::make('rent_preview')
+                                    ->label('')
+                                    ->content(fn (Get $get): HtmlString => new HtmlString(self::rentPreview($get))),
+                            ]),
                     ])
                     ->columnSpanFull(),
 
@@ -363,9 +386,14 @@ class RentAdjustmentResource extends Resource
                 |   1. No hay nada que decidir  → la sección no existe.
                 |   2. Hay algo que decidir      → la sección aparece ABIERTA y lista
                 |      los motivos, y el usuario puede aceptarlos o cambiar algo.
-                |   3. El usuario ya aceptó      → la sección se pliega sola, porque
-                |      volver a pedir la confirmación cada vez que se toca un campo
-                |      sería una molestia.
+                | LA SECCIÓN YA NO SE PLIEGA SOLA
+                |
+                | Antes, al marcar la confirmación, la sección se plegaba sola y eso
+                | provocaba un salto de tamaño en el formulario cada vez que se tocaba
+                | el interruptor: el contenido desaparecía de golpe y las secciones de
+                | abajo subían. Ahora la sección se queda abierta y muestra los motivos
+                | aceptados; el alto ya no cambia y el formulario deja de moverse
+                | mientras se rellena.
                 |
                 | ACEPTAR ES LO QUE SE GUARDA
                 |
@@ -377,8 +405,6 @@ class RentAdjustmentResource extends Resource
                 Forms\Components\Section::make(__('rent_adjustment.sections.party_decisions'))
                     ->description(fn (Get $get): string => self::partyDecisionsDescription($get))
                     ->visible(fn (Get $get): bool => self::needsPartyDecision($get))
-                    ->collapsible()
-                    ->collapsed(fn (Get $get): bool => (bool) ($get('ipc_outside_statutory_year') ?? false))
                     ->schema([
                         /*
                         | Los motivos se listan dentro de la sección, no en la
@@ -392,19 +418,6 @@ class RentAdjustmentResource extends Resource
                             ->label('')
                             ->content(fn (Get $get): HtmlString => new HtmlString(self::deviationReasonsHtml($get)))
                             ->columnSpanFull(),
-
-                        Forms\Components\TextInput::make('pactado_pct')
-                            ->label(__('rent_adjustment.form.pactado_pct'))
-                            ->helperText(__('rent_adjustment.form.pactado_pct_help'))
-                            ->numeric()
-                            ->minValue(0)
-                            ->maxValue(100)
-                            ->step(0.01)
-                            ->suffix('%')
-                            ->live(onBlur: true)
-                            ->afterStateUpdated(function (Set $set, Get $get): void {
-                                self::refreshSuggestions($set, $get);
-                            }),
 
                         Forms\Components\Toggle::make('ipc_outside_statutory_year')
                             ->label(__('rent_adjustment.form.ipc_outside_statutory_year'))
@@ -431,20 +444,27 @@ class RentAdjustmentResource extends Resource
                 | Las comprobaciones
                 |--------------------------------------------------------------------
                 |
-                | No es una sección. Va como bloque en línea, entre los campos, porque
-                | lo que comunica es una observación sobre lo que se está escribiendo,
-                | no una parte más del formulario que haya que revisar.
+                | Ahora SÍ es una sección, con su título y su descripción. Va
+                | compacta para no robar altura, y solo aparece cuando hay algo que
+                | decir. Como sección se lee como una parte más del formulario con
+                | marco propio, en lugar de una lista suelta flotando entre campos
+                | sin saber a qué pertenece.
                 |
                 | Ocupa la fila completa porque un aviso partido en dos columnas se
                 | lee peor que uno entero: el texto legal necesita su ancho para que
                 | la columna del artículo no quede en un interlineado estrecho.
                 */
-                Forms\Components\Placeholder::make('legal_checks')
-                    ->label('')
-                    // El contenido lleva HTML porque cada aviso se pinta con su
-                    // propio color y su propio rótulo. Un Placeholder normal
-                    // escapa el texto y las clases se verían literales.
-                    ->content(fn (Get $get): HtmlString => new HtmlString(self::legalPanel($get)))
+                Forms\Components\Section::make(__('rent_adjustment.sections.legal_checks'))
+                    ->description(__('rent_adjustment.sections.legal_checks_help'))
+                    ->compact()
+                    ->schema([
+                        Forms\Components\Placeholder::make('legal_checks')
+                            ->label('')
+                            // El contenido lleva HTML porque cada aviso se pinta con su
+                            // propio color y su propio rótulo. Un Placeholder normal
+                            // escapa el texto y las clases se verían literales.
+                            ->content(fn (Get $get): HtmlString => new HtmlString(self::legalPanel($get))),
+                    ])
                     ->visible(fn (Get $get): bool => self::legalPanel($get) !== '')
                     ->columnSpanFull(),
             ]);
@@ -542,6 +562,25 @@ class RentAdjustmentResource extends Resource
         $available = app(IpcSeriesRepository::class)->availableYears();
 
         return $available[0] ?? null;
+    }
+
+    /**
+     * El porcentaje de variación anual del IPC para un año y geografía dados.
+     *
+     * Se usa para auto-completar el «Porcentaje pactado» con el valor real del
+     * año del IPC elegido, de modo que el usuario vea de inmediato qué cifra
+     * aplica el artículo 20 y solo tenga que escribir otra si pacta distinto.
+     *
+     * Devuelve null cuando no hay dato, en lugar de fallar: el panel de
+     * comprobaciones ya informa de la ausencia con un mensaje propio.
+     */
+    private static function percentageForYear(?string $geography, int $year): ?float
+    {
+        $code = $geography ?? \App\Dto\Geography::nationalCode();
+
+        $observation = app(IpcSeriesRepository::class)->decemberOf($code, $year);
+
+        return $observation?->calendarYearVariation();
     }
 
     /**
@@ -830,7 +869,7 @@ class RentAdjustmentResource extends Resource
     *
     * @return list<string>
     */
-private static function deviationReasons(Get $get): array
+    private static function deviationReasons(Get $get): array
     {
         $reasons = [];
 

@@ -103,8 +103,18 @@ final class AdjustmentCalculationTable
             }
         }
 
-        return '<table class="ajuste-preview">'
-            .'<caption class="ajuste-preview__caption">'.e(__('rent_adjustment.preview.title')).'</caption>'
+        /*
+        | La clase fi-ta-table es la que usa Filament en todas sus tablas. Al
+        | ponerla aquí la vista previa hereda el look base del panel —ancho
+        | completo, separadores entre filas, espaciado y modo oscuro— sin volver
+        | a escribirlo. Las clases ajuste-preview__* solo añaden lo específico de
+        | esta cuenta: los totales, los hints y el alineado de los importes.
+        |
+        | El título ya no va en un <caption>: lo pone el heading de la sección
+        | que envuelve esta tabla, para que sea una sección de formulario como
+        | las demás y no un bloque suelto entre campos.
+        */
+        return '<table class="ajuste-preview fi-ta-table w-full text-start">'
             .'<tbody>'.$body.'</tbody>'
             .'<tfoot>'.$foot.'</tfoot>'
             .'</table>';

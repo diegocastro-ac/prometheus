@@ -37,9 +37,11 @@ return [
 
     'has_ipc_data' => [
         // Sin dato de diciembre, no hay tope que calcular ni carta que
-        // sustente. El detalle de como traerlo lo da el servicio, no aqui.
-        'missing' => 'No se encuentra el IPC de diciembre de :year, que es el que exige el artículo 20 para un reajuste con vigencia desde el :effective_from. El dato oficial aún no ha sido cargado en el sistema.',
-        'missing_context' => 'No se encuentra el IPC de :geography de diciembre de :year, que es el que exige el artículo 20 para un reajuste con vigencia desde el :effective_from. El dato oficial aún no ha sido cargado en el sistema.',
+        // sustente. El mensaje dice además cuándo llega el dato: la duda
+        // real de quien llena el formulario no es "por qué falta", sino
+        // "cuándo va a estar".
+        'missing' => 'El dato de diciembre de :year no está disponible aún. Se publica alrededor del 15/01/:next_year; vuelva a intentarlo tras la sincronización.',
+        'missing_context' => 'El dato de diciembre de :geography de :year no está disponible aún. Se publica alrededor del 15/01/:next_year; vuelva a intentarlo tras la sincronización.',
         'no_variation' => 'El dato del DANE para diciembre de :year está cargado, pero no incluye la variación anual, que es el dato que requiere el artículo 20.',
         'no_variation_context' => 'El dato del DANE para :geography de diciembre de :year está cargado, pero no incluye la variación anual, que es el dato que requiere el artículo 20.',
 
@@ -51,7 +53,7 @@ return [
         |
         | Tampoco dicen COMO obtener el dato. Ver la nota de cabecera.
         */
-        'missing_short' => 'No se encuentra el IPC de :geography para diciembre de :year. Sin ese dato no es posible calcular el tope del reajuste.',
+        'missing_short' => 'No se encuentra el IPC de :geography para diciembre de :year. Se publica alrededor del 15/01/:next_year; vuelva a intentarlo tras la sincronización.',
         'missing_city' => 'Se seleccionó el IPC de una ciudad sin indicar cuál. Seleccione la ciudad en el formulario del reajuste.',
         'missing_index' => 'No se encuentra el índice del IPC para el período :period en :geography.',
     ],

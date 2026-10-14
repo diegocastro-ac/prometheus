@@ -94,6 +94,23 @@ class IpcSynchronizer
             ];
         }
 
+        /*
+        | Bloque de diciembre: la fusión es con el dato guardado, nunca con NULL.
+        |
+        | Antes se tomaba el bloque de diciembre tal como lo devolvía el servicio
+        | del DANE. Cuando el DANE no cuadraba las cifras de un año con las
+        | oficiales, ese bloque venía sin la variación anual y terminaba
+        | SOBREESCRIBIENDO el diciembre completo con NULL: el año seguía
+        | existiendo en la tabla pero desaparecía de los selectores, y los
+        | avisos empezaron a decir que "no se encontraba" un dato que sí
+        | estaba.
+        |
+        | La serie que se sincroniza (fetch) es la que manda únicamente cuando
+        | TRAE el bloque de diciembre. La copia local guarda la última
+        | sincronización buena conocida, no el último fallo silencioso.
+        */
+        $observations = $this->mergeDecemberWithStored($observations, $code);
+
         // MAP + PERSIST
         return DB::transaction(function () use ($observations, $code, $validation): array {
             $rows = $this->map($observations, $code);
@@ -199,6 +216,55 @@ class IpcSynchronizer
             ->orderBy('name')
             ->pluck('code')
             ->all();
+    }
+
+    /**
+     * @param  list<\App\Dto\IpcObservation>  $observations
+     * @return list<\App\Dto\IpcObservation>
+     */
+    private function mergeDecemberWithStored(array $observations, string $code): array
+    {
+        if (count($observations) < 13) {
+            return $observations;
+        }
+
+        $stored = IpcSeries::query()
+            ->forGeography($code)
+            ->get(['year', 'month', 'variation_year', 'variation_yoy'])
+            ->keyBy(fn (IpcSeries $row): string => $row->periodKey());
+
+        if ($stored->isEmpty()) {
+            return $observations;
+        }
+
+        foreach ($observations as $index => $observation) {
+            if ($observation->month !== 12 || $observation->calendarYearVariation() !== null) {
+                continue;
+            }
+
+            $previous = $stored->get($observation->periodKey());
+
+            if ($previous === null || $previous->calendarYearVariation() === null) {
+                continue;
+            }
+
+            $observations[$index] = new \App\Dto\IpcObservation(
+                geographyCode: $observation->geographyCode,
+                geographyName: $observation->geographyName,
+                year: $observation->year,
+                month: $observation->month,
+                index: $observation->index,
+                variationMonthly: $observation->variationMonthly,
+                variationYoY: $previous->variation_yoy === null
+                    ? $observation->variationYoY
+                    : (float) $previous->variation_yoy,
+                variationYear: $previous->variation_year === null
+                    ? $observation->variationYear
+                    : (float) $previous->variation_year,
+            );
+        }
+
+        return $observations;
     }
 
     /**
