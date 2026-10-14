@@ -245,7 +245,7 @@ class RentAdjustmentServiceTest extends DocumentTestCase
         // navegador. Que el dato falte ya es el hecho; el como se resuelve en
         // ipc:doctor, que es la herramienta de quien lo carga.
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Sin ese dato no es posible calcular el tope del reajuste');
+        $this->expectExceptionMessage('Se publica alrededor del 15/01/2026');
 
         $this->service()->record(
             rental: $this->rental(),

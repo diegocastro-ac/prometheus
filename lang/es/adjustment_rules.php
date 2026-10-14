@@ -78,6 +78,7 @@ return [
 
     'city_ipc_requires_acknowledgement' => [
         'national_reference' => 'Para el total nacional, el IPC del año es :pct %.',
+        'same_as_national' => 'Se aplica el IPC de :geography en lugar del total nacional, pero su porcentaje coincide con el nacional (:pct %), así que el resultado cumple con el artículo 20. Queda como referencia de la serie usada.',
         'acknowledged' => 'El reajuste se calcula con el IPC de :geography en lugar del total nacional. El motivo queda consignado en las observaciones.',
         'warning' => 'Se está aplicando el IPC de :geography en lugar del total nacional. El artículo 20 se refiere al índice de precios al consumidor sin distinguir ciudades, por lo que esta decisión constituye una apartación de su texto. Marque la confirmación si es la que desea registrar. :national_reference',
     ],

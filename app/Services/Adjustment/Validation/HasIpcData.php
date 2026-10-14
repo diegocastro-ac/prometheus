@@ -50,10 +50,12 @@ class HasIpcData implements ReajusteRule
                 message: $code === \App\Dto\Geography::nationalCode()
                     ? __('adjustment_rules.has_ipc_data.missing', [
                         'year' => $statutoryYear,
+                        'next_year' => $statutoryYear + 1,
                         'effective_from' => $context->effectiveFrom->format('d/m/Y'),
                     ])
                     : __('adjustment_rules.has_ipc_data.missing_context', [
                         'year' => $statutoryYear,
+                        'next_year' => $statutoryYear + 1,
                         'geography' => $context->ipc?->geographyName ?? $code,
                         'effective_from' => $context->effectiveFrom->format('d/m/Y'),
                     ]),

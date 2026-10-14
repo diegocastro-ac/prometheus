@@ -62,6 +62,7 @@ return [
 
     'states' => [
         'recorded' => 'Registrado',
+        'notified' => 'Comunicado',
         'applied' => 'Aplicado',
     ],
 
@@ -92,7 +93,7 @@ return [
         'geography_code' => 'Ciudad',
         'geography_code_no_year' => 'No hay datos del IPC de :geography para :year.',
         'pactado_pct' => 'Porcentaje pactado',
-        'pactado_pct_help' => 'El artículo 20 dice "hasta", así que las partes pueden acordar menos que el IPC. Déjelo vacío para aplicar el IPC completo.',
+        'pactado_pct_help' => 'Se propone el porcentaje del año del IPC. El artículo 20 dice «hasta», así que las partes pueden acordar menos. Si escribe un porcentaje distinto al del IPC del año, el reajuste se aparta del artículo 20 y habrá que confirmarlo y dejar el motivo en las observaciones.',
         'ipc_outside_statutory_year' => 'Confirmo que me aparto del artículo 20',
         'ipc_outside_statutory_year_help' => 'Esta casilla aparece cuando el año del IPC, la ciudad o el monto se apartan de lo que fija el artículo 20. Marcarla no impide el registro: exige que el motivo quede consignado en las observaciones, que es lo que sostiene el reajuste en caso de impugnación.',
         'notes' => 'Observaciones',

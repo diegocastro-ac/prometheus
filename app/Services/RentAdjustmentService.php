@@ -134,6 +134,24 @@ class RentAdjustmentService
             throw new RuntimeException($verdict->message);
         }
 
+        /*
+         * APARTARSE DEL ARTÍCULO 20 EXIGE CONSENTIMIENTO, NO SOLO EXPLICACIÓN.
+         *
+         * Si la combinación se aparta de la ley (otro año del IPC, una ciudad,
+         * o el reajuste antes de los doce meses) hay que marcarlo y confirmarlo.
+         * No basta con escribir el motivo: la confirmación es el consentimiento
+         * de las partes, y sin ella el registro sería un reajuste impuesto por
+         * el sistema en vez de uno acordado. Es una validación dura al guardar.
+         */
+        if ($this->deviationReason($context) !== null && ! $ipcOutsideStatutoryYear) {
+            throw new RuntimeException(sprintf(
+                'Esta combinación se aparta del artículo 20: %s '
+                .'Marque la confirmación «me aparto del artículo 20» para dejar constancia del '
+                .'consentimiento, y escriba el motivo en las observaciones.',
+                $this->deviationReason($context),
+            ));
+        }
+
         // Apartarse del articulo 20 requiere que quede escrito por que. No es una
         // prohibicion: es exigir que el motivo exista antes de que alguien lo mire
         // tres meses despues.
@@ -383,11 +401,25 @@ class RentAdjustmentService
         }
 
         if (! $context->ipc->isStatutory) {
-            $reasons[] = sprintf(
-                'Se está usando el IPC de %s, y el artículo 20 habla de "el índice de precios al '
-                .'consumidor" sin distinguir ciudades.',
-                $context->ipc->geographyName,
-            );
+            // La ciudad solo aparta del artículo 20 cuando su porcentaje difiere
+            // del total nacional del mismo año. Si coinciden, el resultado es el
+            // mismo y no hay separación que confirmar: lo dice el panel de
+            // comprobaciones como referencia.
+            $nationalPct = $this->series->decemberOf(
+                \App\Dto\Geography::nationalCode(),
+                $context->ipc->year,
+            )?->calendarYearVariation();
+
+            $sameAsNational = $nationalPct !== null
+                && round((float) $nationalPct, 2) === round((float) $context->ipc->percentage, 2);
+
+            if (! $sameAsNational) {
+                $reasons[] = sprintf(
+                    'Se está usando el IPC de %s, y el artículo 20 habla de "el índice de precios al '
+                    .'consumidor" sin distinguir ciudades.',
+                    $context->ipc->geographyName,
+                );
+            }
         }
 
         if ($context->timingIsEarly()) {
@@ -395,6 +427,23 @@ class RentAdjustmentService
                 'El alquiler aún no cumple los doce meses bajo un mismo precio: el próximo reajuste '
                 .'podría regir el %s.',
                 $context->rental->nextAdjustmentDueDate()->format('d/m/Y'),
+            );
+        }
+
+        /*
+         * Un pactado distinto del IPC legal es apartamiento cuando la base es el
+         * total nacional. Si coincide con el IPC (el valor con el que se
+         * autocompleta el campo), no hay nada que confirmar. Cuando la base es
+         * ciudad, el apartamiento por geografía ya queda recogido arriba y el
+         * pactado no se lista aparte.
+         */
+        if ($context->ipc->isStatutory
+            && $context->pactadoPercentage !== null
+            && round((float) $context->pactadoPercentage, 2) !== round((float) $context->ipc->percentage, 2)) {
+            $reasons[] = sprintf(
+                'Las partes pactan aplicar el %s %% en lugar del %s %% del IPC del año.',
+                number_format($context->pactadoPercentage, 2, ',', '.'),
+                number_format($context->ipc->percentage, 2, ',', '.'),
             );
         }
 
@@ -477,6 +526,7 @@ class RentAdjustmentService
                 // Sin esto el mensaje decia "el IPC de  para diciembre".
                 throw new RuntimeException(__('adjustment_rules.has_ipc_data.missing_short', [
                     'year' => $ipcYear,
+                    'next_year' => $ipcYear + 1,
                     'geography' => $code === null
                         ? __('rent_adjustment.preview.national_geography')
                         : (string) (\App\Models\Geography::query()

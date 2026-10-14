@@ -75,6 +75,7 @@ return [
 
     'city_ipc_requires_acknowledgement' => [
         'national_reference' => 'For the national total, the CPI for the year is :pct %.',
+        'same_as_national' => 'The CPI of :geography is applied instead of the national total, but its percentage matches the national one (:pct %), so the result complies with article 20. It is kept as a reference of the series used.',
         'acknowledged' => 'The adjustment is calculated with the :geography CPI instead of the national total. The reason is recorded in the notes.',
         'warning' => 'The :geography CPI is being applied instead of the national total. Article 20 refers to the consumer price index without distinguishing cities, so this choice departs from its wording. Mark the confirmation if this is what you wish to record. :national_reference',
     ],

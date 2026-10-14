@@ -45,6 +45,24 @@ class CityIpcRequiresAcknowledgement implements ReajusteRule
                 'pct' => number_format($national, 2, ',', '.'),
             ]);
 
+        /*
+         * Si el porcentaje de la ciudad coincide con el del total nacional del
+         * mismo año, usar la ciudad no cambia el resultado frente al artículo
+         * 20. No hay separación que confirmar: se informa como referencia de la
+         * serie usada, no como un apartamiento.
+         */
+        if ($national !== null
+            && round((float) $national, 2) === round((float) $context->ipc->percentage, 2)) {
+            return RuleResult::info(
+                message: __('adjustment_rules.city_ipc_requires_acknowledgement.same_as_national', [
+                    'geography' => $geography,
+                    'pct' => number_format($national, 2, ',', '.'),
+                ]),
+                article: $this->article(),
+                context: ['geography' => $context->ipc->geographyCode],
+            );
+        }
+
         if ($context->acknowledgedDeviation) {
             return RuleResult::info(
                 message: __('adjustment_rules.city_ipc_requires_acknowledgement.acknowledged', [

@@ -194,15 +194,15 @@ class ReajusteCalculationTest extends TestCase
     }
 
     #[Test]
-    public function un_porcentaje_pactado_no_obliga_a_confirmar(): void
+    public function un_porcentaje_pactado_distinto_del_ipc_obliga_a_confirmar(): void
     {
         /*
-        * El artículo 20 dice «hasta el 100 %». Pactar menos ES usar la norma, no
-        * apartarse de ella.
+        * El «Porcentaje pactado» se autocompleta con el % del año del IPC.
+        * Si el usuario lo cambia por una cifra distinta, eso es una decisión de
+        * las partes que se aparta del cálculo del artículo 20 y debe quedar
+        * confirmada y explicada, igual que el año o la ciudad.
         *
-        * Pedir la confirmación en ese caso enseñaría al usuario a marcar la
-        * casilla por costumbre, que es el peor resultado posible: una casilla que
-        * se marca siempre no prueba nada.
+        * El 2025 nacional es 5,10 %, así que pactar 2,5 % es apartarse.
         */
         $html = $this->form()
             ->fillForm([
@@ -214,10 +214,39 @@ class ReajusteCalculationTest extends TestCase
             ])
             ->html();
 
+        $this->assertStringContainsString(
+            'ipc_outside_statutory_year',
+            $html,
+            'un pactado distinto del IPC del año es una separación que confirmar',
+        );
+        $this->assertStringContainsString(
+            __('rent_adjustment.deviation.pactado', ['pct' => '2,50']),
+            $html,
+        );
+    }
+
+    #[Test]
+    public function un_porcentaje_pactado_igual_al_ipc_no_obliga_a_confirmar(): void
+    {
+        /*
+        * El caso corriente: el pactado coincide con el % del año del IPC, que es
+        * justo el valor con el que se autocompleta el campo. No hay separación
+        * que confirmar, y la sección entera no debe existir.
+        */
+        $html = $this->form()
+            ->fillForm([
+                'rental_id' => $this->rental->id,
+                'effective_from' => '2026-06-01',
+                'ipc_basis' => IpcBasis::National->value,
+                'ipc_year' => '2025',
+                'pactado_pct' => 5.10,
+            ])
+            ->html();
+
         $this->assertStringNotContainsString(
             'ipc_outside_statutory_year',
             $html,
-            'pactar menos que el IPC no es una separación',
+            'un pactado igual al IPC del año no es una separación',
         );
     }
 
@@ -268,5 +297,82 @@ class ReajusteCalculationTest extends TestCase
             $html,
             'las observaciones deben seguir visibles: la sección no se pliega',
         );
+    }
+
+    #[Test]
+    public function mover_el_ano_actualiza_el_porcentaje_pactado(): void
+    {
+        /*
+        * El «Porcentaje pactado» queda atado al año del IPC. Al mover el año, el
+        * campo toma el % de ese año sin que el usuario tenga que escribirlo: el
+        * 2025 es 5,10 % y el 2024 es 5,20 %.
+        */
+        $this->form()
+            ->fillForm([
+                'rental_id' => $this->rental->id,
+                'effective_from' => '2026-06-01',
+                'ipc_basis' => IpcBasis::National->value,
+                'ipc_year' => '2025',
+            ])
+            ->assertFormSet(['pactado_pct' => 5.10])
+            ->fillForm(['ipc_year' => '2024'])
+            ->assertFormSet(['pactado_pct' => 5.20]);
+    }
+
+    #[Test]
+    public function el_porcentaje_pactado_arranca_con_el_del_ano_al_cargar(): void
+    {
+        /*
+        * Al cargar el formulario, sin tocar nada, el «Porcentaje pactado» ya
+        * muestra el % del año del IPC por defecto (2025 = 5,10 %), no arranca
+        * vacío esperando a que se cambie el año.
+        */
+        $data = $this->form()->get('data');
+
+        $this->assertSame(5.10, (float) ($data['pactado_pct'] ?? 0));
+    }
+
+    #[Test]
+    public function las_observaciones_son_obligatorias_cuando_hay_apartamiento(): void
+    {
+        /*
+        * En cuanto la combinación se aparta del artículo 20, la sección «Lo que
+        * decidan las partes» exige el motivo escrito. Sin él, el registro se
+        * rechaza por validación del formulario y no se guarda.
+        */
+        Livewire::test(CreateRentAdjustment::class)
+            ->fillForm([
+                'rental_id' => $this->rental->id,
+                'effective_from' => '2026-06-01',
+                'ipc_basis' => IpcBasis::National->value,
+                // 2024 se aparta del año legal (2025) para esta vigencia.
+                'ipc_year' => '2024',
+                'new_rent' => 1_052_000,
+            ])
+            ->call('create')
+            ->assertHasFormErrors(['notes' => 'required']);
+
+        $this->assertDatabaseMissing('rent_adjustments', ['rental_id' => $this->rental->id]);
+    }
+
+    #[Test]
+    public function las_observaciones_no_son_obligatorias_con_la_combinacion_legal(): void
+    {
+        /*
+        * Con la combinación que cumple el artículo 20 no hay nada que confirmar:
+        * la sección de partes no existe, así que las observaciones no se exigen
+        * ni aparece su aviso de obligatoriedad.
+        */
+        $html = $this->form()
+            ->fillForm([
+                'rental_id' => $this->rental->id,
+                'effective_from' => '2026-06-01',
+                'ipc_basis' => IpcBasis::National->value,
+                'ipc_year' => '2025',
+            ])
+            ->html();
+
+        $this->assertStringNotContainsString('ipc_outside_statutory_year', $html);
+        $this->assertStringNotContainsString('notes_help_required', $html);
     }
 }

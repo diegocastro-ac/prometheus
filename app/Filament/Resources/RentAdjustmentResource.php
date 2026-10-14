@@ -224,11 +224,17 @@ class RentAdjustmentResource extends Resource
                             ->live()
                             ->afterStateUpdated(function (Set $set, Get $get): void {
                                 // Al cambiar la base hay que volver a resolver el
-                                // año: el que era válido para el total nacional
-                                // puede no existir para una ciudad concreta.
-                                $set('ipc_year', self::statutoryYearFor(
+                                // año y TAMBIÉN el porcentaje: el que era válido
+                                // para el total nacional cambia al pasar a una
+                                // ciudad concreta, y viceversa. El año se resuelve
+                                // primero porque puede no existir para la ciudad,
+                                // y el porcentaje se recalcula con el año ya
+                                // resuelto, no con el que estaba en el campo.
+                                $resolvedYear = self::statutoryYearFor(
                                     \Carbon\Carbon::parse($get('effective_from') ?: today()->toDateString()),
-                                ));
+                                );
+
+                                $set('ipc_year', $resolvedYear);
 
                                 /*
                                         | Este es el orden en que ocurre de verdad: se elige el
@@ -247,6 +253,7 @@ class RentAdjustmentResource extends Resource
                                     }
                                 }
 
+                                self::refreshPactado($set, $get, $resolvedYear);
                                 self::refreshSuggestions($set, $get);
                             }),
 
@@ -273,6 +280,10 @@ class RentAdjustmentResource extends Resource
                             ->searchable()
                             ->live()
                             ->afterStateUpdated(function (Set $set, Get $get): void {
+                                // Cambiar de ciudad cambia la serie del IPC, así
+                                // que el porcentaje se recalcula con la ciudad
+                                // recién elegida antes de proponer el canon.
+                                self::refreshPactado($set, $get);
                                 self::refreshSuggestions($set, $get);
                             })
                             ->required(fn (Get $get): bool => $get('ipc_basis') === IpcBasis::City->value),
@@ -283,40 +294,66 @@ class RentAdjustmentResource extends Resource
                                     ->label(__('rent_adjustment.form.ipc_year'))
                                     ->options(fn (Get $get): array => app(IpcSeriesRepository::class)
                                         ->yearOptions(self::geographyCodeFor($get)))
-                                    ->helperText(fn (Get $get): string => self::ipcHelper($get))
                                     ->default(fn (): ?int => self::defaultIpcYear())
                                     ->live()
-                                    ->afterStateUpdated(function (Set $set, Get $get): void {
-                                        self::refreshSuggestions($set, $get);
+                                    ->afterStateUpdated(function ($state, Set $set, Get $get): void {
+                                        /*
+                                         * El «Porcentaje pactado» queda atado al año del
+                                         * IPC: al elegir o mover el año se actualiza al %
+                                         * de ese año, que es el valor que propone el
+                                         * artículo 20. Si el usuario quiere apartarse,
+                                         * edita el % después de elegir el año.
+                                         */
+                                        $ipcYear = (int) $state;
 
-                                        // Auto-completar el porcentaje pactado con el del año
-                                        // seleccionado, solo si el usuario no lo ha escrito.
-                                        if ($get('pactado_pct') === null || $get('pactado_pct') === '') {
-                                            $ipcYear = (int) $set->getValue('ipc_year');
+                                        if ($ipcYear > 0) {
+                                            $pct = self::percentageForYear(
+                                                geography: self::geographyCodeFor($get),
+                                                year: $ipcYear,
+                                            );
 
-                                            if ($ipcYear > 0) {
-                                                $pct = self::percentageForYear(
-                                                    geography: self::geographyCodeFor($get),
-                                                    year: $ipcYear,
-                                                );
-
-                                                if ($pct !== null) {
-                                                    $set('pactado_pct', number_format($pct, 2, ',', '.'));
-                                                }
+                                            if ($pct !== null) {
+                                                $set('pactado_pct', round((float) $pct, 2));
                                             }
                                         }
+
+                                        // Recalcular el canon propuesto con el nuevo
+                                        // pactado ya en su sitio.
+                                        self::refreshSuggestions($set, $get);
                                     })
                                     ->required()
                                     ->columnSpan(3),
 
                                 Forms\Components\TextInput::make('pactado_pct')
                                     ->label(__('rent_adjustment.form.pactado_pct'))
-                                    ->helperText(__('rent_adjustment.form.pactado_pct_help'))
                                     ->numeric()
                                     ->minValue(0)
                                     ->maxValue(100)
                                     ->step(0.01)
                                     ->suffix('%')
+                                    // En la carga inicial el campo arranca con el % del
+                                    // año del IPC que corresponde, igual que cuando se
+                                    // cambia el año después. Usa el año elegido si ya
+                                    // está resuelto y, si no, el que propone la ley.
+                                    ->default(function (Get $get): ?float {
+                                        $year = $get('ipc_year');
+
+                                        $year = ($year === null || $year === '')
+                                            ? self::defaultIpcYear()
+                                            : (int) $year;
+
+                                        if ($year === null) {
+                                            return null;
+                                        }
+
+                                        $pct = self::percentageForYear(self::geographyCodeFor($get), $year);
+
+                                        return $pct === null ? null : round((float) $pct, 2);
+                                    })
+                                    ->live(onBlur: true)
+                                    ->afterStateUpdated(function (Set $set, Get $get): void {
+                                        self::refreshSuggestions($set, $get);
+                                    })
                                     ->columnSpan(3),
 
                                 Forms\Components\TextInput::make('new_rent')
@@ -328,12 +365,21 @@ class RentAdjustmentResource extends Resource
                                     ->required()
                                     ->live(onBlur: true)
                                     ->columnSpan(6),
+
+                                /*
+                                 * La explicación del «Porcentaje pactado» va aquí,
+                                 * a todo el ancho y debajo de los inputs, en lugar de
+                                 * como helper pegado al campo. Es una sola aclaración
+                                 * para los tres números de la fila, no una nota de un
+                                 * input concreto, y así se lee sin partirse en columnas.
+                                 */
+                                Forms\Components\Placeholder::make('pactado_pct_help')
+                                    ->hiddenLabel()
+                                    ->content(new HtmlString(
+                                        '<p class="ajuste-pactado-help">'.e(__('rent_adjustment.form.pactado_pct_help')).'</p>',
+                                    ))
+                                    ->columnSpanFull(),
                             ]),
-
-
-
-
-
 
                         /*
                         |----------------------------------------
@@ -435,6 +481,11 @@ class RentAdjustmentResource extends Resource
                             // En el caso corriente ni se enseñan.
                             ->visible(fn (Get $get): bool => self::needsPartyDecision($get)
                                 || ($get('notes') !== null && $get('notes') !== ''))
+                            // Obligatorio, con su asterisco, en cuanto haya algo
+                            // que confirmar: el motivo escrito es lo que sostiene
+                            // el reajuste si el arrendatario lo impugna. Cuando el
+                            // campo solo se ve porque había texto previo, no se exige.
+                            ->required(fn (Get $get): bool => self::needsPartyDecision($get))
                             ->columnSpanFull(),
                     ])
                     ->columns(2),
@@ -581,6 +632,36 @@ class RentAdjustmentResource extends Resource
         $observation = app(IpcSeriesRepository::class)->decemberOf($code, $year);
 
         return $observation?->calendarYearVariation();
+    }
+
+    /*
+     * Vuelve a proponer el «Porcentaje pactado» con el % de la geografía y el
+     * año elegidos en ese momento. Se llama cada vez que cambia la base, la
+     * ciudad o el año: cualquiera de los tres mueve la serie de IPC de la que
+     * sale el porcentaje, y dejar el valor viejo sería mostrar una cifra que ya
+     * no corresponde a lo seleccionado.
+     *
+     * El año llega como argumento para que el que llama decida cuál usar. Eso
+     * importa cuando el estado aún no se actualizó en pantalla: por ejemplo, al
+     * cambiar de base nacional a ciudad, el año vigente puede no existir para
+     * la ciudad y en ese caso hay que recalcular con el año ya resuelto, no con
+     * el que está en el campo.
+     */
+    private static function refreshPactado(Set $set, Get $get, ?int $ipcYear = null): void
+    {
+        $year = $ipcYear ?? $get('ipc_year');
+
+        $year = ($year === null || $year === '') ? null : (int) $year;
+
+        if ($year === null || $year <= 0) {
+            return;
+        }
+
+        $pct = self::percentageForYear(self::geographyCodeFor($get), $year);
+
+        if ($pct !== null) {
+            $set('pactado_pct', round((float) $pct, 2));
+        }
     }
 
     /**
@@ -875,6 +956,7 @@ class RentAdjustmentResource extends Resource
 
         $effectiveFrom = $get('effective_from');
         $ipcYear = $get('ipc_year');
+        $basis = IpcBasis::from((string) ($get('ipc_basis') ?: IpcBasis::National->value));
 
         if ($effectiveFrom !== null && $effectiveFrom !== '' && $ipcYear !== null && $ipcYear !== '') {
             $statutoryYear = (int) \Carbon\Carbon::parse($effectiveFrom)->format('Y') - 1;
@@ -887,21 +969,48 @@ class RentAdjustmentResource extends Resource
             }
         }
 
-        // El artículo 20 habla de "el índice de precios al consumidor", sin
-        // distinguir ciudades: usar el de una ciudad es apartarse de su texto,
-        // aunque el año sea el correcto.
-        if ($get('ipc_basis') === IpcBasis::City->value) {
-            $reasons[] = __('rent_adjustment.deviation.city', [
-                'geography' => self::cityNameFor($get),
-            ]);
+        /*
+         * La ciudad solo es separación cuando su porcentaje difiere del total
+         * nacional del mismo año. Si coinciden, usar la ciudad no cambia el
+         * resultado frente al artículo 20, y eso lo dice el panel de
+         * comprobaciones como referencia en lugar de pedir confirmación.
+         */
+        $cityIsReason = false;
+
+        if ($basis === IpcBasis::City && $ipcYear !== null && $ipcYear !== '') {
+            $cityPct = self::percentageForYear(self::geographyCodeFor($get), (int) $ipcYear);
+            $nationalPct = self::percentageForYear(null, (int) $ipcYear);
+
+            $sameAsNational = $cityPct !== null
+                && $nationalPct !== null
+                && round((float) $cityPct, 2) === round((float) $nationalPct, 2);
+
+            if (! $sameAsNational) {
+                $reasons[] = __('rent_adjustment.deviation.city', [
+                    'geography' => self::cityNameFor($get),
+                ]);
+                $cityIsReason = true;
+            }
         }
 
+        /*
+         * El pactado distinto del IPC es motivo, salvo que la ciudad ya lo
+         * opaque: si el apartamiento es por la geografía, el pactado queda
+         * dentro de esa misma separación y listarlo aparte sería ruido.
+         */
         $pactado = $get('pactado_pct');
 
-        if ($pactado !== null && $pactado !== '') {
-            $reasons[] = __('rent_adjustment.deviation.pactado', [
-                'pct' => number_format((float) $pactado, 2, ',', '.'),
-            ]);
+        if (! $cityIsReason && $pactado !== null && $pactado !== '' && $ipcYear !== null && $ipcYear !== '') {
+            $effectivePct = self::percentageForYear(self::geographyCodeFor($get), (int) $ipcYear);
+
+            $matchesIpc = $effectivePct !== null
+                && round((float) $pactado, 2) === round((float) $effectivePct, 2);
+
+            if (! $matchesIpc) {
+                $reasons[] = __('rent_adjustment.deviation.pactado', [
+                    'pct' => number_format((float) $pactado, 2, ',', '.'),
+                ]);
+            }
         }
 
         // El exceso se mide sobre las cifras, no sobre el estado del formulario:
@@ -931,41 +1040,22 @@ class RentAdjustmentResource extends Resource
     }
 
     /**
-     * Si hay algo que las partes deban decidir.
+     * Los motivos que exigen que las partes confirmen el apartamiento.
      *
-     * Es la pregunta de si mostrar la sección, y no es la misma que `deviates()`.
-     * La diferencia importa y es la que hace que el formulario sea usable:
-     *
-     * - Un porcentaje pactado **no** es una separación del artículo 20. Es el
-     *   «hasta» de la ley, previsto por ella. Pactar menos es usar la norma, no
-     *   apartarse de ella, y pedir una confirmación por eso enseñaría al usuario
-     *   a marcar la casilla por costumbre y a perder su valor.
-     *
-     * - El exceso sobre el tope **sí** lo es: la ley lo formula como límite, y
-     *   superarlo es apartarse.
-     *
-     * - El año equivocado y la base ciudad **también**: ambos son apartarse del
-     *   texto, aunque uno por cifra y otro por geografía.
-     *
-     * El porcentaje pactado aparece en la lista de motivos como información, pero
-     * no dispara por sí solo la necesidad de confirmar.
+     * Ahora es la misma lista que `deviationReasons()`. Antes el porcentaje
+     * pactado se excluía de aquí porque se leía como el «hasta» del artículo 20,
+     * que la ley prevé. Con el campo autocompletado con el % del año del IPC, la
+     * lectura cambió: si el usuario lo deja como está, coincide con el cálculo
+     * legal y no hay motivo (ni siquiera entra en `deviationReasons()`); pero si
+     * escribe otra cifra, es una decisión de las partes que se aparta del
+     * artículo 20 y debe confirmarse y documentarse, igual que el año o la
+     * ciudad. Por eso ya no se filtra.
      *
      * @return list<string>
      */
     private static function acknowledgementReasons(Get $get): array
     {
-        $reasons = self::deviationReasons($get);
-
-        $pactado = $get('pactado_pct');
-
-        return array_values(array_filter(
-            $reasons,
-            static fn (string $reason): bool => $pactado === null
-                || $pactado === ''
-                || $reason !== __('rent_adjustment.deviation.pactado', [
-                    'pct' => number_format((float) $pactado, 2, ',', '.'),
-                ]),
-        ));
+        return self::deviationReasons($get);
     }
 
     private static function needsPartyDecision(Get $get): bool

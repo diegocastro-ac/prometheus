@@ -64,6 +64,7 @@ class AnnualVariationStrategy implements IpcBasisStrategy
         if ($observation === null) {
             throw new RuntimeException(__('adjustment_rules.has_ipc_data.missing_short', [
                 'year' => $ipcYear,
+                'next_year' => $ipcYear + 1,
                 'geography' => $isNational ? 'total nacional' : 'ciudad '.$code,
             ]));
         }

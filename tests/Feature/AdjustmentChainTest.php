@@ -501,6 +501,11 @@ class AdjustmentChainTest extends DocumentTestCase
             newRent: 1_030_000,
             effectiveFrom: today()->setYear(2026)->setMonth(6)->setDay(1),
             pactadoPercentage: 3.0,
+            // Un pactado distinto del IPC es una decisión de las partes que se
+            // aparta del cálculo del artículo 20: exige el consentimiento y el
+            // motivo escrito, igual que el año o la ciudad.
+            ipcOutsideStatutoryYear: true,
+            notes: 'Acuerdo para aplicar un porcentaje menor al IPC.',
         );
 
         $this->assertSame(3.0, (float) $adjustment->applied_pct);

@@ -62,6 +62,7 @@ return [
 
     'states' => [
         'recorded' => 'Recorded',
+        'notified' => 'Notified',
         'applied' => 'Applied',
     ],
 
