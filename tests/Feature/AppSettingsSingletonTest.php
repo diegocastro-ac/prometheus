@@ -28,7 +28,6 @@ class AppSettingsSingletonTest extends TestCase
             'address' => 'Calle 1 # 2-3',
             'currency' => 'COP',
             'invoice_due_days' => 5,
-            'space_catalog' => json_encode(['Sala', 'Cocina', 'Baño']),
             'created_at' => now(),
             'updated_at' => now(),
         ], $overrides));
@@ -83,7 +82,6 @@ class AppSettingsSingletonTest extends TestCase
             'address' => 'Carrera 5 # 6-7',
             'currency' => 'COP',
             'invoice_due_days' => 10,
-            'space_catalog' => ['Sala', 'Cocina', 'Baño', 'Terraza'],
         ]);
 
         $after = app(AppSettings::class);
@@ -92,7 +90,6 @@ class AppSettingsSingletonTest extends TestCase
         $this->assertSame('Inmobiliaria Nueva S.A.S.', $after->businessName());
         $this->assertSame('900987654-7', $after->taxId());
         $this->assertSame(10, $after->invoiceDueDays());
-        $this->assertSame(['Sala', 'Cocina', 'Baño', 'Terraza'], $after->spaceCatalog());
     }
 
     #[Test]
@@ -101,7 +98,6 @@ class AppSettingsSingletonTest extends TestCase
         $settings = app(AppSettings::class);
 
         $this->assertSame(config('app.name'), $settings->businessName());
-        $this->assertSame([], $settings->spaceCatalog());
         $this->assertSame(5, $settings->invoiceDueDays());
     }
 
@@ -111,15 +107,5 @@ class AppSettingsSingletonTest extends TestCase
         $this->seedSettings(['currency' => 'COP']);
 
         $this->assertSame('COP 1.500.000', app(AppSettings::class)->formatMoney(1500000));
-    }
-
-    #[Test]
-    public function el_espacios_vienen_limpios_sin_espacios_en_blanco(): void
-    {
-        $this->seedSettings([
-            'space_catalog' => json_encode(['  Sala  ', '', 'Cocina', null]),
-        ]);
-
-        $this->assertSame(['Sala', 'Cocina'], app(AppSettings::class)->spaceCatalog());
     }
 }

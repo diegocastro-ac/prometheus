@@ -13,6 +13,15 @@ return [
         ],
     ],
 
+    /*
+    | Property type. Article 1 of Law 820 limits the statute to urban housing: a
+    | commercial premises is governed by the Commercial Code and has no legal CPI cap.
+    */
+    'types' => [
+        'residential' => 'Urban housing',
+        'commercial' => 'Commercial premises',
+    ],
+
     'form' => [
         'sections' => [
             'main' => [
@@ -27,6 +36,16 @@ return [
                 'property' => 'Property',
                 'is_active' => 'Active',
                 'description' => 'Description',
+            ],
+            'legal' => [
+                'title' => 'Legal details of the property',
+                'description' => 'Article 1 limits Act 820 of 2003 to urban housing, and Article 18 limits the rent to one percent of the commercial value. These are the figures those two checks rely on.',
+                'rental_type' => 'Rental type',
+                'rental_type_help' => 'Act 820 applies to urban housing. In commercial premises the rent is set by the market and the CPI is a reference rather than a legal ceiling.',
+                'commercial_value' => 'Commercial value',
+                'commercial_value_help' => 'Commercial appraisal of the property. Article 18 requires that it not exceed twice the cadastral appraisal.',
+                'catastral_appraisal' => 'Cadastral appraisal',
+                'catastral_appraisal_help' => 'Current cadastral appraisal. It sets the ceiling for the commercial value under Article 18.',
             ],
             'agreement' => [
                 'title' => 'Agreement',

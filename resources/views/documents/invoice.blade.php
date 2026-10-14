@@ -547,7 +547,10 @@
 
     @if($body->warnings !== [])
     <div class="notes" style="background: #fee2e2; border-left-color: #dc2626; color: #991b1b;">
-        <strong>⚠ Important:</strong>
+        {{-- El encabezado va traducido: estaba escrito a mano como "Important", lo
+             que dejaba una palabra en ingles dentro de una factura que por lo
+             demas ya esta en el idioma del usuario. --}}
+        <strong>{{ __('document.warnings_title') }}:</strong>
         @foreach($body->warnings as $warning)
             <p style="margin: 5px 0;">{{ $warning }}</p>
         @endforeach

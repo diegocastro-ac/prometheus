@@ -149,6 +149,66 @@ class RentalResource extends Resource
                     ])
                     ->columns(2),
 
+                /*
+                |--------------------------------------------------------------------
+                | Sección — DATOS LEGALES DEL INMUEBLE
+                |--------------------------------------------------------------------
+                |
+                | Estas columnas YA existían en el modelo y las reglas del artículo 1
+                | y del 18 ya las leían. Lo que faltaba era el formulario: sin él,
+                | los campos quedaban siempre en null y las dos reglas nunca podían
+                | dispararse. Estaban escritas, cableadas al modelo y sin forma de
+                | llenarlas.
+                |
+                | Van en sección propia y plegada porque solo aplican a una parte de
+                | los alquileres: el tipo solo cambia el tratamiento cuando es
+                | comercial, y los dos valores del artículo 18 solo se usan si el
+                | alquiler tiene valor comercial declarado.
+                |
+                | El tipo, en cambio, NO va plegado dentro de esta sección: es una
+                | decisión que determina si la Ley 820 alcanza al contrato, y
+                | preguntarla al final, dentro de algo plegado, es lo contrario de
+                | hacerla visible.
+                */
+                Forms\Components\Section::make(__('rental.form.sections.legal.title'))
+                    ->description(__('rental.form.sections.legal.description'))
+                    ->collapsible()
+                    ->collapsed()
+                    ->schema([
+                        Forms\Components\Select::make('rental_type')
+                            ->label(__('rental.form.sections.legal.rental_type'))
+                            ->helperText(__('rental.form.sections.legal.rental_type_help'))
+                            ->options(\App\Enums\RentalType::options())
+                            ->default(\App\Enums\RentalType::Residential->value)
+                            ->required()
+                            ->live()
+                            ->columnSpanFull(),
+
+                        Forms\Components\TextInput::make('commercial_value')
+                            ->label(__('rental.form.sections.legal.commercial_value'))
+                            ->helperText(__('rental.form.sections.legal.commercial_value_help'))
+                            ->numeric()
+                            ->prefix(fn (): string => app(\App\Settings\AppSettings::class)->currency())
+                            ->minValue(0)
+                            // Solo tiene sentido cuando hay valor comercial
+                            // declarado. Oculto en vez de deshabilitado para que no
+                            // quede un valor guardado que la regla va a leer sin
+                            ->visible(fn (callable $get): bool => self::needsCommercialValue($get))
+                            ->required(fn (callable $get): bool => self::needsCommercialValue($get))
+                            ->columnSpanFull(),
+
+                        Forms\Components\TextInput::make('catastral_appraisal')
+                            ->label(__('rental.form.sections.legal.catastral_appraisal'))
+                            ->helperText(__('rental.form.sections.legal.catastral_appraisal_help'))
+                            ->numeric()
+                            ->prefix(fn (): string => app(\App\Settings\AppSettings::class)->currency())
+                            ->minValue(0)
+                            ->visible(fn (callable $get): bool => self::needsCommercialValue($get))
+                            ->required(fn (callable $get): bool => self::needsCommercialValue($get))
+                            ->columnSpanFull(),
+                    ])
+                    ->columns(2),
+
                 Forms\Components\Section::make(__('rental.form.sections.agreement.title'))
                     ->description(__('rental.form.sections.agreement.description'))
                     ->schema([
@@ -172,6 +232,23 @@ class RentalResource extends Resource
                     ])
                     ->collapsed(),
             ]);
+    }
+
+    /**
+     * Si este alquiler necesita los valores del artículo 18.
+     *
+     * El artículo 18 se refiere a la vivienda urbana susceptible de ser
+     * arrendada, y su tope del uno por ciento se calcula sobre el valor COMERCIAL.
+     * Sin ese valor no hay contra qué comparar el canon, y las dos reglas se
+     * saltan por su cuenta.
+     *
+     * La condición es solo el tipo, y no «el tipo más el valor»: el formulario
+     * tiene que poder exigir el dato que la regla va a leer. En un alquiler
+     * comercial la Ley 820 no aplica, así que no se pide nada.
+     */
+    private static function needsCommercialValue(callable $get): bool
+    {
+        return $get('rental_type') === \App\Enums\RentalType::Residential->value;
     }
 
     public static function table(Table $table): Table
@@ -208,8 +285,8 @@ class RentalResource extends Resource
                     ->label(__('rental.table.columns.billing_cadence'))
                     ->badge()
                     ->formatStateUsing(function ($state) {
-                        return is_object($state) && method_exists($state, 'label') 
-                            ? $state->label() 
+                        return is_object($state) && method_exists($state, 'label')
+                            ? $state->label()
                             : BillingCadence::tryFrom($state)?->label() ?? $state;
                     }),
                 Tables\Columns\IconColumn::make('agreement_path')
@@ -317,6 +394,7 @@ class RentalResource extends Resource
                                                 if ($state instanceof BillingCadence) {
                                                     return $state->label();
                                                 }
+
                                                 return BillingCadence::tryFrom($state)?->label() ?? $state;
                                             }),
                                         Components\TextEntry::make('property.name')
@@ -378,8 +456,10 @@ class RentalResource extends Resource
 
                                 $filename = basename($path);
 
+                                // Sin emoji delante del enlace. El icono lo pone el propio nombre del
+                                // // archivo, que ya dice que es un documento; un simbolo al lado es adorno
+                                // en una pantalla que se lee como un expediente.
                                 return <<<HTML
-                                    <span style="font-size:1.25em; vertical-align:middle;">📄</span>
                                     <a href="{$url}" download class="text-sm text-primary-600 underline">
                                         {$filename}
                                     </a>

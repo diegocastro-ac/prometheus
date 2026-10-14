@@ -147,7 +147,7 @@ class DocumentsPage extends Page
      */
     public function generateStatement(): mixed
     {
-        $data = $this->form->getState();
+        $data = $this->stateFor(['rental_id', 'period', 'format']);
         $rental = Rental::find($data['rental_id'] ?? null);
 
         if ($rental === null) {
@@ -161,15 +161,15 @@ class DocumentsPage extends Page
 
         $statement = app(DocumentService::class)->statementFor(
             rental: $rental,
-            period: (string) $data['period'],
-            format: $data['format'],
+            period: (string) ($data['period'] ?? ''),
+            format: $data['format'] ?? 'text',
         );
 
         if ($statement->invoices() === []) {
             Notification::make()
                 ->warning()
                 ->title(__('invoice.documents.empty_statement'))
-                ->body($rental->name.' · '.$data['period'])
+                ->body($rental->name.' · '.($data['period'] ?? ''))
                 ->send();
         }
 
@@ -181,7 +181,7 @@ class DocumentsPage extends Page
      */
     public function generateInvoice(): mixed
     {
-        $data = $this->form->getState();
+        $data = $this->stateFor(['invoice_id', 'format']);
         $invoice = Invoice::find($data['invoice_id'] ?? null);
 
         if ($invoice === null) {
@@ -193,7 +193,7 @@ class DocumentsPage extends Page
             return null;
         }
 
-        return $this->deliver(app(DocumentService::class)->invoiceFor($invoice, $data['format']));
+        return $this->deliver(app(DocumentService::class)->invoiceFor($invoice, $data['format'] ?? 'text'));
     }
 
     /**
@@ -201,7 +201,7 @@ class DocumentsPage extends Page
      */
     public function generateAdjustmentLetter(): mixed
     {
-        $data = $this->form->getState();
+        $data = $this->stateFor(['adjustment_id', 'format']);
         $adjustment = RentAdjustment::find($data['adjustment_id'] ?? null);
 
         if ($adjustment === null) {
@@ -213,7 +213,7 @@ class DocumentsPage extends Page
             return null;
         }
 
-        return $this->deliver(app(DocumentService::class)->adjustmentLetterFor($adjustment, $data['format']));
+        return $this->deliver(app(DocumentService::class)->adjustmentLetterFor($adjustment, $data['format'] ?? 'text'));
     }
 
     /**
@@ -224,7 +224,7 @@ class DocumentsPage extends Page
      */
     public function generateReceipt(): mixed
     {
-        $data = $this->form->getState();
+        $data = $this->stateFor(['invoice_id', 'format']);
         $invoice = Invoice::find($data['invoice_id'] ?? null);
 
         if ($invoice === null) {
@@ -246,7 +246,39 @@ class DocumentsPage extends Page
             return null;
         }
 
-        return $this->deliver(app(DocumentService::class)->receiptFor($invoice, $data['format']));
+        return $this->deliver(app(DocumentService::class)->receiptFor($invoice, $data['format'] ?? 'text'));
+    }
+
+    /**
+     * El estado de los campos que una accion necesita, y no el de todo el formulario.
+     *
+     * Esta pantalla tiene cuatro acciones independientes que comparten un mismo
+     * formulario: estado de cuenta, factura, carta de reajuste y comprobante. Con
+     * form->getState() cada una validaria TODAS las secciones, de modo que para
+     * imprimir una factura habria que elegir tambien un alquiler y un periodo, y
+     * para generar un estado de cuenta habria que elegir una factura.
+     *
+     * Que ademas es un problema de seguridad, no solo de usabilidad: la validacion
+     * cruzada haria que el alcance de cada boton dependiera de lo que el usuario
+     * hubiera tocado antes.
+     *
+     * Aqui se leen solo los campos del grupo correspondiente y se devuelven sin
+     * exigir los demas. Quien llama decide si el dato falta y avisa con su propio
+     * mensaje, que es mas claro que un error de validacion vacio.
+     *
+     * @param  list<string>  $keys
+     * @return array<string, mixed>
+     */
+    private function stateFor(array $keys): array
+    {
+        $raw = $this->form->getRawState();
+        $state = [];
+
+        foreach ($keys as $key) {
+            $state[$key] = $raw[$key] ?? null;
+        }
+
+        return $state;
     }
 
     /**
@@ -297,7 +329,7 @@ class DocumentsPage extends Page
 
     private static function selectView(\App\Documents\AbstractDocument $document): string
     {
-        return match($document::class) {
+        return match ($document::class) {
             \App\Documents\RentInvoice::class => 'documents.invoice',
             \App\Documents\PaymentReceipt::class => 'documents.receipt',
             \App\Documents\AdjustmentLetter::class => 'documents.adjustment-letter',
@@ -358,8 +390,12 @@ class DocumentsPage extends Page
             ->limit(200)
             ->get()
             ->mapWithKeys(fn (RentAdjustment $adjustment): array => [
+                // "de X a Y" y no una flecha. La flecha es un simbolo tipografico mas, y este
+                // listado nombra documentos que van a imprimirse y a archivarse:
+                // conviene que se lea sin depender de que la fuente tenga el
+                // glifo. Ademas "a" es lo que corresponde en español.
                 $adjustment->id => sprintf(
-                    '%s · %s → %s',
+                    '%s · %s a %s',
                     $adjustment->rental?->name ?? '—',
                     Money::pesos($adjustment->previous_rent),
                     Money::pesos($adjustment->new_rent),

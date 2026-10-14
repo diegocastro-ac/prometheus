@@ -264,7 +264,10 @@
     </div>
 
     <div class="warning-box">
-        <strong>⚠ {{ __('document.legal_notice') }}:</strong> {{ __('document.legal_notice_text') }}
+        {{-- Sin simbolo de advertencia. El recuadro ya esta destacado por su
+             borde y su fondo, de modo que el icono solo anadia un caracter que
+             en una impresion monocroma se convierte en un cuadro negro. --}}
+        <strong>{{ __('document.legal_notice') }}:</strong> {{ __('document.legal_notice_text') }}
     </div>
 
     @if($body->notes !== [])

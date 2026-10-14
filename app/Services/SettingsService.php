@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\DB;
 class SettingsService
 {
     /**
-     * @param  array{business_name: string, tax_id: string, address?: string|null, currency?: string|null, logo_path?: string|null, email?: string|null, phone?: string|null, invoice_due_days?: int|null, legal_footer?: string|null, space_catalog?: array<int, string>|null, primary_color?: string|null, secondary_color?: string|null, font_family?: string|null}  $data
+     * @param  array{business_name: string, tax_id: string, address?: string|null, currency?: string|null, logo_path?: string|null, email?: string|null, phone?: string|null, invoice_due_days?: int|null, legal_footer?: string|null, default_city_code?: string|null}  $data
      */
     public function save(array $data): void
     {
@@ -31,16 +31,10 @@ class SettingsService
                 'phone' => $data['phone'] ?? null,
                 'invoice_due_days' => $data['invoice_due_days'] ?? 5,
                 'legal_footer' => $data['legal_footer'] ?? null,
-                'space_catalog' => json_encode(
-                    array_values(array_filter(array_map(
-                        static fn (mixed $space): string => is_string($space) ? trim($space) : '',
-                        $data['space_catalog'] ?? [],
-                    ))),
-                    JSON_UNESCAPED_UNICODE,
-                ),
-                'primary_color' => $data['primary_color'] ?? '#3b82f6',
-                'secondary_color' => $data['secondary_color'] ?? '#6366f1',
-                'font_family' => $data['font_family'] ?? 'Inter',
+                // La ciudad por defecto se deja en null cuando el arrendador no
+                // elige ninguna, y esa ausencia es significativa: el formulario
+                // de propiedades pide la ciudad en vez de rellenarla.
+                'default_city_code' => $data['default_city_code'] ?? null,
                 'updated_at' => now(),
                 'created_at' => now(),
             ],
@@ -68,10 +62,7 @@ class SettingsService
             'phone' => $settings->phone(),
             'invoice_due_days' => $settings->invoiceDueDays(),
             'legal_footer' => $settings->legalFooter(),
-            'space_catalog' => $settings->spaceCatalog(),
-            'primary_color' => $settings->primaryColor(),
-            'secondary_color' => $settings->secondaryColor(),
-            'font_family' => $settings->fontFamily(),
+            'default_city_code' => $settings->defaultCityCode(),
         ];
     }
 

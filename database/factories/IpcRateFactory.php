@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Models\IpcRate;
+use App\Models\IpcSeries;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 /**
@@ -69,5 +70,71 @@ class IpcRateFactory extends Factory
             'year' => $year,
             'percentage' => $percentage,
         ]);
+    }
+
+    /**
+     * No siembra la serie del IPC.
+     *
+     * Existe para los tests que necesitan la fila anual SIN que exista el dato
+     * mensual. El caso real es "sin IPC registrado no se calcula el tope": ahi el
+     * punto es precisamente que la serie este vacia, y sembrarla por el camino
+     * corto haria que la prueba pasara por el motivo equivocado.
+     */
+    public function withoutSeries(): self
+    {
+        return $this->afterCreating(function (IpcRate $rate): void {
+            // Se marca con una bandera estatica para que el hook general sepa
+            // que esta fila no debe sembrar la serie.
+            self::$skipsSeriesFor[] = $rate->id;
+        });
+    }
+
+    /**
+     * @var list<int>
+     */
+    private static array $skipsSeriesFor = [];
+
+    /**
+     * Sincroniza la fila anual con la serie mensual.
+     *
+     * Hace lo mismo que hace el sistema real, y en el mismo sentido: ipc_rates
+     * es una tabla DERIVADA de ipc_series. Si un test siembra una tasa anual sin
+     * su serie, el calculo del reajuste no encuentra el dato de diciembre y falla
+     * por un motivo que no es el que la prueba quiere comprobar.
+     *
+     * Por eso sembrar la tasa siembra tambien la serie. Los tests siguen
+     * escribiendo una sola linea, que es lo que un lector espera, y el estado de
+     * la base de datos queda igual que en produccion.
+     */
+    public function configure(): static
+    {
+        return $this->afterCreating(function (IpcRate $rate): void {
+            if (in_array($rate->id, self::$skipsSeriesFor, true)) {
+                self::$skipsSeriesFor = array_values(array_diff(self::$skipsSeriesFor, [$rate->id]));
+
+                return;
+            }
+
+            IpcSeries::query()->updateOrCreate(
+                [
+                    'geography_code' => \App\Dto\Geography::nationalCode(),
+                    'year' => $rate->year,
+                    'month' => 12,
+                ],
+                [
+                    'geography_name' => 'NACIONAL',
+                    // Un indice coherente con la variacion. No lo usa el calculo
+                    // legal, que solo necesita el porcentaje, pero la carta puede
+                    // citarlo y un indice absurdo se notaria.
+                    'index_value' => 100 * (1 + ($rate->percentage / 100)),
+                    'variation_monthly' => 0.3,
+                    'variation_yoy' => $rate->percentage,
+                    'variation_year' => $rate->percentage,
+                    'source_name' => $rate->source_name,
+                    'source_url' => $rate->source_url,
+                    'synced_at' => now(),
+                ],
+            );
+        });
     }
 }

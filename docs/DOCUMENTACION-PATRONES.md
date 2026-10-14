@@ -2,6 +2,14 @@
 
 Este documento explica cómo se implementaron los 5 patrones de diseño principales en el proyecto Prometheus: Singleton, Builder, Abstract Factory, Factory Method y Adapter.
 
+> **Módulo del IPC y reajustes.** El proyecto tiene un segundo conjunto de patrones,
+> documentado aparte en **[PATRONES-IPC-REAJUSTES.md](PATRONES-IPC-REAJUSTES.md)**:
+> el Adapter del IPC del DANE, Repository, Template Method, Observer, Strategy,
+> Decorator, Chain of Responsibility, Specification y Command, más el motor de
+> la cadena de reajustes. Allí se explica por qué cada patrón era **necesario**
+> y no decorativo: sin el ancla de cálculo no había recálculo, y sin el adaptador
+> la regla del artículo 20 quedaba llena de código de transporte.
+
 ---
 
 ## 1. Singleton
@@ -602,3 +610,25 @@ La arquitectura facilita:
 - Mantenimiento (cada cambio está localizado)
 - Extensión (nuevas familias de documentos, nuevos renderizadores)
 - Consistencia (mismos métodos, mismos datos globales)
+
+---
+
+## Cómo se relaciona con el módulo del IPC
+
+El `Adapter` de los días hábiles resuelve una dependencia externa pequeña: una
+API de festivos que puede caerse. El `Adapter` del IPC resuelve algo más grande,
+y por eso el módulo lleva su propia documentación.
+
+| | Días hábiles | IPC del DANE |
+|---|---|---|
+| Qué adapta | Una API REST con contrato | Un motor de SQL sin contrato ni versión |
+| Qué normaliza | Fechas y nombres de festivo | Comas decimales, meses abreviados, códigos sin cero |
+| Si falla | Se degrada a fin de semana | Se conserva la última serie buena |
+| Dónde vive la lógica | El adaptador | El adaptador solo traduce; la ley vive en las reglas |
+
+Esa última fila es la diferencia de fondo. En `BusinessCalendar` el adaptador
+**es** la lógica. En el IPC el adaptador solo traduce formatos: el artículo 20,
+el artículo 18 y la aritmética de la cadena viven en el dominio, y por eso se
+pueden probar sin red y sin base de datos.
+
+Ver [PATRONES-IPC-REAJUSTES.md](PATRONES-IPC-REAJUSTES.md).
