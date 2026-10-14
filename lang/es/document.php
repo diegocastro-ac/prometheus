@@ -87,6 +87,9 @@ return [
 
     // Transaction History
     'transaction_history' => 'Historial de Transacciones',
+    'invoices' => 'Facturas',
+    'total_billed' => 'Total facturado',
+    'statement_note' => 'Las fechas de vencimiento se consultan en cada factura. Las facturas anuladas no se cobran y se muestran solo como registro.',
     'concept' => 'Concepto',
     'balance' => 'Saldo',
     'status' => 'Estado',
@@ -113,6 +116,7 @@ return [
     // Plain text sections
     'general_data' => 'Datos Generales',
     'details' => 'Detalle',
+    'warnings_title' => 'Advertencias',
     'warnings' => 'Avisos',
     'paid_in_full' => 'PAGADA COMPLETAMENTE',
 
@@ -128,8 +132,14 @@ return [
     'effective_from' => 'Vigencia desde',
     'ipc_applied' => 'IPC aplicado',
     'legal_cap' => 'Tope legal',
-    'warning_exceeds_cap' => 'AVISO: el incremento pedido supera en %s el tope legal del IPC. Según el artículo 20 de la Ley 820 de 2003, un incremento por encima del IPC solo opera si existe acuerdo escrito entre las partes. Sin ese acuerdo, el canon que queda vigente es el de %s.',
-    'note_communication' => 'Esta carta cumple el deber de comunicación del artículo 20 de la Ley 820 de 2003. Si no se comunica el monto ni la fecha de vigencia, el reajuste es inoponible al arrendatario.',
+    'warning_prefix' => 'AVISO:',
+    'warning_exceeds_cap' => 'AVISO: el incremento pedido supera en %s lo que da el IPC del período. El artículo 20 de la Ley 820 de 2003 lo formula como límite, y en la práctica las partes pueden acordar más si lo dejan por escrito. El canon que el IPC respalda es de %s.',
+    'warning_city_basis' => 'AVISO: este reajuste se calculó con el IPC de %s y no con el total nacional. El artículo 20 habla de "el índice de precios al consumidor" sin distinguir ciudades, así que el porcentaje es una referencia acordada y no el tope que fija la norma.',
+    'warning_commercial' => 'AVISO: este inmueble está registrado como local comercial. La Ley 820 se aplica a vivienda urbana, de modo que en este alquiler el porcentaje es una referencia de mercado y no un límite legal.',
+    'cumulative_from_anchor' => 'Acumulado',
+    'pactado_below' => 'Porcentaje pactado',
+    'not_yet_notified' => 'Este reajuste aún no ha sido comunicado. El artículo 20 lo hace inoponible mientras no se informen el monto y la fecha de vigencia.',
+    'note_communication' => 'Esta carta cumple el deber de comunicación del artículo 20 de la Ley 820 de 2003. El incremento no es oponible al arrendatario si no se le informa el monto y la fecha, y esa comunicación debe hacerse por el servicio postal autorizado o por el mecanismo pactado en el contrato.',
     'note_ipc_source' => 'Fuente del indicador: %s, IPC del %s (%s).',
     'notified_on' => 'Comunicada el',
 

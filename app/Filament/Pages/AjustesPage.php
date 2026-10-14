@@ -2,6 +2,7 @@
 
 namespace App\Filament\Pages;
 
+use App\Models\Geography;
 use App\Services\SettingsService;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -93,6 +94,24 @@ class AjustesPage extends Page
                 Forms\Components\Section::make(__('settings.sections.billing'))
                     ->description(__('settings.descriptions.billing'))
                     ->schema([
+                        /*
+                        | La ciudad predeterminada NO es un valor obligatorio.
+                        |
+                        | Si no se elige ninguna, el formulario de propiedades deja el
+                        | campo de ciudad vacio y lo exige. La alternativa habria sido
+                        | asumir el total nacional, y esa es la decision equivocada: el
+                        | total nacional no es una ciudad. Rellenarlo automaticamente
+                        | inventaria la ubicacion del inmueble y esa suposicion
+                        | terminaria alimentando el tope de IPC de todos sus reajustes.
+                        */
+                        Forms\Components\Select::make('default_city_code')
+                            ->label(__('settings.form.default_city_code'))
+                            ->helperText(__('settings.form.default_city_code_help'))
+                            ->options(fn (): array => Geography::locationOptions())
+                            ->searchable()
+                            ->native(false)
+                            ->placeholder(__('settings.form.default_city_code_placeholder')),
+
                         Forms\Components\TextInput::make('invoice_due_days')
                             ->label(__('settings.form.invoice_due_days'))
                             ->numeric()
@@ -106,6 +125,26 @@ class AjustesPage extends Page
                             ->placeholder(__('settings.placeholders.legal_footer'))
                             ->rows(3)
                             ->columnSpanFull(),
+
+                        /*
+                        | El catálogo de espacios NO vive aquí.
+                        |
+                        | Estaba en Ajustes y en la tabla `spaces` al mismo tiempo, y
+                        | ya divergían: doce espacios en la tabla contra seis en el
+                        | ajuste. Peor aún: el que validaba era este, y el que se le
+                        | mostraba al usuario como sugerencia era el otro. Se podía
+                        | elegir un espacio de la lista y ver cómo lo rechazaba el
+                        | sistema.
+                        |
+                        | La causa es de fondo: un ajuste GLOBAL de la aplicación para
+                        | algo que es vocabulario del ARRENDADOR. Dos arrendadores en
+                        | la misma instalación compartían espacios, cuando lo natural
+                        | es que uno diga «Sala» y el otro «Estar».
+                        |
+                        | Ahora el catálogo está donde se usa: en el inventario del
+                        | acta, con un selector que permite elegir uno existente o
+                        | crear uno nuevo en el momento, sin salir de la pantalla.
+                        */
                     ])
                     ->columns(2),
             ])
@@ -116,8 +155,8 @@ class AjustesPage extends Page
     {
         $data = $this->form->getState();
 
-        // El campo del logo llega como un array de rutas cuando se subio algo
-        // en este envio. Si no se subio nada, se conserva la imagen anterior.
+        // El campo del logo llega como un array de rutas cuando se subió algo
+        // en este envío. Si no se subió nada, se conserva la imagen anterior.
         if (is_array($data['logo_path'] ?? null)) {
             $data['logo_path'] = $data['logo_path'][0] ?? null;
         }

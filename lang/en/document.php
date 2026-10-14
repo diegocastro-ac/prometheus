@@ -87,6 +87,9 @@ return [
 
     // Transaction History
     'transaction_history' => 'Transaction History',
+    'invoices' => 'Invoices',
+    'total_billed' => 'Total Billed',
+    'statement_note' => 'Due dates are checked on each invoice. Annulled invoices are not billed and are shown for the record only.',
     'concept' => 'Concept',
     'balance' => 'Balance',
     'status' => 'Status',
@@ -113,6 +116,7 @@ return [
     // Plain text sections
     'general_data' => 'General Data',
     'details' => 'Details',
+    'warnings_title' => 'Warnings',
     'warnings' => 'Warnings',
     'paid_in_full' => 'PAID IN FULL',
 
@@ -128,9 +132,15 @@ return [
     'effective_from' => 'Effective From',
     'ipc_applied' => 'IPC Applied',
     'legal_cap' => 'Legal Cap',
-    'warning_exceeds_cap' => 'WARNING: the requested increase exceeds the legal IPC cap by %s. According to Article 20 of Law 820 of 2003, an increase above the IPC only operates if there is a written agreement between the parties. Without that agreement, the rent that remains in effect is %s.',
-    'note_communication' => 'This letter fulfills the communication duty of Article 20 of Law 820 of 2003. If the amount and effective date are not communicated, the adjustment is inopposable to the tenant.',
-    'note_ipc_source' => 'Indicator source: %s, IPC of %s (%s).',
+    'warning_prefix' => 'WARNING:',
+    'warning_exceeds_cap' => 'WARNING: the requested increase exceeds what the CPI gives by %s. Article 20 of Law 820 of 2003 phrases this as a limit, and in practice the parties may agree more if they put it in writing. The rent the CPI supports is %s.',
+    'warning_city_basis' => 'WARNING: this adjustment was calculated with the CPI of %s rather than the national total. Article 20 refers to "the consumer price index" without distinguishing cities, so the percentage is an agreed reference and not the limit set by the statute.',
+    'warning_commercial' => 'WARNING: this property is registered as commercial premises. Law 820 applies to urban housing, so here the percentage is a market reference and not a legal limit.',
+    'cumulative_from_anchor' => 'Cumulative',
+    'pactado_below' => 'Agreed percentage',
+    'not_yet_notified' => 'This adjustment has not been communicated yet. Under Article 20 it is unenforceable until the amount and effective date are notified.',
+    'note_communication' => 'This letter fulfills the communication duty of Article 20 of Law 820 of 2003. The increase is not enforceable against the tenant unless the amount and effective date are communicated, and that communication must go through the authorised postal service or the mechanism agreed in the lease.',
+    'note_ipc_source' => 'Indicator source: %s, CPI of %s (%s).',
     'notified_on' => 'Notified on',
 
     // Footer

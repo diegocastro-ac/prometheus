@@ -23,7 +23,6 @@ class AjustesPageTest extends TestCase
             'tax_id' => '900111222-3',
             'currency' => 'COP',
             'invoice_due_days' => 7,
-            'space_catalog' => json_encode(['Sala', 'Cocina']),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -52,11 +51,6 @@ class AjustesPageTest extends TestCase
                 'currency' => 'COP',
                 'invoice_due_days' => 3,
                 'legal_footer' => 'Documento sin valor fiscal.',
-                'space_catalog' => [
-                    ['space' => 'Sala'],
-                    ['space' => 'Cocina'],
-                    ['space' => 'Terraza'],
-                ],
             ])
             ->call('save')
             ->assertHasNoFormErrors();
@@ -67,10 +61,6 @@ class AjustesPageTest extends TestCase
         $this->assertSame('Inmobiliaria desde Pantalla S.A.S.', $row->business_name);
         $this->assertSame('900444555-6', $row->tax_id);
         $this->assertSame(3, (int) $row->invoice_due_days);
-        $this->assertSame(
-            ['Sala', 'Cocina', 'Terraza'],
-            json_decode($row->space_catalog, true)
-        );
 
         // La siguiente peticion debe releer la base de datos, no la instancia vieja.
         $this->assertSame('Inmobiliaria desde Pantalla S.A.S.', app(\App\Settings\AppSettings::class)->businessName());

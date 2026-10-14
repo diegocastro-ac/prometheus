@@ -47,6 +47,10 @@ return [
         'commitments' => 'Compromisos',
         'observations' => 'Observaciones',
         'space' => 'Espacio',
+        'space_placeholder' => 'Seleccione o cree un espacio',
+        'space_new' => 'Nombre del nuevo espacio',
+        'space_new_help' => 'Se agrega a su catálogo y queda disponible para los próximos inventarios.',
+        'space_edit' => 'Renombrar espacio',
         'space_name' => 'Nombre del espacio',
         'item_name' => 'Nombre del elemento',
         'item_state' => 'Estado del elemento',
@@ -79,7 +83,7 @@ return [
     ],
 
     'actions' => [
-        'derive' => 'Crear acta a partir de esta',
+        'derive' => 'Crear desde esta',
     ],
 
     'buttons' => [
@@ -89,5 +93,17 @@ return [
 
     'created' => 'Acta creada',
     'derived' => 'Acta copiada en el formulario',
-    'no_catalog' => 'No hay catálogo de espacios configurado. Agrégalo en Ajustes para poder inventariar.',
+
+    /*
+    | Los mensajes del Builder.
+    |
+    | Antes eran cadenas en PHP, sin tildes y con la instrucción de ir a otra
+    | pantalla. Este último es el que cambió de fondo: decir «agreguelo en Ajustes»
+    | obligaba al usuario a interrumpir el inventario para configurar un dato que
+    | necesitaba en ese momento, y el formulario ya tiene un botón para crearlo.
+    */
+    'errors' => [
+        'no_spaces' => 'Aún no hay espacios en su catálogo. Use el botón de creación junto al campo para agregar el primero.',
+        'space_not_in_catalog' => 'El espacio «:space» no está en su catálogo. Puede usar uno de los existentes (:catalog) o crear este con el botón contiguo.',
+    ],
 ];

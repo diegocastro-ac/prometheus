@@ -47,6 +47,10 @@ return [
         'commitments' => 'Commitments',
         'observations' => 'Observations',
         'space' => 'Space',
+        'space_placeholder' => 'Select or create a space',
+        'space_new' => 'Name of the new space',
+        'space_new_help' => 'It is added to your catalogue and stays available for future inventories.',
+        'space_edit' => 'Rename space',
         'space_name' => 'Space name',
         'item_name' => 'Item name',
         'item_state' => 'Item state',
@@ -79,7 +83,7 @@ return [
     ],
 
     'actions' => [
-        'derive' => 'Create act from this one',
+        'derive' => 'Create from this',
     ],
 
     'buttons' => [
@@ -89,5 +93,12 @@ return [
 
     'created' => 'Act created',
     'derived' => 'Act copied into the form',
-    'no_catalog' => 'No space catalog configured. Add it in Settings to inventory items.',
+
+    // The Builder's messages. The second one changed in substance: telling the
+    // user to "add it in Settings" interrupted the inventory to configure a
+    // figure they needed right then, and the form now has a button for it.
+    'errors' => [
+        'no_spaces' => 'Your catalogue has no spaces yet. Use the create button next to the field to add the first one.',
+        'space_not_in_catalog' => 'The space ":space" is not in your catalogue. You may use one of the existing ones (:catalog) or create this one with the adjacent button.',
+    ],
 ];

@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Livewire;
 use PHPUnit\Framework\Attributes\Test;
+use Tests\SeedsSpaceCatalog;
 use Tests\TestCase;
 
 /**
@@ -26,6 +27,7 @@ use Tests\TestCase;
 class CreateDeliveryActFromTest extends TestCase
 {
     use RefreshDatabase;
+    use SeedsSpaceCatalog;
 
     private User $user;
 
@@ -41,13 +43,15 @@ class CreateDeliveryActFromTest extends TestCase
             'tax_id' => '900123456-7',
             'currency' => 'COP',
             'invoice_due_days' => 5,
-            'space_catalog' => json_encode(['Sala', 'Cocina', 'Baño']),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
 
         $this->user = User::factory()->create();
         $this->rental = Rental::factory()->create(['user_id' => $this->user->id]);
+
+        // El catálogo es por usuario desde que vive en spaces.
+        $this->seedSpaces($this->user, ['Sala', 'Cocina', 'Baño', 'Terraza']);
 
         $this->actingAs($this->user);
     }

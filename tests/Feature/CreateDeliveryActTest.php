@@ -12,6 +12,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Livewire\Livewire;
 use PHPUnit\Framework\Attributes\Test;
+use Tests\SeedsSpaceCatalog;
 use Tests\TestCase;
 
 /**
@@ -22,6 +23,7 @@ use Tests\TestCase;
 class CreateDeliveryActTest extends TestCase
 {
     use RefreshDatabase;
+    use SeedsSpaceCatalog;
 
     private User $user;
 
@@ -37,13 +39,17 @@ class CreateDeliveryActTest extends TestCase
             'tax_id' => '900123456-7',
             'currency' => 'COP',
             'invoice_due_days' => 5,
-            'space_catalog' => json_encode(['Sala', 'Cocina', 'Baño']),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
 
         $this->user = User::factory()->create();
         $this->rental = Rental::factory()->create(['user_id' => $this->user->id]);
+
+        // El catálogo vive en `spaces`, por usuario. Antes venía de
+        // app_settings.space_catalog, que era global y por eso se sembraba una
+        // sola vez para toda la base.
+        $this->seedSpaces($this->user, ['Sala', 'Cocina', 'Baño', 'Terraza']);
 
         $this->actingAs($this->user);
     }

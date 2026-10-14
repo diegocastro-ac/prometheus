@@ -56,9 +56,22 @@ class PlainTextRenderer implements DocumentRenderer
         $lines[] = '';
 
         // Header con datos del negocio si es comprobante
+        /*
+        | Sin simbolos dentro de la caja.
+        |
+        | Antes este recuadro llevaba un visto bueno y las advertencias un signo de
+        | advertencia. Los dos son el mismo error por motivos distintos: en texto
+        | plano monoespaciado no todos los terminals ni todas las fuentes tienen el
+        | glifo, y cuando falta se sustituye por un cuadrado. En un comprobante
+        | que va impreso o pegado en un correo, un cuadrado al lado de "PAGADO" es
+        | inaceptable.
+        |
+        | El recuadro ya comunica la misma informacion por su forma, y el texto
+        | de la advertencia ya dice que es una advertencia.
+        */
         if ($body->document() instanceof \App\Documents\PaymentReceipt) {
             $lines[] = '┌────────────────────────────────────────────────────────────────┐';
-            $lines[] = '│ ✓ '.__('document.paid_in_full').'                                   │';
+            $lines[] = '│   '.str_pad(__('document.paid_in_full'), 59).'│';
             $lines[] = '└────────────────────────────────────────────────────────────────┘';
             $lines[] = '';
         }
@@ -86,7 +99,7 @@ class PlainTextRenderer implements DocumentRenderer
             $lines[] = sprintf('%d. %s', $sectionNumber++, __('document.warnings'));
             $lines[] = str_repeat('─', 60);
             foreach ($body->warnings as $warning) {
-                $lines[] = '  ⚠ '.$warning;
+                $lines[] = '  - '.$warning;
             }
             $lines[] = '';
         }
@@ -169,17 +182,17 @@ class PlainTextRenderer implements DocumentRenderer
         return rtrim(implode('  ', $padded));
     }
 
-/**
- * @param  array<string, string>  $fields
- */
-private function labelWidth(array $fields): int
-{
-    $width = 0;
+    /**
+     * @param  array<string, string>  $fields
+     */
+    private function labelWidth(array $fields): int
+    {
+        $width = 0;
 
-    foreach (array_keys($fields) as $label) {
-        $width = max($width, mb_strlen((string) $label));
+        foreach (array_keys($fields) as $label) {
+            $width = max($width, mb_strlen((string) $label));
+        }
+
+        return $width;
     }
-
-    return $width;
-}
 }

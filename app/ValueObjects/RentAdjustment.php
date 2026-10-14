@@ -8,14 +8,20 @@ use App\Models\IpcRate;
  * Reajuste anual del canon de un alquiler.
  *
  * El articulo 20 de la Ley 820 de 2003 permite incrementar el canon hasta el
- * 100 % del IPC del ano calendario inmediatamente anterior. Dos reglas de este
- * valor lo hacen explicito:
+ * 100 % del IPC del ano calendario inmediatamente anterior. Este value object
+ * captura el resultado de aplicar esa regla, con dos decisiones que conviene
+ * tener explicitas.
  *
- * - El tope no se aplica solo. Si el incremento supera el IPC, la ley no lo
- *   veda de forma categorica, pero solo opera si hay acuerdo escrito entre las
- *   partes, asi que el documento debe decirlo en vez de aplicarlo en silencio.
- * - El IPC de un ano no aplica a un reajuste de ese mismo ano: el de 2025
- *   reajuste a un canon que se modifica en 2026.
+ * Sobre el encadenado: previousRent es el canon que RIGIA, no el canon original
+ * del contrato. "Cada doce (12) meses de ejecucion del contrato bajo un mismo
+ * precio": el precio vigente durante esos doce meses es el del reajuste anterior,
+ * y el tope del ano siguiente se calcula sobre el. Encadenar desde el canon base
+ * equivaldria a renunciar a buena parte del IPC del ultimo ano.
+ *
+ * Sobre el exceso: el articulo lo formula como limite, pero la practica admite
+ * pactar mas y la jurisprudencia no pudo verificarse al construir el modulo. Por
+ * eso exceedsCap() informa y no bloquea. Lo que si es condicion del articulo es
+ * la comunicacion, y eso se comprueba en otro punto.
  */
 final readonly class RentAdjustment
 {
@@ -27,24 +33,43 @@ final readonly class RentAdjustment
         public int $ipcYear,
         public string $ipcSourceName,
         public string $ipcSourceUrl,
+        public ?float $anchorRent = null,
+        public ?float $legalPercentage = null,
+        public ?float $appliedPercentage = null,
     ) {}
 
+    /**
+     * Calcula el reajuste con la regla del articulo 20.
+     *
+     * @param  float|null  $pactadoPercentage  lo que las partes acuerdan por
+     *                                         debajo del IPC. El "hasta" del
+     *                                         articulo lo admite, y es lo mas
+     *                                         comun en la practica.
+     */
     public static function fromIpc(
         float $previousRent,
         float $requestedRent,
         IpcRate $ipc,
+        ?float $pactadoPercentage = null,
+        ?float $anchorRent = null,
     ): self {
-        $factor = 1 + ($ipc->percentage / 100);
+        $legal = (float) $ipc->percentage;
+        $applied = $pactadoPercentage === null ? $legal : min($pactadoPercentage, $legal);
 
         return new self(
             previousRent: $previousRent,
             requestedRent: $requestedRent,
+            // El tope que fija la ley es el del IPC. Pactar menos baja la cifra
+            // acordada, que es otra cosa, y por eso el tope no cambia.
             // Se redondea al peso: un canon con centavos no existe.
-            legalCapRent: round($previousRent * $factor, 0),
-            ipcPercentage: $ipc->percentage,
+            legalCapRent: round($previousRent * (1 + ($legal / 100)), 0),
+            ipcPercentage: $applied,
             ipcYear: $ipc->year,
             ipcSourceName: $ipc->source_name,
             ipcSourceUrl: $ipc->source_url,
+            anchorRent: $anchorRent,
+            legalPercentage: $legal,
+            appliedPercentage: $applied,
         );
     }
 
@@ -63,6 +88,9 @@ final readonly class RentAdjustment
         int $ipcYear,
         string $ipcSourceName,
         string $ipcSourceUrl,
+        ?float $anchorRent = null,
+        ?float $legalPercentage = null,
+        ?float $appliedPercentage = null,
     ): self {
         return new self(
             previousRent: $previousRent,
@@ -72,6 +100,9 @@ final readonly class RentAdjustment
             ipcYear: $ipcYear,
             ipcSourceName: $ipcSourceName,
             ipcSourceUrl: $ipcSourceUrl,
+            anchorRent: $anchorRent,
+            legalPercentage: $legalPercentage ?? $ipcPercentage,
+            appliedPercentage: $appliedPercentage ?? $ipcPercentage,
         );
     }
 
@@ -98,9 +129,31 @@ final readonly class RentAdjustment
         return $this->isIncrease() && $this->requestedRent > $this->legalCapRent;
     }
 
-    public function requiresWrittenAgreement(): bool
+    /**
+     * Si el IPC del articulo 20 y el aplicado difieren, es porque hubo pacto.
+     */
+    public function hasPactadoCap(): bool
     {
-        return $this->exceedsCap();
+        return $this->legalPercentage !== null
+            && $this->appliedPercentage !== null
+            && $this->legalPercentage > $this->appliedPercentage;
+    }
+
+    /**
+     * El incremento acumulado sobre el canon original, no sobre el ultimo.
+     *
+     * Es lo que compara el inquilino entre lo que pago al principio y lo que
+     * paga hoy, y no es el porcentaje del ultimo reajuste.
+     */
+    public function cumulativeIncreasePercentage(): float
+    {
+        $anchor = $this->anchorRent ?? $this->previousRent;
+
+        if ($anchor <= 0) {
+            return 0.0;
+        }
+
+        return round((($this->requestedRent - $anchor) / $anchor) * 100, 2);
     }
 
     public function increase(): float

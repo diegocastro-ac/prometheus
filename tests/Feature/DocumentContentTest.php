@@ -31,14 +31,19 @@ class DocumentContentTest extends DocumentTestCase
 
         $body = $this->documents()->receiptFor($invoice, 'text')->body();
 
-        $this->assertSame('Comprobante de pago', $body->title);
-        $this->assertSame($invoice->number, $body->fields['Factura']);
-        $this->assertSame(Money::exact(800_000), $body->fields['Total facturado']);
-        $this->assertSame(Money::exact(800_000), $body->fields['Total abonado']);
-        $this->assertSame(Money::exact(0), $body->fields['Saldo']);
+        $this->assertSame(__('document.payment_receipt'), $body->title);
+        $this->assertSame($invoice->number, $body->fields[__('document.invoice_number')]);
+        $this->assertSame(Money::exact(800_000), $body->fields[__('document.invoice_amount')]);
+        $this->assertSame(Money::exact(800_000), $body->fields[__('document.paid_amount')]);
+        $this->assertSame(Money::exact(0), $body->fields[__('document.balance')]);
 
-        // Una tabla de abonos con las cuatro columnas esperadas.
-        $this->assertSame(['Fecha', 'Abono', 'Forma de pago', 'Referencia'], $body->headers);
+        // Una tabla de abonos con las cuatro columnas que el comprobante emite.
+        $this->assertSame([
+            __('document.date'),
+            __('document.amount_paid'),
+            __('document.method'),
+            __('document.reference'),
+        ], $body->headers);
         $this->assertCount(1, $body->rows);
     }
 
@@ -113,9 +118,9 @@ class DocumentContentTest extends DocumentTestCase
 
         $body = $this->documents()->invoiceFor($invoice->refresh(), 'text')->body();
 
-        $this->assertSame('Factura de arrendamiento', $body->title);
-        $this->assertSame(Money::exact(1_000_000), $body->fields['Total']);
-        $this->assertSame(__('invoice.statuses.emitida'), $body->fields['Estado']);
+        $this->assertSame(__('document.invoice'), $body->title);
+        $this->assertSame(Money::exact(1_000_000), $body->fields[__('document.total_due')]);
+        $this->assertSame(__('invoice.statuses.emitida'), $body->fields[__('document.status')]);
         $this->assertCount(1, $body->rows, 'El abono parcial debe listarse.');
     }
 
@@ -141,16 +146,19 @@ class DocumentContentTest extends DocumentTestCase
         $billed = array_sum(array_map(fn (Invoice $invoice): float => $invoice->amount, $invoices));
 
         $this->assertInstanceOf(MonthlyStatement::class, $statement);
-        $this->assertSame('Estado de cuenta', $statement->body()->title);
-        $this->assertSame('2026-01', $statement->body()->fields['Periodo']);
-        $this->assertSame((string) count($invoices), $statement->body()->fields['Facturas']);
-        $this->assertSame(Money::exact($billed), $statement->body()->fields['Total facturado']);
+        $this->assertSame(__('document.monthly_statement'), $statement->body()->title);
+        $this->assertSame('2026-01', $statement->body()->fields[__('document.period')]);
+        $this->assertSame((string) count($invoices), $statement->body()->fields[__('document.invoices')]);
+        $this->assertSame(Money::exact($billed), $statement->body()->fields[__('document.total_billed')]);
 
         // Las facturas del periodo estan sin pagar, asi que el saldo es igual al
         // facturado. Un saldo en cero aqui significaria que el estado de cuenta
         // esta leyendo algo que no es.
-        $this->assertSame(Money::exact($billed), $statement->body()->fields['Saldo']);
-        $this->assertSame(Money::exact(0), $statement->body()->fields['Total abonado']);
+        $this->assertSame(
+            Money::exact($billed),
+            $statement->body()->fields[__('document.outstanding_balance')],
+        );
+        $this->assertSame(Money::exact(0), $statement->body()->fields[__('document.total_paid')]);
     }
 
     #[Test]
@@ -172,7 +180,7 @@ class DocumentContentTest extends DocumentTestCase
             format: 'text',
         );
 
-        $this->assertSame(Money::exact(100_000), $statement->body()->fields['Total abonado']);
+        $this->assertSame(Money::exact(100_000), $statement->body()->fields[__('document.total_paid')]);
 
         // El saldo se calcula sobre todas las facturas del periodo, no solo
         // sobre la que se abono.
@@ -180,7 +188,7 @@ class DocumentContentTest extends DocumentTestCase
 
         $this->assertSame(
             Money::exact($billed - 100_000),
-            $statement->body()->fields['Saldo'],
+            $statement->body()->fields[__('document.outstanding_balance')],
         );
     }
 
@@ -220,7 +228,7 @@ class DocumentContentTest extends DocumentTestCase
         // No debe fallar ni inventar cifras: un estado de cuenta vacio es la
         // respuesta correcta a "no me deben nada".
         $this->assertSame([], $statement->invoices());
-        $this->assertSame(Money::exact(0), $statement->body()->fields['Saldo']);
+        $this->assertSame(Money::exact(0), $statement->body()->fields[__('document.outstanding_balance')]);
         $this->assertSame([], $statement->body()->rows);
     }
 
@@ -237,11 +245,11 @@ class DocumentContentTest extends DocumentTestCase
 
         $body = $this->documents()->adjustmentLetterFor($adjustment, 'text')->body();
 
-        $this->assertSame('Comunicacion de reajuste del canon', $body->title);
-        $this->assertStringContainsString('9,28', $body->fields['IPC aplicado']);
-        $this->assertStringContainsString('2025', $body->fields['IPC aplicado']);
-        $this->assertSame(Money::pesos(1_000_000), $body->fields['Canon anterior']);
-        $this->assertSame(Money::pesos(1_092_800), $body->fields['Canon reajustado']);
+        $this->assertSame(__('document.adjustment_letter'), $body->title);
+        $this->assertStringContainsString('9,28', $body->fields[__('document.ipc_applied')]);
+        $this->assertStringContainsString('2025', $body->fields[__('document.ipc_applied')]);
+        $this->assertSame(Money::pesos(1_000_000), $body->fields[__('document.previous_rent')]);
+        $this->assertSame(Money::pesos(1_092_800), $body->fields[__('document.new_rent_amount')]);
 
         // La fuente del dato tiene que quedar en el documento: es lo que
         // sustenta el cobro delante del arrendatario.

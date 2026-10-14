@@ -1,0 +1,291 @@
+/*
+|==============================================================================
+| Estilos del panel de Filament para el formulario de reajuste
+|==============================================================================
+|
+| POR QUÉ ES UN ARCHIVO APARTE Y NO app.css
+|
+| app.css solo se carga en welcome.blade.php. El panel de Filament tiene su
+| propio layout y NO carga app.css, así que estas reglas no llegaban a la
+| pantalla del reajuste: la tabla y las comprobaciones se veían "sin estilo".
+|
+| Este archivo se compila con Vite y se inyecta en el panel con un render hook
+| (ver DashboardPanelProvider). Es CSS puro: no importa Tailwind, solo usa las
+| variables de color que Filament ya define en el panel (--gray-*, --primary-*,
+| --danger-*, --warning-*), por lo que el modo oscuro lo hereda sin más. Al no
+| traer reset de Tailwind no pisa el espaciado del panel.
+*/
+
+/*
+|------------------------------------------------------------------------------
+| La tabla del cálculo del reajuste
+|------------------------------------------------------------------------------
+|
+| ES UNA TABLA PORQUE LO QUE RESPONDE ES UNA CUENTA: canon vigente + porcentaje
+| = incremento; canon vigente + incremento = tope. Esa cadena solo se lee en
+| vertical. El importe nunca se parte (nowrap) porque «COP 2.637.427» partido a
+| mitad de línea hace ilegible justo la cifra que hay que leer. Los totales van
+| en tfoot porque son la conclusión de todo lo de arriba.
+*/
+.ajuste-preview {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+    table-layout: auto;
+}
+
+.ajuste-preview th,
+.ajuste-preview td {
+    padding: 0.5rem 0.5rem 0.5rem 0;
+    text-align: left;
+    vertical-align: baseline;
+}
+
+.ajuste-preview__label {
+    font-weight: 500;
+}
+
+.ajuste-preview__label-text {
+    display: block;
+}
+
+.ajuste-preview__hint {
+    display: block;
+    margin-top: 0.0625rem;
+    color: var(--gray-500);
+    font-size: 0.6875rem;
+    font-weight: 400;
+    line-height: 1.35;
+}
+
+.ajuste-preview__value {
+    width: 1%;
+    padding-right: 0;
+    color: var(--gray-900);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.ajuste-preview__total .ajuste-preview__label,
+.ajuste-preview__total .ajuste-preview__value {
+    color: var(--gray-900);
+    font-weight: 700;
+}
+
+.ajuste-preview__total td,
+.ajuste-preview__total th {
+    border-top: 1px solid var(--gray-200);
+    padding-top: 0.625rem;
+}
+
+.ajuste-preview__total--chosen td,
+.ajuste-preview__total--chosen th {
+    background-color: var(--primary-50);
+}
+
+.ajuste-preview__row--excess .ajuste-preview__value {
+    color: var(--danger-600);
+}
+
+.ajuste-preview__row--under .ajuste-preview__value {
+    color: var(--gray-600);
+}
+
+.dark .ajuste-preview__hint {
+    color: var(--gray-400);
+}
+
+.dark .ajuste-preview__value,
+.dark .ajuste-preview__total .ajuste-preview__label,
+.dark .ajuste-preview__total .ajuste-preview__value {
+    color: var(--gray-100);
+}
+
+.dark .ajuste-preview__total td,
+.dark .ajuste-preview__total th {
+    border-top-color: var(--gray-700);
+}
+
+.dark .ajuste-preview__total--chosen td,
+.dark .ajuste-preview__total--chosen th {
+    background-color: color-mix(in oklab, var(--primary-500) 15%, transparent);
+}
+
+/*
+|------------------------------------------------------------------------------
+| Los motivos de la separación
+|------------------------------------------------------------------------------
+|
+| Van dentro de la sección de partes. Cada motivo lleva su propio punto porque
+| son cosas distintas que el usuario puede querer corregir una por una.
+*/
+.ajuste-reasons {
+    margin-bottom: 0.75rem;
+    padding: 0.625rem 0.75rem;
+    border-inline-start: 3px solid var(--warning-400);
+    border-radius: 0.375rem;
+    background-color: var(--warning-50);
+}
+
+.ajuste-reasons__title {
+    margin-bottom: 0.25rem;
+    color: var(--warning-800);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.ajuste-reasons__list {
+    margin: 0;
+    padding-inline-start: 1rem;
+    color: var(--warning-900);
+    font-size: 0.75rem;
+    line-height: 1.45;
+    list-style: disc;
+}
+
+.ajuste-reasons__list li + li {
+    margin-top: 0.25rem;
+}
+
+.dark .ajuste-reasons {
+    background-color: color-mix(in oklab, var(--warning-500) 12%, transparent);
+}
+
+.dark .ajuste-reasons__title {
+    color: var(--warning-300);
+}
+
+.dark .ajuste-reasons__list {
+    color: var(--warning-200);
+}
+
+/*
+|------------------------------------------------------------------------------
+| Los avisos de comprobaciones legales
+|------------------------------------------------------------------------------
+|
+| AHORA VA DENTRO DE UNA SECCIÓN. El título y la descripción los pone el
+| heading de la sección que envuelve este bloque, así que aquí NO se repite el
+| título: hacerlo lo mostraba dos veces seguidas en pantalla.
+|
+| UN PUNTO DE COLOR EN LUGAR DE UN RÓTULO. El punto va en la primera columna y
+| el texto empieza en la segunda, más ancha, para no partir las frases largas.
+| Nada de emoji: en impresión monocroma se vuelven cuadros negros. EL ARTÍCULO
+| va en su propia línea, más pequeño, porque pegado al texto parece una errata.
+*/
+.ajuste-checks {
+    margin-top: 0.25rem;
+}
+
+.ajuste-checks__list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.ajuste-checks__item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    padding: 0.5rem 0;
+}
+
+.ajuste-checks__item + .ajuste-checks__item {
+    border-top: 1px solid var(--gray-200);
+}
+
+.ajuste-checks__badge {
+    flex: none;
+    width: 0.5rem;
+    height: 0.5rem;
+    margin-top: 0.4375rem;
+    border-radius: 9999px;
+}
+
+.ajuste-checks__body {
+    min-width: 0;
+}
+
+.ajuste-checks__text {
+    color: var(--gray-700);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.ajuste-checks__article {
+    display: block;
+    margin-top: 0.125rem;
+    color: var(--gray-400);
+    font-size: 0.6875rem;
+    font-weight: 500;
+}
+
+.ajuste-checks__item--blocking .ajuste-checks__badge {
+    background-color: var(--danger-500);
+}
+
+.ajuste-checks__item--blocking .ajuste-checks__text {
+    color: var(--danger-700);
+    font-weight: 500;
+}
+
+.ajuste-checks__item--warning .ajuste-checks__badge {
+    background-color: var(--warning-500);
+}
+
+.ajuste-checks__item--warning .ajuste-checks__text {
+    color: var(--warning-800);
+}
+
+.ajuste-checks__item--info .ajuste-checks__badge {
+    background-color: var(--gray-400);
+}
+
+.dark .ajuste-checks__article {
+    color: var(--gray-500);
+}
+
+.dark .ajuste-checks__item + .ajuste-checks__item {
+    border-top-color: var(--gray-800);
+}
+
+.dark .ajuste-checks__text {
+    color: var(--gray-300);
+}
+
+.dark .ajuste-checks__item--blocking .ajuste-checks__text {
+    color: var(--danger-300);
+}
+
+.dark .ajuste-checks__item--warning .ajuste-checks__text {
+    color: var(--warning-300);
+}
+
+/*
+|------------------------------------------------------------------------------
+| La aclaración del «Porcentaje pactado»
+|------------------------------------------------------------------------------
+|
+| Ocupa todo el ancho de la fila y va debajo de los tres inputs. Es una sola
+| nota para los tres números, no una ayuda de un campo: por eso se pintó como
+| texto tenue a todo el ancho y no como helper pegado a un input.
+|
+| Reutiliza el token de ayudas de Filament para que herende el tamaño y el
+| color gris, y así coincide con el resto del formulario.
+*/
+.ajuste-pactado-help {
+    margin: 0;
+    color: var(--gray-500);
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+}
+
+.dark .ajuste-pactado-help {
+    color: var(--gray-400);
+}
+
+

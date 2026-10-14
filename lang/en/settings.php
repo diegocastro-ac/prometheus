@@ -10,12 +10,10 @@ return [
         'business' => 'Business details',
         'contact' => 'Contact',
         'billing' => 'Billing',
-        'inventory' => 'Spaces catalog',
     ],
 
     'descriptions' => [
         'billing' => 'These documents are not electronic invoices certified by the DIAN.',
-        'inventory' => 'One space per line. Used to group the delivery act inventory.',
     ],
 
     'form' => [
@@ -26,9 +24,11 @@ return [
         'logo' => 'Logo',
         'email' => 'Notification email',
         'phone' => 'Phone',
+        'default_city_code' => 'Default city',
+        'default_city_code_help' => 'City suggested when creating a property. It may be left empty; in that case the property form will require the city of each property.',
+        'default_city_code_placeholder' => 'No default city',
         'invoice_due_days' => 'Invoice due days',
         'legal_footer' => 'Legal footer text',
-        'space_catalog' => 'Spaces',
     ],
 
     'placeholders' => [

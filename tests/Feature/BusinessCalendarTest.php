@@ -39,7 +39,6 @@ class BusinessCalendarTest extends TestCase
             'tax_id' => '900123456-7',
             'currency' => 'COP',
             'invoice_due_days' => 5,
-            'space_catalog' => json_encode(['Sala']),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -144,7 +143,7 @@ class BusinessCalendarTest extends TestCase
         // festivo) y el siguiente habil es el lunes 2026-02-09.
         $this->assertSame('2026-02-09', $invoice->due_at->toDateString());
     }
-
+    
     #[Test]
     public function el_fin_del_alquiler_incluye_el_plazo_y_el_dia_habil(): void
     {
