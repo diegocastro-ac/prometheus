@@ -5,7 +5,9 @@ namespace Database\Factories;
 use App\Models\Property;
 use App\Models\Tenant;
 use App\Models\User;
+use App\ValueObjects\RentalPeriod;
 use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 /**
@@ -23,7 +25,6 @@ class RentalFactory extends Factory
         // Dates and calculation of months
         $start = $this->faker->dateTimeBetween('-1 year', 'now');
         $totalMonths = $this->faker->numberBetween(1, 12);
-        $end = (clone $start)->modify("+{$totalMonths} months");
 
         // Create tenant and property linked to the same user
         $user = User::inRandomOrder()->first();
@@ -34,7 +35,7 @@ class RentalFactory extends Factory
             'name' => Str::limit($this->faker->words(3, true), 50, ''),
             'description' => Str::limit($this->faker->optional()->paragraph(), 255, ''),
             'start_date' => $start->format('Y-m-d'),
-            'end_date' => $end->format('Y-m-d'),
+            'end_date' => RentalPeriod::for(Carbon::parse($start->format('Y-m-d')), $totalMonths)->endDateFormatted(),
             'total_months' => $totalMonths,
             'total_persons' =>  (string) $this->faker->optional()->numberBetween(1, 10),
             'monthly_amount' => $this->faker->randomFloat(2, 100_000, 3_000_000),

@@ -10,6 +10,7 @@ use App\Models\Invoice;
 use App\Models\Rental;
 use App\Models\User;
 use App\Services\PaymentPlanService;
+use App\ValueObjects\RentalPeriod;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -142,5 +143,16 @@ class BusinessCalendarTest extends TestCase
         // El corte cae el 2026-02-01 (domingo), su plazo el 2026-02-06 (viernes
         // festivo) y el siguiente habil es el lunes 2026-02-09.
         $this->assertSame('2026-02-09', $invoice->due_at->toDateString());
+    }
+
+    #[Test]
+    public function el_fin_del_alquiler_incluye_el_plazo_y_el_dia_habil(): void
+    {
+        // Contrato de un mes desde el 2026-01-02: el ultimo corte cae el
+        // 2026-02-02 (lunes), el plazo de 5 dias vence el 2026-02-07 (sabado)
+        // y el fin de contrato corre al lunes 2026-02-09.
+        $end = RentalPeriod::for(Carbon::parse('2026-01-02'), 1)->endDateFormatted();
+
+        $this->assertSame('2026-02-09', $end);
     }
 }

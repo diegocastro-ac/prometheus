@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Contracts\BusinessCalendar;
 use App\Enums\InvoiceStatus;
 use App\Filament\Resources\InvoiceResource\Pages\CreateInvoice;
 use App\Filament\Resources\InvoiceResource\Pages\ListInvoices;
@@ -90,8 +91,11 @@ class InvoiceResourceTest extends TestCase
     #[Test]
     public function el_vencimiento_por_defecto_toma_los_dias_de_ajustes(): void
     {
+        // El plazo sale de Ajustes y luego se corre al siguiente dia habil.
         $this->assertSame(
-            today()->addDays(app(AppSettings::class)->invoiceDueDays())->toDateString(),
+            app(BusinessCalendar::class)
+                ->nextBusinessDay(today()->addDays(app(AppSettings::class)->invoiceDueDays()))
+                ->toDateString(),
             Livewire::test(CreateInvoice::class)->get('data.due_at'),
         );
     }

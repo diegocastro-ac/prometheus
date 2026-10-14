@@ -70,7 +70,7 @@ class RentalResource extends Resource
                             ->afterStateUpdated(function (callable $get, callable $set) {
                                 $months = (int) $get('total_months');
                                 if ($get('start_date') && $months > 0) {
-                                    $period = new RentalPeriod(\Carbon\Carbon::parse($get('start_date')), $months);
+                                    $period = RentalPeriod::for(\Carbon\Carbon::parse($get('start_date')), $months);
                                     $set('end_date', $period->endDateFormatted());
                                 }
                             }),
@@ -90,7 +90,7 @@ class RentalResource extends Resource
                             ->afterStateUpdated(function (callable $get, callable $set, $state) {
                                 $months = (int) $state;
                                 if ($get('start_date') && $months > 0) {
-                                    $period = new RentalPeriod(\Carbon\Carbon::parse($get('start_date')), $months);
+                                    $period = RentalPeriod::for(\Carbon\Carbon::parse($get('start_date')), $months);
                                     $set('end_date', $period->endDateFormatted());
                                 }
                             }),

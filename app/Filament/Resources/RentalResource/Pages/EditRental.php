@@ -36,7 +36,7 @@ class EditRental extends EditRecord
 
     protected function mutateFormDataBeforeSave(array $data): array
     {
-        $period = new RentalPeriod(Carbon::parse($data['start_date']), (int) $data['total_months']);
+        $period = RentalPeriod::for(Carbon::parse($data['start_date']), (int) $data['total_months']);
         $data['end_date'] = $period->endDateFormatted();
         return $data;
     }

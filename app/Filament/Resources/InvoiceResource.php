@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources;
 
+use App\Contracts\BusinessCalendar;
 use App\Contracts\CurrentUserContextInterface;
 use App\Documents\Contracts\Document;
 use App\Documents\DocumentService;
@@ -127,9 +128,10 @@ class InvoiceResource extends Resource
                         Forms\Components\DatePicker::make('due_at')
                             ->label(__('invoice.form.due_at'))
                             // El vencimiento sale de los dias configurados en
-                            // Ajustes, no de un numero escrito a mano.
-                            ->default(fn (): string => today()
-                                ->addDays(app(AppSettings::class)->invoiceDueDays())
+                            // Ajustes, no de un numero escrito a mano, y se corre
+                            // al siguiente dia habil (BusinessCalendar/Adapter).
+                            ->default(fn (): string => app(BusinessCalendar::class)
+                                ->nextBusinessDay(today()->addDays(app(AppSettings::class)->invoiceDueDays()))
                                 ->toDateString())
                             ->afterOrEqual('issued_at')
                             ->required(),

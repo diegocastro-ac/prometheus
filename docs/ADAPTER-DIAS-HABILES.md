@@ -248,6 +248,7 @@ La URL y el país salen de `config/services.php`:
 | `app/Services/PaymentPlans/QuincenalPlanGenerator.php` | Client | Usa `dueDateFrom()`. |
 | `app/Services/PaymentPlans/AdvancePlanGenerator.php` | Client | Usa `dueDateFrom()`. |
 | `app/Services/PaymentPlans/PaymentPlanGeneratorResolver.php` | — | Recibe el `BusinessCalendar` y lo reparte a cada generador. |
+| `app/ValueObjects/RentalPeriod.php` | — | Calcula el fin del contrato (último corte + plazo, en día hábil) delegando en el Target. |
 | `app/Providers/AppServiceProvider.php` | — | Elige la implementación (Nager o Weekend). |
 | `config/services.php` | — | URL y país de la fuente de festivos. |
 | `tests/Feature/BusinessCalendarTest.php` | — | Prueba Target, Adapter, respaldo y el flujo completo. |
@@ -267,6 +268,8 @@ El panel vive en `/dashboard` (`DashboardPanelProvider`, `->path('dashboard')`).
 - **Pantalla:** *Alquileres → Crear alquiler* (`/dashboard/administration/rentals/create`).
 - **Campo:** **"Cadencia de cobro"** (`billing_cadence`), con opciones **Mensual / Quincenal / Anticipo**.
   - Código: `RentalResource.php:105` y traducción en `lang/es/billing_cadence.php`.
+- **Campo "Fecha de finalización"** (`end_date`): se calcula como el **último corte del plan más los días de plazo**, corrido al **siguiente día hábil**.
+  - Código: `app/ValueObjects/RentalPeriod.php` (`endDate()` delega en `BusinessCalendar`), usado por el formulario (`RentalResource.php:70` y `:90`) y por el alta/edición (`CreateRental.php:25`, `EditRental.php:39`).
 - **Acción:** al guardar, se dispara la generación del plan de cobros.
   - Código: `CreateRental.php:34` → `$this->paymentPlanService->generateFor($rental)`.
   - Ahí es donde, por debajo, el Adapter decide cada vencimiento en día hábil.
@@ -283,9 +286,9 @@ El panel vive en `/dashboard` (`DashboardPanelProvider`, `->path('dashboard')`).
 ### 5.3. En el formulario de factura: el vencimiento por defecto
 
 - **Pantalla:** *Facturas → Crear factura*.
-- **Campo "Fecha de vencimiento"** (`due_at`), que por defecto toma **hoy + los días configurados en Ajustes**.
+- **Campo "Fecha de vencimiento"** (`due_at`), que por defecto toma **hoy + los días configurados en Ajustes**, corrido al **siguiente día hábil**.
   - Código: `InvoiceResource.php:127`.
-  - Es la vía **manual** (factura individual). El Adapter aplica a la vía **automática** (el plan de cobros). Si se quiere que la manual también respete festivos, se extendería aquí.
+  - Ahora también la vía **manual** (factura individual) usa el `BusinessCalendar`, igual que la **automática** (el plan de cobros).
 
 ### 5.4. En el tablero: "Pagos vencidos o próximos"
 
@@ -332,7 +335,7 @@ Pruebas específicas del patrón:
 php artisan test --filter=BusinessCalendarTest
 ```
 
-Cubren: el calendario de respaldo, el Adapter que salta el festivo de la API (con `Http::fake`), la degradación si la API falla, y el flujo completo de una factura con vencimiento en día hábil.
+Cubren: el calendario de respaldo, el Adapter que salta el festivo de la API (con `Http::fake`), la degradación si la API falla, el flujo completo de una factura con vencimiento en día hábil y la **fecha de finalización del alquiler**.
 
 Para probar la API real en desarrollo (opcional):
 
@@ -348,5 +351,5 @@ php artisan tinker
 - **La API solo se consulta en producción.** En `testing` el binding usa `WeekendBusinessCalendar`, por eso las pruebas son rápidas y no dependen de la red.
 - **Caché por año.** La respuesta de Nager.Date se guarda un día (`Cache::put(..., now()->addDay())`). Si la API falla, **no** se cachea el vacío, para poder reintentar.
 - **Degradación.** Ante fallo de red, el Adapter cae en el calendario de fin de semana (no revienta).
-- **Alcance.** El Adapter solo corrige el vencimiento del **plan de cobros automático**. La factura creada **a mano** en el formulario usa el valor por defecto de `InvoiceResource.php:127` (hoy + días), sin consultar festivos.
+- **Alcance.** El Adapter corrige el vencimiento del **plan de cobros automático**, el **vencimiento por defecto de la factura manual** (`InvoiceResource.php:127`) y la **fecha de finalización del alquiler** (`RentalPeriod`). El usuario igual puede escribir un `due_at` a mano: la validación solo exige que no sea anterior a la emisión.
 - **País.** Configurable con `HOLIDAYS_COUNTRY` (por defecto `CO`).
