@@ -129,8 +129,9 @@ class InvoiceDocumentActionTest extends DocumentTestCase
     {
         $options = app(DocumentService::class)->formatOptions();
 
-        $this->assertSame(['text', 'pdf'], array_keys($options));
+        $this->assertSame(['text', 'pdf', 'json'], array_keys($options));
         $this->assertSame(__('invoice.documents.format.text'), $options['text']);
         $this->assertSame(__('invoice.documents.format.pdf'), $options['pdf']);
+        $this->assertSame(__('invoice.documents.format.json'), $options['json']);
     }
 }

@@ -247,6 +247,13 @@ class InvoiceResource extends Resource
                 builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
                     ->receiptFor($record, $format),
             )->visible(fn (Invoice $record): bool => $record->isPaid()),
+
+            DocumentAction::file(
+                name: 'receipt_json',
+                label: __('invoice.buttons.download_receipt').' · JSON',
+                builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
+                    ->receiptFor($record, $format),
+            )->visible(fn (Invoice $record): bool => $record->isPaid()),
         ];
     }
 
@@ -271,6 +278,13 @@ class InvoiceResource extends Resource
             DocumentAction::text(
                 name: 'invoice_text',
                 label: __('invoice.buttons.copy_invoice'),
+                builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
+                    ->invoiceFor($record, $format),
+            ),
+
+            DocumentAction::file(
+                name: 'invoice_json',
+                label: __('invoice.buttons.download_invoice').' · JSON',
                 builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
                     ->invoiceFor($record, $format),
             ),

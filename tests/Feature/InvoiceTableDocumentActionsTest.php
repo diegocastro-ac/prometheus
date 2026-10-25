@@ -40,8 +40,9 @@ class InvoiceTableDocumentActionsTest extends DocumentTestCase
         // visibilidad, que es lo que se comprueba aqui.
         $this->assertArrayHasKey('receipt_pdf', $actions);
         $this->assertArrayHasKey('receipt_text', $actions);
+        $this->assertArrayHasKey('receipt_json', $actions);
 
-        foreach (['receipt_pdf', 'receipt_text'] as $name) {
+        foreach (['receipt_pdf', 'receipt_text', 'receipt_json'] as $name) {
             $actions[$name]->record($issued);
             $this->assertTrue($actions[$name]->isHidden(), "{$name} deberia ocultarse sin pagar");
 
@@ -63,6 +64,7 @@ class InvoiceTableDocumentActionsTest extends DocumentTestCase
 
         $this->assertArrayHasKey('receipt_pdf', $actions);
         $this->assertArrayHasKey('receipt_text', $actions);
+        $this->assertArrayHasKey('receipt_json', $actions);
     }
 
     #[Test]
@@ -77,10 +79,18 @@ class InvoiceTableDocumentActionsTest extends DocumentTestCase
             'invoice_pdf',
             $this->table()->instance()->getTable()->getFlatActions(),
         );
+        $this->assertArrayHasKey(
+            'invoice_json',
+            $this->table()->instance()->getTable()->getFlatActions(),
+        );
 
         $this->paidInvoice();
         $this->assertArrayHasKey(
             'invoice_pdf',
+            $this->table()->instance()->getTable()->getFlatActions(),
+        );
+        $this->assertArrayHasKey(
+            'invoice_json',
             $this->table()->instance()->getTable()->getFlatActions(),
         );
     }

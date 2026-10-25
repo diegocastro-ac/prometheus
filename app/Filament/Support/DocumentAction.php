@@ -13,11 +13,11 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * Acciones de Filament que entregan documentos producidos por el Abstract
  * Factory.
  *
- * Hay dos acciones y no una con un desplegable de formato, y es a proposito:
- * cada accion pide una familia completa a la fabrica (PDF o texto) y entrega el
- * resultado por el mecanismo que corresponde a esa familia. Que el boton diga
- * "Descargar PDF" o "Copiar texto" no es una decision de la pantalla, es la
- * consecuencia de la familia elegida.
+ * Hay una accion por familia (PDF, texto y JSON), y es a proposito: cada accion
+ * pide una familia completa a la fabrica y entrega el resultado por el
+ * mecanismo que corresponde a esa familia. Que el boton diga "Descargar PDF" o
+ * "Copiar texto" no es una decision de la pantalla, es la consecuencia de la
+ * familia elegida.
  *
  * La clase de accion se recibe por parametro porque Filament tiene dos y no
  * son intercambiables: una accion de tabla implementa HasTable y la de pagina
@@ -46,36 +46,43 @@ class DocumentAction
         return $actionClass::make($name)
             ->label($label ?? __('invoice.buttons.download_document_pdf'))
             ->icon('heroicon-o-arrow-down-tray')
-            ->action(function (mixed $record) use ($builder) {
-                $document = $builder($record, 'pdf');
-                $view = self::selectView($document);
-                $settings = app(\App\Settings\AppSettings::class);
-
-                $pdfBytes = \FlexPDF\Facades\Pdf::view($view, [
-                    'body' => $document->body(),
-                    'document' => $document,
-                    'settings' => $settings,
-                ])->page('a4')->output();
-
-                return response()->streamDownload(
-                    function () use ($pdfBytes) {
-                        echo $pdfBytes;
-                    },
-                    $document->filename(),
-                    ['Content-Type' => 'application/pdf']
-                );
-            });
+            ->action(fn (mixed $record) => self::download($builder($record, 'pdf')));
     }
 
-    private static function selectView(\App\Documents\AbstractDocument $document): string
-    {
-        return match($document::class) {
-            \App\Documents\RentInvoice::class => 'documents.invoice',
-            \App\Documents\PaymentReceipt::class => 'documents.receipt',
-            \App\Documents\AdjustmentLetter::class => 'documents.adjustment-letter',
-            \App\Documents\MonthlyStatement::class => 'documents.monthly-statement',
-            default => 'documents.document',
-        };
+    /**
+     * Descarga el documento como JSON estructurado.
+     *
+     * @param  Closure(mixed, string): Document  $builder  Recibe el registro y
+     *                                                     el formato pedido, y
+     *                                                     devuelve el documento
+     *                                                     ya renderizado.
+     * @param  class-string<MountableAction>  $actionClass
+     */
+    public static function json(
+        string $name,
+        Closure $builder,
+        ?string $label = null,
+        string $actionClass = TableAction::class,
+    ): MountableAction {
+        return $actionClass::make($name)
+            ->label($label ?? __('invoice.documents.download_json'))
+            ->icon('heroicon-o-arrow-down-tray')
+            ->action(fn (mixed $record) => self::download($builder($record, 'json')));
+    }
+
+    /**
+     * Alias de json() para las pantallas que nombran la accion por su archivo.
+     *
+     * @param  Closure(mixed, string): Document  $builder
+     * @param  class-string<MountableAction>  $actionClass
+     */
+    public static function file(
+        string $name,
+        Closure $builder,
+        ?string $label = null,
+        string $actionClass = TableAction::class,
+    ): MountableAction {
+        return self::json($name, $builder, $label, $actionClass);
     }
 
     /**

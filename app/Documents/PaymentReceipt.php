@@ -42,12 +42,16 @@ class PaymentReceipt extends AbstractDocument
             );
         }
 
-        return new self(
+        $document = new self(
             body: self::buildBody($invoice),
             renderer: $renderer,
             slug: 'comprobante-'.$invoice->number,
             invoice: $invoice,
         );
+
+        $document->attachToBody();
+
+        return $document;
     }
 
     public function invoice(): Invoice
@@ -105,7 +109,6 @@ class PaymentReceipt extends AbstractDocument
         }
 
         return $body
-            ->withDocument($invoice)
             ->withMeta(['receipt_image' => $receiptImage])
             ->withNotes(
                 __('document.receipt_note').' '.$invoice->number

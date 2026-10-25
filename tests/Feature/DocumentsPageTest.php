@@ -64,6 +64,15 @@ class DocumentsPageTest extends DocumentTestCase
     }
 
     #[Test]
+    public function el_selector_incluye_json(): void
+    {
+        $options = $this->page()->instance()->form->getComponent('data.format')->getOptions();
+
+        $this->assertArrayHasKey('json', $options);
+        $this->assertSame(__('invoice.documents.format.json'), $options['json']);
+    }
+
+    #[Test]
     public function el_estado_de_cuenta_se_genera_en_texto(): void
     {
         $rental = $this->rental();
@@ -114,6 +123,32 @@ class DocumentsPageTest extends DocumentTestCase
             ->call('generateStatement')
             ->assertSuccessful()
             ->assertFileDownloaded('estado-de-cuenta-2026-02.pdf');
+
+        $this->assertNull($this->page()->get('textPreview'));
+    }
+
+    #[Test]
+    public function el_estado_de_cuenta_en_json_se_descarga(): void
+    {
+        $rental = $this->rental();
+
+        Invoice::factory()->create([
+            'user_id' => $this->user->id,
+            'rental_id' => $rental->id,
+            'period' => '2026-02',
+        ]);
+
+        // JSON es una entrega de archivo, no una vista previa. El selector ya
+        // ofrece el formato y la pantalla obedece lo que declara el documento.
+        $this->page()
+            ->fillForm([
+                'rental_id' => $rental->id,
+                'period' => '2026-02',
+                'format' => 'json',
+            ])
+            ->call('generateStatement')
+            ->assertSuccessful()
+            ->assertFileDownloaded('estado-de-cuenta-2026-02.json');
 
         $this->assertNull($this->page()->get('textPreview'));
     }

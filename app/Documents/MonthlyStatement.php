@@ -48,8 +48,7 @@ class MonthlyStatement extends AbstractDocument
             invoices: $invoices,
         );
 
-        // Adjuntar el documento al body después de la instanciación
-        $document->body = $document->body->withDocument($document);
+        $document->attachToBody();
 
         return $document;
     }
