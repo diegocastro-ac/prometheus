@@ -48,7 +48,7 @@ Esta entrega documenta la implementación actual y los siete patrones de diseño
 - cinco patrones creacionales: **Singleton**, **Prototype**, **Builder**, **Abstract Factory** y **Factory Method**;
 - dos patrones estructurales: **Adapter**, aplicado a los días hábiles y al IPC del DANE, y **Bridge**, aplicado a los documentos y sus formatos de entrega.
 
-Los documentos individuales de cada patrón se enlazan en sus secciones y en el Anexo A; están en [`docs/Patrones creacionales`](Patrones%20creacionales), [`Adapter.md`](Patrones%20estructurales/Adapter.md) y [`Bridge.md`](patrones%20estructurales/Bridge.md). Este documento principal explica el contexto funcional, el diseño, la arquitectura, la base de datos y la forma en que los patrones se integran en la aplicación.
+Los documentos individuales de cada patrón se enlazan en sus secciones y en el Anexo A; están en [`docs/Patrones creacionales`](Patrones%20creacionales) y [`docs/Patrones estructurales`](Patrones%20estructurales). Este documento principal explica el contexto funcional, el diseño, la arquitectura, la base de datos y la forma en que los patrones se integran en la aplicación.
 
 ### 1.1. Convenciones del documento
 
@@ -692,7 +692,7 @@ El backend sigue una separación por responsabilidades:
 2. **Registro de pagos.** `PaymentRecordingService` valida que la factura admita pagos, crea el `Payment`, lo asocia a factura, alquiler y usuario, y ejecuta `Invoice::refreshStatus()`. El estado de la factura se deriva del saldo y del vencimiento.
 3. **Actas de entrega.** `DeliveryActBuilder` acumula secciones opcionales, valida el inventario contra el catálogo de espacios y persiste el acta con sus elementos. `DeliveryActDraft` traduce una copia al formulario cuando se reutiliza un acta.
 4. **Reajustes.** `RentAdjustmentService` obtiene el IPC de la serie local, calcula el tope legal, valida las reglas, registra el ajuste y reprocesa la cadena desde el ancla. `AdjustmentChainCalculator` y `AdjustmentChainRecalculator` mantienen coherentes los valores derivados.
-5. **Documentos.** `DocumentService` selecciona la fábrica de texto, PDF o JSON y produce factura, recibo, estado de cuenta o carta de reajuste. Los documentos comparten el cuerpo y delegan el formato al renderizador de la familia.
+5. **Documentos.** `DocumentService` selecciona la fábrica de texto, PDF o JSON y produce factura, recibo, estado de cuenta o carta de reajuste. Los documentos comparten el cuerpo y delegan el formato al renderizador de la familia. La pantalla consulta `isEmpty()` del contrato para avisar cuando un estado de cuenta no tiene facturas.
 6. **IPC.** `IpcSynchronizer` recibe un `IpcProvider`; los comandos usan el adaptador remoto `DaneCdaIpcProvider`; las pantallas y los cálculos leen la copia local mediante `IpcSeriesRepository`.
 7. **Configuración.** `SettingsService` guarda la fila única y descarta la instancia de `AppSettings` del contenedor para que la siguiente lectura use los valores nuevos.
 
@@ -715,7 +715,7 @@ La verificación se apoya en pruebas de feature. En la última ejecución report
 | Prototype | `DeliveryActPrototypeTest` | 5 pruebas, 66 aserciones. |
 | Prototype desde formulario | `CreateDeliveryActFromTest` | 8 pruebas, 50 aserciones. |
 | Builder y alta de acta | `DeliveryActBuilderTest` + `CreateDeliveryActTest` | 19 pruebas, 82 aserciones. |
-| Abstract Factory | `DocumentFactoryTest` | 14 pruebas, 84 aserciones. |
+| Abstract Factory | `DocumentFactoryTest` | 14 pruebas, 96 aserciones. |
 | Factory Method | `PaymentPlanGeneratorTest` | 7 pruebas, 18 aserciones. |
 | Adapter | `BusinessCalendarTest` + `DaneCdaIpcProviderTest` | 25 pruebas, 47 aserciones. |
 | Bridge | `JsonDocumentBridgeTest` | 6 pruebas, 68 aserciones. |
@@ -799,7 +799,7 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | CC-C09 | La lógica de facturación por cadencia estaba centralizada en condicionales. | Se crearon `PaymentPlanGenerator` y las subclases mensual, quincenal y anticipo; el resolver elige el generador. | `app/Services/PaymentPlans/`, `app/Services/PaymentPlanService.php` | Factory Method. |
 | CC-C10 | La configuración se leía en varios puntos y podía quedar desactualizada en la misma petición. | `AppSettings` se registra como singleton inmutable; `SettingsService` descarta la instancia al guardar. | `app/Settings/AppSettings.php`, `app/Services/SettingsService.php`, `app/Providers/AppServiceProvider.php` | Singleton. |
 | CC-C11 | El cálculo de días hábiles dependía directamente de un servicio externo. | `BusinessCalendar` define el contrato; `NagerDateBusinessCalendar` adapta Nager.Date y `WeekendBusinessCalendar` sirve de respaldo. | `app/Contracts/BusinessCalendar.php`, `app/Infrastructure/Holidays/`, `app/Providers/AppServiceProvider.php` | Adapter. |
-| CC-C12 | La exportación de documentos solo cubría texto/PDF, la entrega del PDF se duplicaba y el cuerpo apuntaba al modelo en tres documentos. | Se agregó `JsonRenderer`/`JsonDocumentFactory`, se unificó la entrega por `content()` y cada documento se adjunta a su cuerpo. | `app/Documents/AbstractDocument.php`, `app/Documents/Rendering/JsonRenderer.php`, `app/Documents/Factories/JsonDocumentFactory.php`, `app/Documents/DocumentFactoryLocator.php`, `app/Filament/Support/DocumentAction.php` | Bridge y Abstract Factory. |
+| CC-C12 | La exportación de documentos solo cubría texto/PDF, la entrega del PDF se duplicaba, el cuerpo apuntaba al modelo en tres documentos y la pantalla inspeccionaba `invoices()` del producto concreto. | Se agregó `JsonRenderer`/`JsonDocumentFactory`, se unificó la entrega por `content()`, cada documento se adjunta a su cuerpo y `Document::isEmpty()` permite detectar el estado de cuenta vacío sin conocer el producto. | `app/Documents/AbstractDocument.php`, `app/Documents/Contracts/Document.php`, `app/Documents/MonthlyStatement.php`, `app/Documents/Rendering/JsonRenderer.php`, `app/Documents/Factories/JsonDocumentFactory.php`, `app/Documents/DocumentFactoryLocator.php`, `app/Filament/Pages/DocumentsPage.php`, `app/Filament/Support/DocumentAction.php` | Bridge y Abstract Factory. |
 
 **Notas de implementación**
 
@@ -827,7 +827,7 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | Singleton | Pruebas de configuración y contexto de usuario. | Verificado en la suite de feature. |
 | Prototype | `DeliveryActPrototypeTest`, `CreateDeliveryActFromTest`. | 13 pruebas, 116 aserciones. |
 | Builder | `DeliveryActBuilderTest`, `CreateDeliveryActTest`. | 19 pruebas, 82 aserciones. |
-| Abstract Factory | `DocumentFactoryTest`. | 14 pruebas, 84 aserciones. |
+| Abstract Factory | `DocumentFactoryTest`. | 14 pruebas, 96 aserciones. |
 | Factory Method | `PaymentPlanGeneratorTest`. | 7 pruebas, 18 aserciones. |
 | Adapter | `BusinessCalendarTest`, `DaneCdaIpcProviderTest`. | 25 pruebas, 47 aserciones. |
 | Bridge | `JsonDocumentBridgeTest`. | 6 pruebas, 68 aserciones. |
@@ -840,7 +840,7 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 - [Abstract Factory](Patrones%20creacionales/Abstract%20Factory.md)
 - [Factory Method](Patrones%20creacionales/Factory%20Method.md)
 - [Adapter](Patrones%20estructurales/Adapter.md)
-- [Bridge](patrones%20estructurales/Bridge.md)
+- [Bridge](Patrones%20estructurales/Bridge.md)
 
 ##### Patrones fuera del alcance
 
@@ -860,7 +860,7 @@ El código contiene otras estructuras que podrían analizarse con patrones adici
 | Abstract Factory | [`Abstract Factory.md`](Patrones%20creacionales/Abstract%20Factory.md) | PlantUML con roles GoF. |
 | Factory Method | [`Factory Method.md`](Patrones%20creacionales/Factory%20Method.md) | PlantUML con roles GoF. |
 | Adapter | [`Adapter.md`](Patrones%20estructurales/Adapter.md) | Dos diagramas PlantUML: días hábiles e IPC. |
-| Bridge | [`Bridge.md`](patrones%20estructurales/Bridge.md) | Un diagrama PlantUML con las dos jerarquías y roles GoF. |
+| Bridge | [`Bridge.md`](Patrones%20estructurales/Bridge.md) | Un diagrama PlantUML con las dos jerarquías y roles GoF. |
 
 ### Anexo B. Comandos de operación
 
@@ -908,6 +908,7 @@ npm run build
 | --- | --- | --- |
 | 1.0 | Octubre de 2026 | Versión Markdown inicial basada en el PDF y actualizada contra el código de `patrones-2`. |
 | 1.1 | Octubre de 2026 | Se documentó Bridge y el formato JSON; Abstract Factory pasó a tres familias y el mapa quedó en siete patrones. |
+| 1.2 | Octubre de 2026 | Se documentó `Document::isEmpty()` y se movió Bridge a `docs/Patrones estructurales/`. |
 
 ---
 

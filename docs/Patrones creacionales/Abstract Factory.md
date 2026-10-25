@@ -49,7 +49,7 @@ Hay una desviación menor: los métodos de `DocumentFactory` declaran tipos conc
 
 **Productos y renderizado.** Cada fábrica inyecta su renderizador: `PlainTextRenderer`, `PdfRenderer` o `JsonRenderer`. Los productos tienen constructores privados y constructores nombrados (`forInvoice()`, `forAdjustment()`, `forPeriod()`) que reciben el renderizador. Así el documento arma el `DocumentBody` con los datos de negocio y delega en el renderizador el nombre, MIME, etiqueta de entrega y contenido final. Los productos no contienen ramas por formato.
 
-`AbstractDocument` memoriza el contenido renderizado: un PDF es costoso de generar y puede pedirse más de una vez dentro de la misma respuesta. `DocumentBody` conserva título, campos, tablas, notas, advertencias, pie y metadatos; es la pieza que permite que texto, PDF y JSON compartan los mismos datos sin duplicar la lógica de cada documento.
+`AbstractDocument` memoriza el contenido renderizado: un PDF es costoso de generar y puede pedirse más de una vez dentro de la misma respuesta. También implementa `isEmpty()` con `false` por defecto; `MonthlyStatement` lo sobrescribe para indicar que no tiene facturas. La pantalla consulta el contrato `Document` y no el método concreto `invoices()`. `DocumentBody` conserva título, campos, tablas, notas, advertencias, pie y metadatos; es la pieza que permite que texto, PDF y JSON compartan los mismos datos sin duplicar la lógica de cada documento.
 
 **La familia JSON.** `JsonDocumentFactory` replica la estructura de las otras dos familias y entrega `JsonRenderer`. El renderizador produce un objeto estable con `title`, `document_type`, `fields`, `table`, `warnings`, `notes` y `footer`; no incluye `meta`, porque allí viaja la imagen del comprobante como data URI. Los valores son de presentación, no un feed contable crudo.
 
@@ -86,6 +86,7 @@ interface "Document (Producto abstracto)" as Document {
   + deliveryLabel() : string
   + isDownload() : bool
   + content() : string
+  + isEmpty() : bool
   + preview() : string
 }
 
@@ -100,6 +101,7 @@ abstract class "AbstractDocument (Producto abstracto - base)" as AbstractDocumen
   + deliveryLabel() : string
   + isDownload() : bool
   + content() : string
+  + isEmpty() : bool
 }
 
 class "PaymentReceipt (Producto concreto)" as PaymentReceipt {
@@ -193,11 +195,11 @@ Los cuatro productos concretos están en `app/Documents/`; sus nombres exactos s
 | `TextDocumentFactory` | ConcreteFactory | `app/Documents/Factories/TextDocumentFactory.php` | Crear los cuatro documentos con texto plano. |
 | `PdfDocumentFactory` | ConcreteFactory | `app/Documents/Factories/PdfDocumentFactory.php` | Crear los cuatro documentos con PDF. |
 | `JsonDocumentFactory` | ConcreteFactory | `app/Documents/Factories/JsonDocumentFactory.php` | Crear los cuatro documentos con JSON. |
-| `Document` | AbstractProduct | `app/Documents/Contracts/Document.php` | Contrato de entrega y contenido. |
-| `AbstractDocument` | AbstractProduct (base) | `app/Documents/AbstractDocument.php` | Compartir cuerpo, renderizador y contenido memorizado. |
+| `Document` | AbstractProduct | `app/Documents/Contracts/Document.php` | Contrato de entrega, contenido y estado vacío. |
+| `AbstractDocument` | AbstractProduct (base) | `app/Documents/AbstractDocument.php` | Compartir cuerpo, renderizador, contenido memorizado e `isEmpty()` por defecto. |
 | `PaymentReceipt` | ConcreteProduct | `app/Documents/PaymentReceipt.php` | Comprobante de una factura pagada. |
 | `AdjustmentLetter` | ConcreteProduct | `app/Documents/AdjustmentLetter.php` | Carta de comunicación del reajuste. |
-| `MonthlyStatement` | ConcreteProduct | `app/Documents/MonthlyStatement.php` | Estado de cuenta de un periodo. |
+| `MonthlyStatement` | ConcreteProduct | `app/Documents/MonthlyStatement.php` | Estado de cuenta de un periodo; reporta con `isEmpty()` si no tiene facturas. |
 | `RentInvoice` | ConcreteProduct | `app/Documents/RentInvoice.php` | Factura de arrendamiento. |
 | `DocumentBody` | Contenido (no GoF) | `app/Documents/Rendering/DocumentBody.php` | Datos sin formato compartidos por las familias. |
 | `DocumentRenderer` | Implementor del Bridge (no GoF para Abstract Factory) | `app/Documents/Rendering/DocumentRenderer.php` | Contrato de renderizado por formato. |

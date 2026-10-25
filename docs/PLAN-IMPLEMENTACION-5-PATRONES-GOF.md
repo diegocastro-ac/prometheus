@@ -33,14 +33,14 @@
 1. **El Bridge y la Abstract Factory ya existen.** `AbstractDocument` es la abstracción; `DocumentRenderer` es el implementador; `PdfRenderer` y `PlainTextRenderer` son implementaciones concretas. Agregar JSON no requiere tocar las clases de documento, pero sí crear `JsonRenderer`, `JsonDocumentFactory`, registrar el formato, agregar traducciones y corregir la entrega.
 2. **La entrega de PDF no pasa por `content()`.** `DocumentAction::pdf()` y `DocumentsPage::deliver()` llaman a FlexPDF directamente con `$document->body()`. Eso duplica la lógica de `PdfRenderer` y, más grave, **saltaría la auditoría** de un Proxy de documentos. Hay que unificar la entrega en `content()`.
 3. **`DocumentBody::withDocument()` está mal usado en tres documentos.** `PaymentReceipt`, `RentInvoice` y `AdjustmentLetter` adjuntan el modelo (`Invoice` o `RentAdjustment`), no el documento. `PdfRenderer::selectView()` compara contra `PaymentReceipt::class`, etc., así que hoy esos tres caen en la vista genérica cuando se renderizan por `content()`. `MonthlyStatement` sí adjunta el documento. Esto es un prerrequisito para el Bridge JSON y para cualquier Proxy de documentos.
-4. **`DocumentService` devuelve tipos concretos** (`PaymentReceipt`, `RentInvoice`, `AdjustmentLetter`, `MonthlyStatement`). Un `DocumentProxy` que solo implemente `Document` no puede devolverse desde esos métodos sin cambiar la API. Además, `Document` no declara `body()` ni `invoices()`, pero `DocumentsPage` los usa. El plan debe elegir entre cambiar la API o usar una alternativa.
+4. **`DocumentService` devuelve tipos concretos** (`PaymentReceipt`, `RentInvoice`, `AdjustmentLetter`, `MonthlyStatement`). Un `DocumentProxy` que solo implemente `Document` no puede devolverse desde esos métodos sin cambiar la API. `Document` ya declara `isEmpty()`, pero no `body()`; `DocumentsPage` dejó de usar `invoices()` y ahora consulta `isEmpty()`. El plan debe elegir entre cambiar la API o usar una alternativa.
 5. **`spaces` tiene `unique(name, user_id)`.** Para permitir “Baño” en dos pisos hay que cambiar el índice a `(user_id, parent_id, name)`. En MySQL/Postgres los `NULL` de `parent_id` no colisionan; la unicidad de raíces hay que reforzarla en aplicación o con una columna generada.
 6. **`ActItem.space_id` ya existe** desde `2026_10_05_022900_add_space_id_to_act_items_table.php`. Lo que falta es `spaces.parent_id`, el árbol y el cambio de formulario para seleccionar por id.
 7. **`master_inventory_items` necesita `user_id`.** Sin él se reintroduce el bug del catálogo global que ya se corrigió en `2026_10_14_090000_backfill_space_catalog_into_spaces_table.php`.
 8. **`RentAdjustmentService` tiene 4 dependencias, no 8**, y `PaymentPlanService::generateFor()` devuelve `void`, no un array. `PaymentRecordingService::record()` devuelve `array{payment, invoice, just_settled}`.
 9. **El Proxy de festivos está documentado pero no implementado.** `docs/PROXY-FESTIVOS.md` describe `HolidaySource`, `NagerDateHolidaySource` y `CachedHolidaySource`, pero ninguna existe. El `NagerDateBusinessCalendar` actual cachea internamente con TTL de 1 día y degrada a `WeekendBusinessCalendar`.
 
-> **Estado del Feature 1:** los hallazgos 1 a 3 ya se resolvieron al implementar el formato JSON y unificar la entrega por `content()`. El Bridge quedó documentado en `docs/patrones estructurales/Bridge.md`; este plan se conserva como registro de análisis y del alcance de los Features 2 a 5.
+> **Estado del Feature 1:** los hallazgos 1 a 3 ya se resolvieron al implementar el formato JSON y unificar la entrega por `content()`. El Bridge quedó documentado en `docs/Patrones estructurales/Bridge.md`; este plan se conserva como registro de análisis y del alcance de los Features 2 a 5.
 
 ---
 
@@ -224,7 +224,7 @@ DocumentFactoryLocator ..> DocumentFactory : resuelve
 
 **Lectura clave:** `AbstractDocument` no tiene un `if ($formato === 'pdf')`. Solo guarda un `DocumentRenderer` y le pasa el `DocumentBody`. Agregar `JsonRenderer` no toca `RentInvoice`, `PaymentReceipt`, `AdjustmentLetter` ni `MonthlyStatement`.
 
-El problema y la solución de este patrón, que son los que se llevan a la sustentación, están en `docs/patrones estructurales/Bridge.md`, secciones 2 y 4: el problema muestra la entrega PDF duplicada y el diagrama muestra las dos jerarquías y la entrega unificada por `content()`.
+El problema y la solución de este patrón, que son los que se llevan a la sustentación, están en `docs/Patrones estructurales/Bridge.md`, secciones 2 y 4: el problema muestra la entrega PDF duplicada y el diagrama muestra las dos jerarquías y la entrega unificada por `content()`.
 
 ### 2.5 Guía de implementación
 
@@ -373,7 +373,7 @@ public static function pdf(string $name, Closure $builder, ?string $label = null
 
 - `DocumentsPage` ya usa `formatOptions()`; al agregar `json`, el selector lo muestra sin cambiar la vista Blade.
 - Agregar acciones JSON en `InvoiceResource` (factura y comprobante) y `RentAdjustmentResource` (carta) con `DocumentAction::file()`. El estado de cuenta ya se genera desde `DocumentsPage`.
-- En `DocumentsPage`, el estado de cuenta vacío se detecta con `invoices()`. Si más adelante se envuelve en Proxy, cambiar a un método `empty()` en `Document` o mantener la comprobación antes de envolver.
+- En `DocumentsPage`, el estado de cuenta vacío se detecta con `Document::isEmpty()`; ya no se necesita el método concreto `invoices()` ni una comprobación antes de envolver en Proxy.
 
 ### 2.6 Pruebas
 
@@ -1305,7 +1305,7 @@ DocumentAuditLogger ..> DocumentAccess : inserta
 - `RentalFacade` de documentos también devuelve `Document`.
 - `DocumentsPage` y `DocumentAction` usan `Document`.
 - Tests que esperan `PaymentReceipt` se actualizan a `Document` + `instanceof DocumentProxy` o `content()`.
-- `MonthlyStatement::invoices()` se reemplaza por `Document::empty()` en `DocumentsPage`.
+- `DocumentsPage` ya usa `Document::isEmpty()`; no necesita `MonthlyStatement::invoices()`.
 
 #### Tabla de auditoría
 
@@ -1580,7 +1580,7 @@ El orden busca reducir riesgo: primero lo aislado, después los refactors, al fi
 - `JsonRenderer`, `JsonDocumentFactory`, locator, `formatOptions()`, lang.
 - Acciones JSON en `InvoiceResource` y `RentAdjustmentResource`.
 - Tests de Bridge y de documentos.
-- **Documentación:** diagramas de clases antes/después en `docs/patrones estructurales/Bridge.md`. Hecho.
+- **Documentación:** diagramas de clases antes/después en `docs/Patrones estructurales/Bridge.md`. Hecho.
 - **Depende de:** Fase 0.
 
 ### Fase 2: Facade
@@ -1588,7 +1588,7 @@ El orden busca reducir riesgo: primero lo aislado, después los refactors, al fi
 - `RentalFacade` + singleton.
 - Migrar `CreateRental`, `InvoiceResource`, `RentAdjustmentResource`, `DocumentsPage`.
 - Tests de delegación e integración.
-- **Documentación:** diagramas de clases antes/después en `docs/patrones estructurales/Facade.md`.
+- **Documentación:** diagramas de clases antes/después en `docs/Patrones estructurales/Facade.md`.
 - **Depende de:** Fase 1 si la Facade expone `documentFormats`/documentos JSON; si no, puede ir antes.
 
 ### Fase 3: Flyweight
@@ -1596,7 +1596,7 @@ El orden busca reducir riesgo: primero lo aislado, después los refactors, al fi
 - Migraciones de catálogo maestro y FK en `act_items`.
 - `MasterInventoryItem`, `InventoryItemFactory`, Builder, draft, repeater, seeders.
 - Tests.
-- **Documentación:** diagramas de clases antes/después en `docs/patrones estructurales/Flyweight.md`.
+- **Documentación:** diagramas de clases antes/después en `docs/Patrones estructurales/Flyweight.md`.
 - **Depende de:** nada de las fases anteriores, pero comparte `ActItem` con Composite. Hacerlo antes de Composite evita mezclar dos migraciones en la misma tabla.
 
 ### Fase 4: Composite
@@ -1604,7 +1604,7 @@ El orden busca reducir riesgo: primero lo aislado, después los refactors, al fi
 - Migración `spaces.parent_id`, índice único, `SpaceComponent`/`SpaceLeaf`/`SpaceComposite`, `SpaceTreeBuilder`.
 - Cambio de formulario a `space_id`, `DeliveryAct::inventoryTree()`, modal de árbol.
 - Tests.
-- **Documentación:** diagramas de clases antes/después en `docs/patrones estructurales/Composite.md`.
+- **Documentación:** diagramas de clases antes/después en `docs/Patrones estructurales/Composite.md`.
 - **Depende de:** Fase 3 (para que `ActItem` ya tenga el catálogo maestro y el formulario se cambie una sola vez).
 
 ### Fase 5: Proxy
@@ -1612,7 +1612,7 @@ El orden busca reducir riesgo: primero lo aislado, después los refactors, al fi
 - **Si se elige C+B:** C primero (aislado, sin migraciones de documentos) y B después (auditoría de renderer). B depende de Fase 0.
 - **Si se elige A:** después de Fase 1 (JSON ya usa `content()`) y de Fase 0. A cambia la API de documentos; hacerlo antes de la Facade obligaría a rehacer la Facade. Por eso A va después de la Facade o se coordina con ella.
 - **Si se elige C:** puede ir primero, junto a Fase 0, porque es independiente.
-- **Documentación:** diagramas de clases antes/después en `docs/patrones estructurales/Proxy.md`, según la ruta elegida.
+- **Documentación:** diagramas de clases antes/después en `docs/Patrones estructurales/Proxy.md`, según la ruta elegida.
 
 ### Orden recomendado (C + B)
 

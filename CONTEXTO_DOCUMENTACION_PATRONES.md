@@ -32,6 +32,7 @@ La entrega debe incluir:
 - **Jerarquía de fuentes:** código actual > documentación existente > CodeGraph. Si hay conflicto, manda el código.
 - **Alcance estructural restringido:** de los patrones estructurales están confirmados **Adapter** y **Bridge**. Los demás que aparecen en el código o en documentos de planificación (Facade, Composite, Flyweight, Proxy, Decorator, por ejemplo) no se documentan como implementados hasta que se autoricen.
 - **No hacer cambios masivos.** Cada edición debe ser revisable y justificada.
+- **Pruebas bajo demanda:** no ejecutar la suite completa ni repetir pruebas ya verificadas. Ejecutar solo el filtro mínimo indispensable cuando el cambio lo requiera; correr toda la suite consume demasiado tiempo para el ritmo de trabajo.
 
 ### Criterios permanentes de documentación
 
@@ -85,6 +86,7 @@ Los cinco creacionales, el Adapter y el Bridge fueron verificados directamente e
 - El binding por defecto es `TextDocumentFactory`; PDF y JSON se piden por nombre desde el locator.
 - Los productos heredan de `AbstractDocument` y comparten `DocumentBody`; el renderizador de la familia decide el formato.
 - La familia JSON usa `JsonRenderer` y entrega `title`, `document_type`, `fields`, `table`, `warnings`, `notes` y `footer`; excluye `meta` para no incluir la imagen del comprobante.
+- `Document` declara `isEmpty()`: `AbstractDocument` devuelve `false` y `MonthlyStatement` devuelve `true` cuando no tiene facturas. `DocumentsPage` usa el contrato y ya no llama a `invoices()`, lo que prepara la sustitución por un Proxy.
 - Los métodos de `DocumentFactory` devuelven tipos concretos (`PaymentReceipt`, `AdjustmentLetter`, etc.), no el contrato `Document`. Es una desviación menor del modelo clásico.
 - El comentario de `AppServiceProvider` dice que las fábricas son scoped, pero el binding real es `bind(DocumentFactory::class, TextDocumentFactory::class)`. No se documentan como scoped.
 - La entrega de PDF, texto y JSON se unificó en `DocumentAction::download()` y `DocumentsPage::deliver()`: ambos usan `content()`, `filename()` y `mimeType()` del documento.
@@ -132,6 +134,7 @@ Los cinco creacionales, el Adapter y el Bridge fueron verificados directamente e
 - `PdfRenderer::selectView()` elige la plantilla comparando la clase del documento; es una desviación real porque el implementador conoce las abstracciones refinadas.
 - El JSON usa valores de presentación y excluye `meta`; no es un feed contable crudo.
 - Agregar un formato no obliga a tocar la lógica de los documentos; agregar un documento sí exige actualizar las tres fábricas y la selección de plantilla PDF.
+- `Document::isEmpty()` forma parte de la abstracción: `AbstractDocument` responde `false` y `MonthlyStatement` lo sobrescribe. La pantalla ya no consulta `invoices()` del producto concreto.
 
 ---
 
@@ -173,7 +176,7 @@ Decisión tomada: las dos aplicaciones se documentan en un solo archivo `docs/Pa
 | `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md` | Documento principal | Actualizado; versión Markdown editable del PDF, con RF-01 a RF-18 y las siete secciones de patrones |
 | `docs/Patrones creacionales/*.md` | Patrones creacionales | Documentados: Singleton, Prototype, Builder, Abstract Factory y Factory Method |
 | `docs/Patrones estructurales/Adapter.md` | Patrón estructural | Documentado con las aplicaciones de días hábiles e IPC |
-| `docs/patrones estructurales/Bridge.md` | Patrón estructural | Documentado en cinco apartados; cubre documentos, formatos y la familia JSON |
+| `docs/Patrones estructurales/Bridge.md` | Patrón estructural | Documentado en cinco apartados; cubre documentos, formatos y la familia JSON |
 | `docs/DOCUMENTACION-PATRONES.md` | Documento integrador | Desactualizado; cubre cinco patrones sin Prototype y con Factory Method mal enfocado |
 | `docs/ADAPTER-DIAS-HABILES.md` | Adapter | Útil y mayormente vigente; fragmentos y alcance desactualizados |
 | `docs/DOCUMENTACION-FLUJOS.md` | Flujos | Desactualizado en catálogo, firmas y campos de `AppSettings` |
@@ -265,7 +268,6 @@ docs/
     Factory Method.md
   Patrones estructurales/
     Adapter.md
-  patrones estructurales/
     Bridge.md
 CONTEXTO_DOCUMENTACION_PATRONES.md
 ```
@@ -327,13 +329,15 @@ El orden puede cambiar si se prefiere empezar por el patrón más reciente o por
 - Verificación de pruebas: completa.
 - Inventario documental: completo.
 - Discrepancias: identificadas.
-- Documentos de patrón creados: `docs/Patrones creacionales/Singleton.md`, `docs/Patrones creacionales/Prototype.md`, `docs/Patrones creacionales/Builder.md`, `docs/Patrones creacionales/Abstract Factory.md`, `docs/Patrones creacionales/Factory Method.md`, `docs/Patrones estructurales/Adapter.md` y `docs/patrones estructurales/Bridge.md`.
+- Documentos de patrón creados: `docs/Patrones creacionales/Singleton.md`, `docs/Patrones creacionales/Prototype.md`, `docs/Patrones creacionales/Builder.md`, `docs/Patrones creacionales/Abstract Factory.md`, `docs/Patrones creacionales/Factory Method.md`, `docs/Patrones estructurales/Adapter.md` y `docs/Patrones estructurales/Bridge.md`.
+- Bridge quedó en `docs/Patrones estructurales/Bridge.md`, junto a Adapter; ya no existe la variante con minúscula.
+- Contrato de documentos: `Document::isEmpty()` está implementado, `MonthlyStatement` lo sobrescribe y `DocumentsPage` dejó de depender de `invoices()`. Es preparación para el Proxy, que aún no se documenta como implementado.
 - Estructura aplicada: cinco apartados, sin contenido redundante.
 - Diagramas actualizados: roles GoF junto al nombre real de cada clase; clases ajenas al patrón marcadas `(no GoF)`.
 - Documento principal actualizado: sí, en `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`; incluye RF-01 a RF-18, casos de uso, C4, UML, control de cambios, frontend, backend, base de datos y mapa de patrones.
 - Este archivo de contexto: creado y actualizado.
 - Orden elegido: Singleton, Prototype, Builder, Abstract Factory, Factory Method, Adapter y Bridge documentados; documento principal actualizado; pendiente revisión final y commits.
-- Pruebas ejecutadas: `DeliveryActPrototypeTest` (5 pruebas, 66 aserciones), `CreateDeliveryActFromTest` (8 pruebas, 50 aserciones), `DeliveryActBuilderTest` y `CreateDeliveryActTest` (19 pruebas, 82 aserciones), `DocumentFactoryTest` (14 pruebas, 84 aserciones), `JsonDocumentBridgeTest` (6 pruebas, 68 aserciones), `PaymentPlanGeneratorTest` (7 pruebas, 18 aserciones), `BusinessCalendarTest` y `DaneCdaIpcProviderTest` (25 pruebas, 47 aserciones), todas en verde.
+- Pruebas ejecutadas: `DeliveryActPrototypeTest` (5 pruebas, 66 aserciones), `CreateDeliveryActFromTest` (8 pruebas, 50 aserciones), `DeliveryActBuilderTest` y `CreateDeliveryActTest` (19 pruebas, 82 aserciones), `DocumentFactoryTest` (14 pruebas, 96 aserciones), `DocumentContentTest` (14 pruebas, 48 aserciones), `JsonDocumentBridgeTest` (6 pruebas, 68 aserciones), `PaymentPlanGeneratorTest` (7 pruebas, 18 aserciones), `BusinessCalendarTest` y `DaneCdaIpcProviderTest` (25 pruebas, 47 aserciones), todas en verde. Suite completa: 325 pruebas, 1.594 aserciones.
 
 ---
 

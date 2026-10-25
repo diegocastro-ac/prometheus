@@ -43,7 +43,7 @@ Bridge separa las dos jerarquías y las conecta por **composición**:
 
 | Rol GoF | Clase en Prometheus | Archivo | Responsabilidad |
 | --- | --- | --- | --- |
-| **Abstraction** | `AbstractDocument` | `app/Documents/AbstractDocument.php` | Guardar el cuerpo y el renderizador; delegar la entrega y memorizar el contenido. |
+| **Abstraction** | `AbstractDocument` | `app/Documents/AbstractDocument.php` | Guardar el cuerpo y el renderizador; delegar la entrega, memorizar el contenido y responder `isEmpty()`. |
 | **RefinedAbstraction** | `RentInvoice` | `app/Documents/RentInvoice.php` | Factura de arrendamiento. |
 | **RefinedAbstraction** | `PaymentReceipt` | `app/Documents/PaymentReceipt.php` | Comprobante de una factura pagada. |
 | **RefinedAbstraction** | `AdjustmentLetter` | `app/Documents/AdjustmentLetter.php` | Carta de comunicación del reajuste. |
@@ -63,6 +63,8 @@ Bridge separa las dos jerarquías y las conecta por **composición**:
 
 Los documentos se adjuntan al cuerpo después de crear la instancia mediante `AbstractDocument::attachToBody()`. Esa referencia permite que `PdfRenderer` elija la plantilla específica y que `JsonRenderer` informe `document_type`. Los documentos no contienen ningún `if ($format === ...)`.
 
+El contrato `Document` también expone `isEmpty()`. `AbstractDocument` responde `false` por defecto y `MonthlyStatement` lo sobrescribe para indicar que no hay facturas en el periodo. La pantalla consulta ese método del contrato y ya no necesita conocer `invoices()` del producto concreto.
+
 ## 4. Diagrama de clases
 
 ```plantuml
@@ -75,6 +77,8 @@ interface "Document (producto abstracto - no GoF del Bridge)" as Document {
   +deliveryLabel() : string
   +isDownload() : bool
   +content() : string
+  +isEmpty() : bool
+  +preview() : string
 }
 
 abstract class "AbstractDocument (Abstraction)" as AbstractDocument {
@@ -85,6 +89,7 @@ abstract class "AbstractDocument (Abstraction)" as AbstractDocument {
   +body() : DocumentBody
   # attachToBody() : void
   +content() : string
+  +isEmpty() : bool
 }
 
 class "RentInvoice (RefinedAbstraction)" as RentInvoice
@@ -144,11 +149,11 @@ DocumentBody o--> AbstractDocument : document()
 
 | Clase | Rol | Ruta | Responsabilidad |
 | --- | --- | --- | --- |
-| `AbstractDocument` | Abstraction | `app/Documents/AbstractDocument.php` | Recibir cuerpo y renderizador; delegar `filename()`, `mimeType()`, `deliveryLabel()`, `isDownload()` y `content()`. |
+| `AbstractDocument` | Abstraction | `app/Documents/AbstractDocument.php` | Recibir cuerpo y renderizador; delegar `filename()`, `mimeType()`, `deliveryLabel()`, `isDownload()` y `content()`; responder `isEmpty()` con `false` por defecto. |
 | `RentInvoice` | RefinedAbstraction | `app/Documents/RentInvoice.php` | Construir la factura de arrendamiento y adjuntarse al cuerpo. |
 | `PaymentReceipt` | RefinedAbstraction | `app/Documents/PaymentReceipt.php` | Construir el comprobante y validar que la factura esté pagada. |
 | `AdjustmentLetter` | RefinedAbstraction | `app/Documents/AdjustmentLetter.php` | Construir la carta con datos del IPC y advertencias legales. |
-| `MonthlyStatement` | RefinedAbstraction | `app/Documents/MonthlyStatement.php` | Construir el estado de cuenta de un periodo. |
+| `MonthlyStatement` | RefinedAbstraction | `app/Documents/MonthlyStatement.php` | Construir el estado de cuenta de un periodo y reportar con `isEmpty()` si no tiene facturas. |
 | `DocumentRenderer` | Implementor | `app/Documents/Rendering/DocumentRenderer.php` | Declarar MIME, extensión, etiqueta, modo de entrega y `render()`. |
 | `PlainTextRenderer` | ConcreteImplementor | `app/Documents/Rendering/PlainTextRenderer.php` | Serializar en texto plano; se muestra y se copia. |
 | `PdfRenderer` | ConcreteImplementor | `app/Documents/Rendering/PdfRenderer.php` | Serializar con FlexPDF; elige la plantilla del documento. |
@@ -169,6 +174,7 @@ DocumentBody o--> AbstractDocument : document()
 - **Sin ramas por formato en el dominio:** los documentos no preguntan si son texto, PDF o JSON.
 - **Un mismo cuerpo para tres salidas:** texto, PDF y JSON consumen el mismo `DocumentBody`; cambia la representación, no el dato de negocio.
 - **Entrega desacoplada:** `DocumentAction` no conoce el formato; obedece `content()`, `filename()`, `mimeType()` e `isDownload()`.
+- **Estado vacío en el contrato:** `DocumentsPage` consulta `isEmpty()` y no necesita saber que el estado de cuenta concreto expone `invoices()`.
 - **Interfaz consistente:** la pantalla elige el formato una vez y la fábrica entrega todos los productos de esa familia.
 - **Extensibilidad por implementador:** un nuevo formato se agrega con un `DocumentRenderer` y su fábrica, sin duplicar la lógica de los documentos.
 - **Renderizado memorizado:** `AbstractDocument` guarda el contenido generado; un PDF costoso no se reconstruye en cada llamada.
