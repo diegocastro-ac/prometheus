@@ -11,7 +11,9 @@ use App\Documents\Factories\DocumentFactory;
 use App\Documents\Factories\TextDocumentFactory;
 use App\Events\IpcSeriesSynchronized;
 use App\Infrastructure\AuthUserContext;
+use App\Infrastructure\Holidays\CachedHolidaySource;
 use App\Infrastructure\Holidays\NagerDateBusinessCalendar;
+use App\Infrastructure\Holidays\NagerDateHolidaySource;
 use App\Infrastructure\Holidays\WeekendBusinessCalendar;
 use App\Infrastructure\Ipc\DaneCdaIpcProvider;
 use App\Infrastructure\Ipc\LocalSeriesIpcProvider;
@@ -79,17 +81,24 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(DocumentFactoryLocator::class);
         $this->app->bind(DocumentFactory::class, TextDocumentFactory::class);
 
-        // Adapter: el dominio pregunta "es dia habil?" sin conocer la fuente de
-        // festivos. En produccion la respuesta la da el adaptador de Nager.Date;
-        // en las pruebas se usa el calendario de fin de semana para no depender
-        // de la red.
+        // Adapter + Proxy: el dominio pregunta "es dia habil?" sin conocer la
+        // fuente de festivos. En produccion el calendario consulta un Proxy que
+        // cachea por anio y degrada si Nager.Date falla; en las pruebas se usa
+        // el calendario de fin de semana para no depender de la red.
         if ($this->app->environment('testing')) {
             $this->app->bind(BusinessCalendar::class, WeekendBusinessCalendar::class);
         } else {
-            $this->app->bind(BusinessCalendar::class, fn (): NagerDateBusinessCalendar => new NagerDateBusinessCalendar(
-                (string) config('services.holidays.base_url'),
-                (string) config('services.holidays.country'),
-            ));
+            $this->app->bind(BusinessCalendar::class, function (): NagerDateBusinessCalendar {
+                $baseUrl = (string) config('services.holidays.base_url');
+                $country = (string) config('services.holidays.country');
+
+                return new NagerDateBusinessCalendar(
+                    new CachedHolidaySource(
+                        new NagerDateHolidaySource($baseUrl, $country),
+                        $country,
+                    ),
+                );
+            });
         }
 
         /*

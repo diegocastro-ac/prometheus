@@ -10,8 +10,15 @@
 ## Estado de ejecución
 
 - Fase 0: **completada** (2026-10-25).
-- Fases 1 a 6: pendientes.
+- Fase 1: **completada** (2026-10-25).
+- Fases 2 a 6: pendientes.
 - Fase 7: delegada a otro agente.
+
+## Regla de trabajo
+
+- **No ejecutar la suite completa** (`php artisan test`) ni Pint global: consumen demasiado tiempo.
+- Ejecutar únicamente las pruebas dirigidas, y solo cuando el cambio de código realmente lo requiera.
+- No ejecutar pruebas para cambios exclusivamente documentales.
 
 ---
 
@@ -373,24 +380,20 @@ Documentos que debe crear o actualizar:
 
 ## 9. Verificación
 
-Por fase:
+- **No ejecutar la suite completa ni Pint global.**
+- Por fase, ejecutar solo el test dirigido al cambio:
 
 ```bash
 php artisan test --filter=<TestName>
 ```
 
-Al cerrar cada fase:
+- Aplicar Pint solo a los archivos modificados:
 
 ```bash
-vendor/bin/pint --test
+vendor/bin/pint <archivos-modificados>
 ```
 
-Al cerrar todas las fases:
-
-```bash
-php artisan test
-vendor/bin/pint --test
-```
+- No ejecutar pruebas en fases que solo cambian documentación.
 
 ---
 

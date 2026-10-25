@@ -4,7 +4,9 @@ namespace Tests\Feature;
 
 use App\Contracts\BusinessCalendar;
 use App\Enums\BillingCadence;
+use App\Infrastructure\Holidays\CachedHolidaySource;
 use App\Infrastructure\Holidays\NagerDateBusinessCalendar;
+use App\Infrastructure\Holidays\NagerDateHolidaySource;
 use App\Infrastructure\Holidays\WeekendBusinessCalendar;
 use App\Models\Invoice;
 use App\Models\Rental;
@@ -13,17 +15,18 @@ use App\Services\PaymentPlanService;
 use App\ValueObjects\RentalPeriod;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 /**
- * Adapter: el calendario de dias habiles.
+ * Adapter + Proxy: el calendario de dias habiles.
  *
  * El dominio pregunta "es dia habil?" sin conocer de donde vienen los festivos.
- * El adaptador de Nager.Date traduce el servicio externo a esa interfaz y, si
- * no responde, degrada al calendario de fin de semana.
+ * El calendario consulta un Proxy que cachea la respuesta de Nager.Date y, si
+ * el servicio falla, degrada al calendario de fin de semana.
  */
 class BusinessCalendarTest extends TestCase
 {
@@ -32,6 +35,8 @@ class BusinessCalendarTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        Cache::flush();
 
         DB::table('app_settings')->insert([
             'id' => 1,
@@ -55,7 +60,7 @@ class BusinessCalendarTest extends TestCase
     #[Test]
     public function el_calendario_de_respaldo_salta_el_fin_de_semana(): void
     {
-        $calendar = new WeekendBusinessCalendar();
+        $calendar = new WeekendBusinessCalendar;
 
         // 2026-01-10 es sabado, el lunes habil es el 12.
         $this->assertFalse($calendar->isBusinessDay(Carbon::parse('2026-01-10')));
@@ -72,7 +77,7 @@ class BusinessCalendarTest extends TestCase
             ]),
         ]);
 
-        $calendar = new NagerDateBusinessCalendar('https://date.nager.at/api/v3', 'CO');
+        $calendar = $this->calendar();
 
         // El lunes 2026-01-12 es festivo, el martes 13 es el siguiente habil.
         $this->assertFalse($calendar->isBusinessDay(Carbon::parse('2026-01-12')));
@@ -86,7 +91,7 @@ class BusinessCalendarTest extends TestCase
             '*/PublicHolidays/*' => Http::response('', 500),
         ]);
 
-        $calendar = new NagerDateBusinessCalendar('https://date.nager.at/api/v3', 'CO');
+        $calendar = $this->calendar();
 
         // Sabado 2026-01-10: aunque la API falle, salta al lunes.
         $this->assertSame('2026-01-12', $calendar->nextBusinessDay(Carbon::parse('2026-01-10'))->toDateString());
@@ -121,11 +126,8 @@ class BusinessCalendarTest extends TestCase
             ]),
         ]);
 
-        // Se usa el adaptador real: el vencimiento debe respetar su festivo.
-        $this->app->bind(BusinessCalendar::class, fn (): NagerDateBusinessCalendar => new NagerDateBusinessCalendar(
-            'https://date.nager.at/api/v3',
-            'CO',
-        ));
+        // Se usa la cadena real: el vencimiento debe respetar su festivo.
+        $this->app->bind(BusinessCalendar::class, fn (): NagerDateBusinessCalendar => $this->calendar());
 
         $rental = Rental::factory()->create([
             'start_date' => '2026-01-01',
@@ -143,7 +145,7 @@ class BusinessCalendarTest extends TestCase
         // festivo) y el siguiente habil es el lunes 2026-02-09.
         $this->assertSame('2026-02-09', $invoice->due_at->toDateString());
     }
-    
+
     #[Test]
     public function el_fin_del_alquiler_incluye_el_plazo_y_el_dia_habil(): void
     {
@@ -153,5 +155,15 @@ class BusinessCalendarTest extends TestCase
         $end = RentalPeriod::for(Carbon::parse('2026-01-02'), 1)->endDateFormatted();
 
         $this->assertSame('2026-02-09', $end);
+    }
+
+    private function calendar(string $country = 'CO'): NagerDateBusinessCalendar
+    {
+        return new NagerDateBusinessCalendar(
+            new CachedHolidaySource(
+                new NagerDateHolidaySource('https://date.nager.at/api/v3', $country),
+                $country,
+            ),
+        );
     }
 }

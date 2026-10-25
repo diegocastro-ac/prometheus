@@ -11,9 +11,9 @@ use Carbon\CarbonInterface;
  * dominio no sabe de que fuente vienen los festivos: solo pregunta si un dia es
  * habil y, cuando no lo es, cual es el siguiente dia habil.
  *
- * El adaptador concreto (NagerDateBusinessCalendar) traduce la respuesta de un
- * servicio externo a esta interfaz. Cambiar de fuente de festivos no obliga a
- * tocar a quien consume el calendario.
+ * La implementacion de produccion (NagerDateBusinessCalendar) consulta una
+ * fuente de festivos detras de un Proxy. Cambiar de fuente o de politica de
+ * cache no obliga a tocar a quien consume el calendario.
  */
 interface BusinessCalendar
 {
