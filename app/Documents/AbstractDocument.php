@@ -41,6 +41,18 @@ abstract class AbstractDocument implements DocumentContract
         return $this->body;
     }
 
+    /**
+     * Adjunta este documento al cuerpo que se va a renderizar.
+     *
+     * El cuerpo se arma antes de que la instancia exista, asi que la referencia
+     * se cierra aqui y no en cada fabrica. Los renderizadores la usan para
+     * elegir una plantilla o para mostrar bloques propios de un documento.
+     */
+    protected function attachToBody(): void
+    {
+        $this->body = $this->body->withDocument($this);
+    }
+
     public function filename(): string
     {
         return $this->slug.'.'.$this->renderer->extension();

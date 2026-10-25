@@ -26,12 +26,16 @@ class RentInvoice extends AbstractDocument
 
     public static function forInvoice(Invoice $invoice, DocumentRenderer $renderer): self
     {
-        return new self(
+        $document = new self(
             body: self::buildBody($invoice),
             renderer: $renderer,
             slug: 'factura-'.$invoice->number,
             invoice: $invoice,
         );
+
+        $document->attachToBody();
+
+        return $document;
     }
 
     public function invoice(): Invoice
@@ -80,7 +84,6 @@ class RentInvoice extends AbstractDocument
         }
 
         return $body
-            ->withDocument($invoice)
             ->withNotes(
                 __('invoice.descriptions.legal'),
             )

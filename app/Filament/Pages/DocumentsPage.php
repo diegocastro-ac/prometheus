@@ -6,6 +6,7 @@ use App\Documents\Contracts\Document;
 use App\Documents\DocumentService;
 use App\Documents\Money;
 use App\Enums\InvoiceStatus;
+use App\Filament\Support\DocumentAction;
 use App\Models\Invoice;
 use App\Models\RentAdjustment;
 use App\Models\Rental;
@@ -303,39 +304,12 @@ class DocumentsPage extends Page
     private function deliver(Document $document): mixed
     {
         if ($document->isDownload()) {
-            // Usar el mismo enfoque que DocumentAction para PDFs
-            $view = self::selectView($document);
-            $settings = app(\App\Settings\AppSettings::class);
-
-            $pdfBytes = \FlexPDF\Facades\Pdf::view($view, [
-                'body' => $document->body(),
-                'document' => $document,
-                'settings' => $settings,
-            ])->page('a4')->output();
-
-            return response()->streamDownload(
-                function () use ($pdfBytes) {
-                    echo $pdfBytes;
-                },
-                $document->filename(),
-                ['Content-Type' => 'application/pdf']
-            );
+            return DocumentAction::download($document);
         }
 
         $this->textPreview = $document->content();
 
         return null;
-    }
-
-    private static function selectView(\App\Documents\AbstractDocument $document): string
-    {
-        return match ($document::class) {
-            \App\Documents\RentInvoice::class => 'documents.invoice',
-            \App\Documents\PaymentReceipt::class => 'documents.receipt',
-            \App\Documents\AdjustmentLetter::class => 'documents.adjustment-letter',
-            \App\Documents\MonthlyStatement::class => 'documents.monthly-statement',
-            default => 'documents.document',
-        };
     }
 
     /**

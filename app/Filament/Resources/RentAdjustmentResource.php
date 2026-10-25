@@ -1315,6 +1315,13 @@ class RentAdjustmentResource extends Resource
                 builder: fn (RentAdjustment $record, string $format): Document => app(DocumentService::class)
                     ->adjustmentLetterFor($record, $format),
             ),
+
+            DocumentAction::file(
+                name: 'letter_json',
+                label: __('rent_adjustment.buttons.letter').' · JSON',
+                builder: fn (RentAdjustment $record, string $format): Document => app(DocumentService::class)
+                    ->adjustmentLetterFor($record, $format),
+            ),
         ];
     }
 

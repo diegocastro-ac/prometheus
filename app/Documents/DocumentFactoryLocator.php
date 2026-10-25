@@ -25,7 +25,7 @@ class DocumentFactoryLocator
     /**
      * @var list<string>
      */
-    public const FORMATS = ['text', 'pdf'];
+    public const FORMATS = ['text', 'pdf', 'json'];
 
     /**
      * @var array<string, class-string<DocumentFactory>>
@@ -33,6 +33,7 @@ class DocumentFactoryLocator
     private const IMPLEMENTATIONS = [
         'text' => Factories\TextDocumentFactory::class,
         'pdf' => Factories\PdfDocumentFactory::class,
+        'json' => Factories\JsonDocumentFactory::class,
     ];
 
     public function for(?string $format): DocumentFactory

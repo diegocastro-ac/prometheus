@@ -45,11 +45,13 @@ class AdjustmentLetter extends AbstractDocument
     public static function forAdjustment(RentAdjustment $adjustment, DocumentRenderer $renderer): self
     {
         $document = new self(
-            body: self::buildBody($adjustment)->withDocument($adjustment),
+            body: self::buildBody($adjustment),
             renderer: $renderer,
             slug: 'reajuste-'.$adjustment->id,
             adjustment: $adjustment,
         );
+
+        $document->attachToBody();
 
         return $document;
     }
@@ -257,7 +259,6 @@ class AdjustmentLetter extends AbstractDocument
         }
 
         return $body
-            ->withDocument($adjustment)
             ->withNotes(...$notes)
             ->withFooter(
                 __('document.generated_by').' '.now()->format('d/m/Y \a \l\a\s H:i'),

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Documents\DocumentFactoryLocator;
 use App\Documents\DocumentService;
 use App\Documents\Factories\DocumentFactory;
+use App\Documents\Factories\JsonDocumentFactory;
 use App\Documents\Factories\PdfDocumentFactory;
 use App\Documents\Factories\TextDocumentFactory;
 use App\Documents\PaymentReceipt;
@@ -23,13 +24,14 @@ use PHPUnit\Framework\Attributes\Test;
 class DocumentFactoryTest extends DocumentTestCase
 {
     /**
-     * @return array<string, array{class-string<DocumentFactory>, string, string, bool}>
+     * @return array<string, array{class-string<DocumentFactory>, string, string, bool, string}>
      */
     public static function families(): array
     {
         return [
-            'texto' => [TextDocumentFactory::class, 'text', 'invoice.documents.copy', false],
-            'pdf' => [PdfDocumentFactory::class, 'pdf', 'invoice.documents.download', true],
+            'texto' => [TextDocumentFactory::class, 'text', 'invoice.documents.copy', false, '.txt'],
+            'pdf' => [PdfDocumentFactory::class, 'pdf', 'invoice.documents.download', true, '.pdf'],
+            'json' => [JsonDocumentFactory::class, 'json', 'invoice.documents.download_json', true, '.json'],
         ];
     }
 
@@ -65,6 +67,7 @@ class DocumentFactoryTest extends DocumentTestCase
 
         $this->assertTrue($locator->supports('text'));
         $this->assertTrue($locator->supports('pdf'));
+        $this->assertTrue($locator->supports('json'));
         $this->assertFalse($locator->supports('docx'));
         $this->assertFalse($locator->supports(null));
     }
@@ -90,7 +93,7 @@ class DocumentFactoryTest extends DocumentTestCase
         $issued = $this->issuedInvoice();
         $statement = $this->invoiceForPeriod('2026-01');
 
-        foreach (self::families() as [$class, $format, $labelKey, $downloads]) {
+        foreach (self::families() as [$class, $format, $labelKey, $downloads, $extension]) {
             $factory = app($class);
 
             $this->assertSame($format, $factory->format(), "{$class} no se identifica como {$format}");
@@ -110,10 +113,7 @@ class DocumentFactoryTest extends DocumentTestCase
                 $this->assertInstanceOf(\App\Documents\Contracts\Document::class, $document);
                 $this->assertSame(__($labelKey), $document->deliveryLabel());
                 $this->assertSame($downloads, $document->isDownload());
-                $this->assertStringEndsWith(
-                    $downloads ? '.pdf' : '.txt',
-                    $document->filename(),
-                );
+                $this->assertStringEndsWith($extension, $document->filename());
             }
         }
     }

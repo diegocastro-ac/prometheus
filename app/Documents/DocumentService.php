@@ -75,6 +75,7 @@ class DocumentService
         return [
             'text' => __('invoice.documents.format.text'),
             'pdf' => __('invoice.documents.format.pdf'),
+            'json' => __('invoice.documents.format.json'),
         ];
     }
 
