@@ -13,6 +13,16 @@ return [
         ],
     ],
 
+    /*
+    | Destino del inmueble. El articulo 1 de la Ley 820 limita la ley a vivienda
+    | urbana: un local comercial se rige por el Codigo de Comercio y no tiene tope
+    | legal del IPC.
+    */
+    'types' => [
+        'residential' => 'Vivienda urbana',
+        'commercial' => 'Local comercial',
+    ],
+
     'form' => [
         'sections' => [
             'main' => [
@@ -27,6 +37,16 @@ return [
                 'property' => 'Propiedad',
                 'is_active' => 'Activo',
                 'description' => 'Descripción',
+            ],
+            'legal' => [
+                'title' => 'Datos legales del inmueble',
+                'description' => 'El artículo 1 limita la Ley 820 de 2003 a la vivienda urbana, y el artículo 18 limita el canon al uno por ciento del valor comercial. Estos datos son los que hacen posibles esas dos comprobaciones.',
+                'rental_type' => 'Tipo de alquiler',
+                'rental_type_help' => 'La Ley 820 se aplica a la vivienda urbana. En un inmueble comercial el canon lo determina el mercado y el IPC es una referencia, no un límite legal.',
+                'commercial_value' => 'Valor comercial',
+                'commercial_value_help' => 'Estimación comercial del inmueble. El artículo 18 exige que no supere el equivalente a dos veces el avalúo catastral.',
+                'catastral_appraisal' => 'Avalúo catastral',
+                'catastral_appraisal_help' => 'Avalúo catastral vigente. Es el que sirve de techo al valor comercial del artículo 18.',
             ],
             'agreement' => [
                 'title' => 'Contrato',

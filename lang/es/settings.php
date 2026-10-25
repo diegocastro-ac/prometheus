@@ -10,12 +10,10 @@ return [
         'business' => 'Datos del negocio',
         'contact' => 'Contacto',
         'billing' => 'Facturación',
-        'inventory' => 'Catálogo de espacios',
     ],
 
     'descriptions' => [
         'billing' => 'Los documentos no son facturas electrónicas autorizadas por la DIAN.',
-        'inventory' => 'Un espacio por línea. Se usa para agrupar el inventario del acta de entrega.',
     ],
 
     'form' => [
@@ -24,14 +22,13 @@ return [
         'address' => 'Dirección',
         'currency' => 'Moneda',
         'logo' => 'Logotipo',
-        'email' => 'Correo de notifications',
+        'email' => 'Correo de notificaciones',
         'phone' => 'Teléfono',
+        'default_city_code' => 'Ciudad predeterminada',
+        'default_city_code_help' => 'Ciudad que se propone al crear una propiedad. Puede dejarla vacia: en ese caso el formulario de propiedades exigira indicar la ciudad de cada inmueble.',
+        'default_city_code_placeholder' => 'Sin ciudad predeterminada',
         'invoice_due_days' => 'Días de vencimiento',
         'legal_footer' => 'Texto legal de los documentos',
-        'space_catalog' => 'Espacios',
-        'primary_color' => 'Color principal',
-        'secondary_color' => 'Color secundario',
-        'font_family' => 'Fuente',
     ],
 
     'placeholders' => [

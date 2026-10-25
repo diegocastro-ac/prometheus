@@ -83,11 +83,11 @@ class DocumentsPageTest extends DocumentTestCase
             ->call('generateStatement')
             ->assertSuccessful();
 
-        $this->assertStringContainsString('Estado de cuenta', (string) $this->page()->get('textPreview'));
+        $this->assertStringContainsString(__('document.monthly_statement'), (string) $this->page()->get('textPreview'));
     }
 
     #[Test]
-    public function el_estado_de_cuenta_en_pdf_se_descarga_y_no_Deja_texto_pegado(): void
+    public function el_estado_de_cuenta_en_pdf_se_descarga_y_no_deja_texto_pegado(): void
     {
         $rental = $this->rental();
 
@@ -176,7 +176,7 @@ class DocumentsPageTest extends DocumentTestCase
             ->call('generateReceipt')
             ->assertSuccessful();
 
-        $this->assertStringContainsString('Comprobante', (string) $this->page()->get('textPreview'));
+        $this->assertStringContainsString(__('document.payment_receipt'), (string) $this->page()->get('textPreview'));
     }
 
     #[Test]
@@ -206,7 +206,7 @@ class DocumentsPageTest extends DocumentTestCase
 
         $preview = (string) $this->page()->get('textPreview');
 
-        $this->assertStringContainsString('AVISO', $preview);
+        $this->assertStringContainsString(__('document.warning_prefix'), $preview);
         $this->assertStringContainsString('180.000', $preview);
     }
 

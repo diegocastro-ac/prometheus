@@ -19,7 +19,7 @@
             x-transition
             style="color: #10b981; font-weight: 500; font-size: 14px;"
         >
-            ✓ {{ __('invoice.documents.copied') }}
+            {{ __('invoice.documents.copied') }}
         </span>
     </div>
 

@@ -73,23 +73,35 @@ class MonthlyStatement extends AbstractDocument
 
         $body = DocumentBody::make(__('document.monthly_statement'))
             ->withFields([
-                'Total facturado' => Money::exact($billed),
-                'Total abonado' => Money::exact($paid),
-                'Saldo pendiente' => Money::exact($billed - $paid),
+                // El periodo y el numero de facturas van en la cabecera, no solo en
+                // la tabla. Un estado de cuenta sin el periodo escrito arriba es un
+                // papel suelto: la tabla puede mostrar cinco filas de un mes y de
+                // otro sin que nada lo distinga.
+                __('document.period') => $period,
+                __('document.invoices') => (string) count($invoices),
+                __('document.total_billed') => Money::exact($billed),
+                __('document.total_paid') => Money::exact($paid),
+                __('document.outstanding_balance') => Money::exact($billed - $paid),
             ]);
 
         if ($rows !== []) {
             $body = $body->withTable(
-                ['Factura', 'Concepto', 'Periodo', 'Fecha', 'Total', 'Pagado', 'Saldo', 'Estado'],
+                [
+                    __('document.invoice_number'),
+                    __('document.concept'),
+                    __('document.period'),
+                    __('document.issued_date'),
+                    __('document.total_due'),
+                    __('document.paid_amount'),
+                    __('document.balance'),
+                    __('document.status'),
+                ],
                 $rows,
             );
         }
 
         return $body
-            ->withNotes(
-                'Las fechas de vencimiento se consultan en cada factura. Las facturas anuladas '
-                .'no se cobran y se muestran solo como registro.',
-            )
+            ->withNotes(__('document.statement_note'))
             ->withFooter(
                 __('document.generated_by').' '.now()->format('d/m/Y \a \l\a\s H:i'),
             );
@@ -131,12 +143,12 @@ class MonthlyStatement extends AbstractDocument
 
     public function periodStart(): \Illuminate\Support\Carbon
     {
-        return \Illuminate\Support\Carbon::parse($this->period . '-01');
+        return \Illuminate\Support\Carbon::parse($this->period.'-01');
     }
 
     public function periodEnd(): \Illuminate\Support\Carbon
     {
-        return \Illuminate\Support\Carbon::parse($this->period . '-01')->endOfMonth();
+        return \Illuminate\Support\Carbon::parse($this->period.'-01')->endOfMonth();
     }
 
     public function transactions(): array

@@ -4,21 +4,19 @@ namespace App\Filament\Resources;
 
 use App\Contracts\CurrentUserContextInterface;
 use App\Filament\Resources\PropertyResource\Pages;
-use App\Filament\Resources\PropertyResource\RelationManagers;
+use App\Models\Geography;
 use App\Models\Property;
+use App\Settings\AppSettings;
 use Filament\Forms;
 use Filament\Forms\Components\Hidden;
-use Filament\Forms\Components\Section;
 use Filament\Forms\Form;
 use Filament\Forms\Get;
-use Filament\Infolists\Components\IconEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Infolists\Infolist;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\SoftDeletingScope;
 use Illuminate\Validation\Rule;
 
 class PropertyResource extends Resource
@@ -65,8 +63,8 @@ class PropertyResource extends Resource
                     ->required()
                     ->maxLength(50)
                     ->rule(
-                        fn(Get $get) => Rule::unique('properties', 'address')
-                            ->where(fn($query) => $query->where('user_id', app(CurrentUserContextInterface::class)->id()))
+                        fn (Get $get) => Rule::unique('properties', 'address')
+                            ->where(fn ($query) => $query->where('user_id', app(CurrentUserContextInterface::class)->id()))
                             ->ignore($get('id'))
                     ),
                 Forms\Components\Textarea::make('description')
@@ -74,8 +72,27 @@ class PropertyResource extends Resource
                     ->columnSpan('full')
                     ->autosize()
                     ->maxLength(255),
+
+                // La ciudad es el unico dato de la propiedad que alimenta el
+                // calculo de los reajustes. Por eso es required y por eso
+                // ofrece el catalogo COMPLETO, no solo las 23 ciudades con IPC.
+                Forms\Components\Select::make('geography_code')
+                    ->label(__('property.form.geography_code'))
+                    ->helperText(__('property.form.geography_code_help'))
+                    ->options(fn (): array => Geography::locationOptions())
+                    // Buscable porque el catalogo es del orden de mil entradas
+                    // y nadie las recorre una a una.
+                    ->searchable()
+                    ->native(false)
+                    ->required()
+                    // Precarga la ciudad predeterminada de Ajustes. Si no hay
+                    // ninguna, el campo queda vacio: el sistema no adivina la
+                    // ubicacion de un inmueble.
+                    ->default(fn (): ?string => app(AppSettings::class)->defaultCityCode())
+                    ->columnSpanFull(),
+
                 Hidden::make('user_id')
-                    ->default(fn() => app(CurrentUserContextInterface::class)->id()),
+                    ->default(fn () => app(CurrentUserContextInterface::class)->id()),
             ]);
     }
 
@@ -97,6 +114,12 @@ class PropertyResource extends Resource
                     ->label(__('property.table.columns.description'))
                     ->searchable()
                     ->limit(30),
+                Tables\Columns\TextColumn::make('geography.name')
+                    ->label(__('property.table.columns.geography'))
+                    ->placeholder(__('property.table.columns.geography_none'))
+                    ->badge()
+                    ->color(fn (?string $state): string => $state === null ? 'gray' : 'primary')
+                    ->sortable(),
                 Tables\Columns\TextColumn::make('created_at')
                     ->label(__('property.table.columns.created_at'))
                     ->dateTime()
@@ -133,6 +156,9 @@ class PropertyResource extends Resource
                     ->label(__('property.infolist.address')),
                 TextEntry::make('description')
                     ->label(__('property.infolist.description')),
+                TextEntry::make('geography.label')
+                    ->label(__('property.infolist.geography'))
+                    ->placeholder(__('property.table.columns.geography_none')),
                 TextEntry::make('created_at')
                     ->label(__('property.infolist.created_at'))
                     ->dateTime(),

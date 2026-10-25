@@ -34,7 +34,6 @@ class InvoicePeriodTest extends TestCase
             'tax_id' => '900123456-7',
             'currency' => 'COP',
             'invoice_due_days' => 5,
-            'space_catalog' => json_encode(['Sala']),
             'created_at' => now(),
             'updated_at' => now(),
         ]);

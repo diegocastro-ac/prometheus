@@ -12,15 +12,19 @@ use Illuminate\Support\Facades\DB;
  * de recibir cada dato por parametro, que es lo que hacia que la informacion
  * se duplicara en varias pantallas.
  *
+ * LO QUE NO VIVE AQUI
+ * -------------------
+ * Solo lo que describes la EMPRESA, y solo si es igual para todos sus
+ * arrendadores. El vocabulario del arrendador —los espacios de su inventario— no
+ * va aquí: es por usuario y vive en `spaces`. Y la ciudad predeterminada sí cabe,
+ * porque es una preferencia de la empresa, no un dato de un inmueble.
+ *
  * La instancia es inmutable: se construye una vez desde la base de datos y no
  * cambia. Cuando se guardan ajustes nuevos se descarta la instancia del
  * contenedor para que la siguiente peticion la vuelva a leer.
  */
 final class AppSettings
 {
-    /**
-     * @param  list<string>  $spaceCatalog
-     */
     private function __construct(
         private readonly string $businessName,
         private readonly string $taxId,
@@ -31,10 +35,7 @@ final class AppSettings
         private readonly ?string $phone,
         private readonly int $invoiceDueDays,
         private readonly ?string $legalFooter,
-        private readonly array $spaceCatalog,
-        private readonly string $primaryColor,
-        private readonly string $secondaryColor,
-        private readonly string $fontFamily,
+        private readonly ?string $defaultCityCode,
     ) {}
 
     /**
@@ -59,10 +60,7 @@ final class AppSettings
             phone: $row->phone,
             invoiceDueDays: (int) ($row->invoice_due_days ?? 5),
             legalFooter: $row->legal_footer,
-            spaceCatalog: self::decodeSpaceCatalog($row->space_catalog),
-            primaryColor: $row->primary_color ?? '#3b82f6',
-            secondaryColor: $row->secondary_color ?? '#6366f1',
-            fontFamily: $row->font_family ?? 'Inter',
+            defaultCityCode: $row->default_city_code,
         );
     }
 
@@ -81,10 +79,7 @@ final class AppSettings
             phone: null,
             invoiceDueDays: 5,
             legalFooter: null,
-            spaceCatalog: [],
-            primaryColor: '#3b82f6',
-            secondaryColor: '#6366f1',
-            fontFamily: 'Inter',
+            defaultCityCode: null,
         );
     }
 
@@ -134,38 +129,20 @@ final class AppSettings
     }
 
     /**
-     * @return list<string>
+     * La ciudad que se propone por defecto al crear una propiedad.
+     *
+     * Es nullable a proposito, y la ausencia NO es lo mismo que el total
+     * nacional. Null significa que el arrendador no ha declarado una ciudad de
+     * trabajo, y el formulario de propiedades deja el campo vacio y lo exige.
+     *
+     * Habria dos salidas posibles para "no hay ciudad configurada": usar el total
+     * nacional o no proponer nada. La segunda es la correcta, porque el total
+     * nacional no es una ciudad: asumirla seria inventar la ubicacion del
+     * inmueble y contaminar despues todos los reajustes con esa suposicion.
      */
-    public function spaceCatalog(): array
+    public function defaultCityCode(): ?string
     {
-        return $this->spaceCatalog;
-    }
-
-    public function primaryColor(): string
-    {
-        return $this->primaryColor;
-    }
-
-    public function secondaryColor(): string
-    {
-        return $this->secondaryColor;
-    }
-
-    public function fontFamily(): string
-    {
-        return $this->fontFamily;
-    }
-
-    /**
-     * Devuelve las variables CSS para inline en PDFs
-     */
-    public function cssVariables(): string
-    {
-        return sprintf(
-            '--color-primary: %s; --color-secondary: %s;',
-            $this->primaryColor,
-            $this->secondaryColor
-        );
+        return $this->defaultCityCode;
     }
 
     /**
@@ -175,24 +152,5 @@ final class AppSettings
     public function formatMoney(float $amount): string
     {
         return $this->currency.' '.number_format($amount, 0, ',', '.');
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function decodeSpaceCatalog(mixed $raw): array
-    {
-        if (is_string($raw)) {
-            $raw = json_decode($raw, true);
-        }
-
-        if (! is_array($raw)) {
-            return [];
-        }
-
-        return array_values(array_filter(array_map(
-            static fn (mixed $space): string => is_string($space) ? trim($space) : '',
-            $raw,
-        )));
     }
 }

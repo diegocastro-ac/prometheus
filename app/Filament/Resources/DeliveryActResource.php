@@ -5,10 +5,9 @@ namespace App\Filament\Resources;
 use App\Contracts\CurrentUserContextInterface;
 use App\Enums\ActItemState;
 use App\Filament\Resources\DeliveryActResource\Pages;
+use App\Filament\Support\SpaceCatalogField;
 use App\Models\DeliveryAct;
 use App\Models\Rental;
-use App\Models\Space;
-use App\Settings\AppSettings;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -129,15 +128,9 @@ class DeliveryActResource extends Resource
                                     ->schema([
                                         Forms\Components\Grid::make(2)
                                             ->schema([
-                                                Forms\Components\TextInput::make('space')
-                                                    ->label(__('act.form.space'))
-                                                    ->datalist(fn () => Space::query()
-                                                        ->where('user_id', app(CurrentUserContextInterface::class)->id())
-                                                        ->orderBy('name')
-                                                        ->pluck('name')
-                                                        ->all())
-                                                    ->required()
-                                                    ->maxLength(255),
+                                                SpaceCatalogField::make(
+                                                    Forms\Components\Select::make('space'),
+                                                ),
 
                                                 Forms\Components\TextInput::make('name')
                                                     ->label(__('act.form.item_name'))
@@ -301,14 +294,6 @@ class DeliveryActResource extends Resource
     }
 
     /**
-     * @return list<string>
-     */
-    private static function spaceCatalog(): array
-    {
-        return app(AppSettings::class)->spaceCatalog();
-    }
-
-    /**
      * @return array<int|string, string>
      */
     private static function rentalOptions(): array
@@ -334,21 +319,6 @@ class DeliveryActResource extends Resource
 
         if ($rental?->tenant !== null) {
             $set('tenant_name', $rental->tenant->name);
-        }
-    }
-
-    /**
-     * Agrega un nuevo espacio al catálogo de espacios.
-     */
-    private static function addToSpaceCatalog(string $newSpace): void
-    {
-        $currentCatalog = self::spaceCatalog();
-
-        if (! in_array($newSpace, $currentCatalog, true)) {
-            $currentCatalog[] = $newSpace;
-            \DB::table('app_settings')
-                ->where('id', 1)
-                ->update(['space_catalog' => json_encode($currentCatalog)]);
         }
     }
 }

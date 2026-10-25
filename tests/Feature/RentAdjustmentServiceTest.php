@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Enums\AdjustmentState;
+use App\Enums\NotificationMethod;
 use App\Models\IpcRate;
 use App\Models\RentAdjustment;
 use App\Models\Rental;
@@ -15,6 +17,12 @@ use RuntimeException;
  * El tope se decide aqui y no en el formulario ni en el documento. Estas
  * pruebas fijan esa regla para que ningun cambio de interfaz pueda alterarla sin
  * que se note.
+ *
+ * NOTA SOBRE LA SEMILLA: estas pruebas siembran IpcRate, que tambien crea su
+ * fila en ipc_series. Es lo que hace el sistema real: ipc_rates es una tabla
+ * derivada de la serie. Un test que solo sembrara la tasa anualaria el calculo
+ * sin el dato de diciembre del que depende el articulo 20, y pasaria por un
+ * motivo equivocado.
  */
 class RentAdjustmentServiceTest extends DocumentTestCase
 {
@@ -23,11 +31,26 @@ class RentAdjustmentServiceTest extends DocumentTestCase
         return app(RentAdjustmentService::class);
     }
 
+    /**
+     * Un alquiler con contrato vigente desde hace mas de un ano.
+     *
+     * El inicio se fija a proposito en vez de dejarlo al azar de la factory. El
+     * articulo 20 cuenta los doce meses "bajo un mismo precio", asi que un
+     * alquiler recién creado todavia NO puede reajustarse. Sin esta fijacion,
+     * media prueba fallaria por la regla del plazo y no por lo que pretende
+     * comprobar.
+     */
     private function rental(float $monthlyAmount = 1_000_000): Rental
     {
+        $start = today()->subYears(2);
+
         return Rental::factory()->create([
             'user_id' => $this->user->id,
             'monthly_amount' => $monthlyAmount,
+            'anchor_monthly_amount' => $monthlyAmount,
+            'start_date' => $start->toDateString(),
+            'end_date' => $start->copy()->addYear()->toDateString(),
+            'anchor_established_on' => $start->toDateString(),
             'name' => 'Apartamento centro',
         ]);
     }
@@ -99,7 +122,7 @@ class RentAdjustmentServiceTest extends DocumentTestCase
         IpcRate::factory()->forYear(2026, 4.15)->create();
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('exige dejar escrito el motivo');
+        $this->expectExceptionMessage('dejar escrito el motivo en las observaciones');
 
         $this->service()->record(
             rental: $this->rental(),
@@ -138,11 +161,12 @@ class RentAdjustmentServiceTest extends DocumentTestCase
     public function confirmar_el_apartamiento_no_habilita_un_ipc_inventado(): void
     {
         // La excepcion es sobre el ano, no sobre los datos: si el ano indicado no
-        // existe, sigue sin poder calcularse el tope.
+        // existe, sigue sin poder calcularse el tope. Confirmar el apartamiento
+        // autoriza usar otro ano real, no inventar uno.
         IpcRate::factory()->forYear(2025, 9.28)->create();
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('No hay IPC registrado para 2031');
+        $this->expectExceptionMessage('No se encuentra el IPC de total nacional para diciembre de 2031');
 
         $this->service()->record(
             rental: $this->rental(),
@@ -214,8 +238,14 @@ class RentAdjustmentServiceTest extends DocumentTestCase
     {
         // Sin el dato oficial no hay tope legal que probar. Es preferible fallar
         // a inventar un porcentaje.
+        //
+        // El mensaje dice QUE FALTA y no COMO CONSEGUIRLO. Antes terminaba con el
+        // comando de consola que hay que ejecutar para traer el dato, y esa
+        // instruccion no le sirve a quien administra el alquiler desde el
+        // navegador. Que el dato falte ya es el hecho; el como se resuelve en
+        // ipc:doctor, que es la herramienta de quien lo carga.
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('No hay IPC registrado');
+        $this->expectExceptionMessage('Se publica alrededor del 15/01/2026');
 
         $this->service()->record(
             rental: $this->rental(),
@@ -257,8 +287,21 @@ class RentAdjustmentServiceTest extends DocumentTestCase
     }
 
     #[Test]
-    public function un_reajuste_sobre_el_tope_no_se_aplica_sin_acuerdo_escrito(): void
+    public function un_reajuste_sobre_el_ipc_se_aplica_pero_deja_exceso_registrado(): void
     {
+        // ESTA PRUEBA CAMBIO DE SENTIDO CON LA REVISION DEL MODULO.
+        //
+        // Antes: un reajuste por encima del IPC no se aplicaba sin acuerdo
+        // escrito, y applyToRental() lanzaba una excepcion.
+        //
+        // Ahora se aplica. El articulo 20 lo formula como limite ("no sea
+        // superior al 100 %"), pero la jurisprudencia que define si el IPC es
+        // tope o parametro no pudo verificarse al construir el modulo, y el
+        // texto admite ambas lecturas. Bloquear con una regla cuya vigencia
+        // juridica no se ha comprobado seria el error.
+        //
+        // Lo que si se mantiene es el rastro: el exceso queda guardado, la carta
+        // lo destaca y las observaciones son donde queda el acuerdo.
         IpcRate::factory()->forYear(2025, 9.28)->create();
 
         $rental = $this->rental(1_000_000);
@@ -267,13 +310,15 @@ class RentAdjustmentServiceTest extends DocumentTestCase
             rental: $rental,
             newRent: 1_450_000,
             effectiveFrom: today()->startOfYear(),
+            notes: 'Acuerdo escrito firmado por las dos partes.',
         );
 
-        // El exceso existe y se registra, pero el canon no cambia: pasarlo sin
-        // acuerdo escrito seria el fallo que el articulo 20 evita.
-        $this->expectException(RuntimeException::class);
+        $this->assertTrue($adjustment->exceedsCap());
+        $this->assertSame(357_200.0, (float) $adjustment->excess_over_cap);
 
         $this->service()->applyToRental($adjustment);
+
+        $this->assertSame(1_450_000.0, (float) $rental->refresh()->monthly_amount);
     }
 
     #[Test]
@@ -296,7 +341,49 @@ class RentAdjustmentServiceTest extends DocumentTestCase
     }
 
     #[Test]
-    public function marcar_comunicado_deja_constancia_de_la_fecha(): void
+    public function sin_observaciones_un_exceso_sobre_el_ipc_tambien_se_aplica(): void
+    {
+        // Contraparte directa del cambio: el exceso ya no es una condicion para
+        // aplicar. Lo que la carta y la tabla muestran es informacion, no un
+        // bloqueo.
+        IpcRate::factory()->forYear(2025, 9.28)->create();
+
+        $rental = $this->rental(1_000_000);
+
+        $adjustment = $this->service()->record(
+            rental: $rental,
+            newRent: 1_450_000,
+            effectiveFrom: today()->startOfYear(),
+        );
+
+        $this->service()->applyToRental($adjustment);
+
+        $this->assertSame(1_450_000.0, (float) $rental->refresh()->monthly_amount);
+    }
+
+    #[Test]
+    public function marcar_comunicado_exige_indicar_el_medio(): void
+    {
+        // El articulo 20, parrafo 2, no pide un aviso generico: nombra el
+        // servicio postal autorizado y el mecanismo pactado en el contrato. Una
+        // fecha sin medio no acredita nada, y sin comunicacion el incremento es
+        // INOPONIBLE.
+        IpcRate::factory()->forYear(2025, 9.28)->create();
+
+        $adjustment = $this->service()->record(
+            rental: $this->rental(),
+            newRent: 1_092_800,
+            effectiveFrom: today()->startOfYear(),
+        );
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('medio por el que se comunico');
+
+        $this->service()->markNotified($adjustment, today()->addMonths(2));
+    }
+
+    #[Test]
+    public function marcar_comunicado_deja_constancia_de_la_fecha_y_del_medio(): void
     {
         IpcRate::factory()->forYear(2025, 9.28)->create();
 
@@ -308,12 +395,53 @@ class RentAdjustmentServiceTest extends DocumentTestCase
 
         $this->assertNull($adjustment->notified_on);
 
-        $this->service()->markNotified($adjustment, today()->addMonths(2));
+        $this->service()->markNotified(
+            $adjustment,
+            today()->addMonths(2),
+            NotificationMethod::Postal,
+        );
+
+        $fresh = $adjustment->refresh();
 
         $this->assertSame(
             today()->addMonths(2)->toDateString(),
-            $adjustment->refresh()->notified_on->toDateString(),
+            $fresh->notified_on->toDateString(),
         );
+
+        $this->assertSame(NotificationMethod::Postal, $fresh->notification_method);
+        $this->assertSame(AdjustmentState::Notified, $fresh->state());
+    }
+
+    #[Test]
+    public function un_medio_no_reconocido_avisa_pero_no_impide_comunicar(): void
+    {
+        // El correo electronico no esta entre los que el articulo nombra, pero
+        // un contrato puede pactarlo. Por eso avisa y no bloquea: la decision de
+        // si el canal sirve es del arrendador y su contrato.
+        IpcRate::factory()->forYear(2025, 9.28)->create();
+
+        $rental = $this->rental();
+
+        $adjustment = $this->service()->record(
+            rental: $rental,
+            newRent: 1_092_800,
+            effectiveFrom: today()->startOfYear(),
+        );
+
+        $result = $this->service()->validate(
+            rental: $rental,
+            effectiveFrom: today()->startOfYear(),
+            requestedRent: 1_092_800,
+            notificationMethod: NotificationMethod::Email,
+        );
+
+        $messages = array_column($result['messages'], 'message', 'severity');
+
+        $this->assertArrayHasKey('warning', $messages);
+
+        $this->service()->markNotified($adjustment, today(), NotificationMethod::Email);
+
+        $this->assertSame(NotificationMethod::Email, $adjustment->refresh()->notification_method);
     }
 
     #[Test]

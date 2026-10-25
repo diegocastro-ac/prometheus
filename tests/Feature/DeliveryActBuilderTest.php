@@ -7,11 +7,11 @@ use App\Models\DeliveryAct;
 use App\Models\Rental;
 use App\Models\User;
 use App\Services\Acts\DeliveryActBuilder;
-use App\Settings\AppSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\Test;
 use RuntimeException;
+use Tests\SeedsSpaceCatalog;
 use Tests\TestCase;
 
 /**
@@ -21,6 +21,7 @@ use Tests\TestCase;
 class DeliveryActBuilderTest extends TestCase
 {
     use RefreshDatabase;
+    use SeedsSpaceCatalog;
 
     protected function setUp(): void
     {
@@ -32,7 +33,6 @@ class DeliveryActBuilderTest extends TestCase
             'tax_id' => '900123456-7',
             'currency' => 'COP',
             'invoice_due_days' => 5,
-            'space_catalog' => json_encode(['Sala', 'Cocina', 'Baño', 'Terraza']),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -46,6 +46,10 @@ class DeliveryActBuilderTest extends TestCase
     private function rental(): Rental
     {
         $user = User::factory()->create();
+
+        // El catálogo es por usuario desde que vive en spaces. Cada alquiler de
+        // este test tiene el suyo.
+        $this->seedSpaces($user, ['Sala', 'Cocina', 'Baño', 'Terraza']);
 
         return Rental::factory()->create(['user_id' => $user->id]);
     }
@@ -146,7 +150,14 @@ class DeliveryActBuilderTest extends TestCase
     public function un_espacio_fuera_del_catalogo_se_rechaza(): void
     {
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('no esta en el catalogo');
+        // El mensaje ahora se compara contra la traducción, no contra una
+        // cadena escrita aquí. Con las reglas movidas a lang/, afirmar el texto
+        // en español obligaba a tocar el test en cada redacción, y era una forma
+        // de no revisar nunca si el texto había cambiado de verdad.
+        $this->expectExceptionMessage(__('act.errors.space_not_in_catalog', [
+            'space' => 'Bodega',
+            'catalog' => 'Baño, Cocina, Sala, Terraza',
+        ]));
 
         $rental = $this->rental();
 
@@ -160,13 +171,15 @@ class DeliveryActBuilderTest extends TestCase
     #[Test]
     public function sin_catalogo_configurado_no_se_puede_inventariar(): void
     {
-        DB::table('app_settings')->where('id', 1)->update(['space_catalog' => json_encode([])]);
-        app()->forgetInstance(AppSettings::class);
-
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('No hay catalogo de espacios');
+        $this->expectExceptionMessage(__('act.errors.no_spaces'));
 
-        $rental = $this->rental();
+        // Un alquiler cuyo usuario NO tiene espacios. Antes se vaciaba la fila
+        // global de app_settings, lo que afectaba a todos los usuarios de la
+        // base; ahora basta con que este no tenga catálogo.
+        $rental = Rental::factory()->create([
+            'user_id' => User::factory()->create()->id,
+        ]);
 
         $this->builder()
             ->forRental($rental, 'Ana', 'Luis')
