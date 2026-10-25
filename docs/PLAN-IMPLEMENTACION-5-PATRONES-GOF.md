@@ -12,7 +12,7 @@
 
 | Feature | Patrón GoF | Dónde se aplica | Estado actual | Esfuerzo |
 | --- | --- | --- | --- | --- |
-| 1 | **Bridge** | Documentos (factura, comprobante, carta, estado de cuenta) y formatos (texto, PDF, JSON) | Bridge y Abstract Factory ya existen; falta el formato JSON | Medio |
+| 1 | **Bridge** | Documentos (factura, comprobante, carta, estado de cuenta) y formatos (texto, PDF, JSON) | Implementado y documentado; `JsonRenderer` y `JsonDocumentFactory` cubren el formato JSON | Bajo |
 | 2 | **Composite** | Jerarquía de espacios del inmueble y árbol del inventario del acta | `spaces` es plano; `act_items.space_id` existe pero no hay `parent_id` | Alto |
 | 3 | **Facade** | Operaciones de alquiler: plan, pago, reajuste, documentos | Resources coordinan 5+ servicios a mano | Medio |
 | 4 | **Flyweight** | Catálogo maestro de elementos de inventario | No existe; cada `ActItem` repite el nombre | Alto |
@@ -39,6 +39,8 @@
 7. **`master_inventory_items` necesita `user_id`.** Sin él se reintroduce el bug del catálogo global que ya se corrigió en `2026_10_14_090000_backfill_space_catalog_into_spaces_table.php`.
 8. **`RentAdjustmentService` tiene 4 dependencias, no 8**, y `PaymentPlanService::generateFor()` devuelve `void`, no un array. `PaymentRecordingService::record()` devuelve `array{payment, invoice, just_settled}`.
 9. **El Proxy de festivos está documentado pero no implementado.** `docs/PROXY-FESTIVOS.md` describe `HolidaySource`, `NagerDateHolidaySource` y `CachedHolidaySource`, pero ninguna existe. El `NagerDateBusinessCalendar` actual cachea internamente con TTL de 1 día y degrada a `WeekendBusinessCalendar`.
+
+> **Estado del Feature 1:** los hallazgos 1 a 3 ya se resolvieron al implementar el formato JSON y unificar la entrega por `content()`. El Bridge quedó documentado en `docs/patrones estructurales/Bridge.md`; este plan se conserva como registro de análisis y del alcance de los Features 2 a 5.
 
 ---
 
@@ -222,7 +224,7 @@ DocumentFactoryLocator ..> DocumentFactory : resuelve
 
 **Lectura clave:** `AbstractDocument` no tiene un `if ($formato === 'pdf')`. Solo guarda un `DocumentRenderer` y le pasa el `DocumentBody`. Agregar `JsonRenderer` no toca `RentInvoice`, `PaymentReceipt`, `AdjustmentLetter` ni `MonthlyStatement`.
 
-El diagrama **antes/después** de este patrón, que es el que se lleva a la sustentación, está en `docs/patrones estructurales/Bridge.md`, sección 9: el "antes" muestra la entrega PDF duplicada y el "después" muestra la entrega unificada por `content()`.
+El problema y la solución de este patrón, que son los que se llevan a la sustentación, están en `docs/patrones estructurales/Bridge.md`, secciones 2 y 4: el problema muestra la entrega PDF duplicada y el diagrama muestra las dos jerarquías y la entrega unificada por `content()`.
 
 ### 2.5 Guía de implementación
 

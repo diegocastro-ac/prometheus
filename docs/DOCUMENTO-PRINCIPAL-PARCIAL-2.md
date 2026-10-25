@@ -39,16 +39,16 @@
 
 PROMETHEUS es una aplicación web responsiva para la gestión de alquileres de inmuebles urbanos en Colombia. Está dirigida a arrendadores informales que hoy administran propiedades, inquilinos, contratos, cobros y comprobantes mediante hojas de cálculo, cuadernos o mensajes dispersos. El sistema concentra esa información en un panel único, con historial, validaciones y documentos listos para imprimir o descargar.
 
-La aplicación permite registrar propiedades y su ubicación, administrar inquilinos, crear alquileres con su canon y cadencia de cobro, emitir facturas, registrar abonos totales o parciales, generar actas de entrega con inventario y fotografías, calcular reajustes de canon con el IPC y producir documentos en texto o PDF. Cada arrendador trabaja con su propia información: las consultas y formularios filtran por `user_id`, de modo que el aislamiento es lógico y se aplica en la capa de aplicación.
+La aplicación permite registrar propiedades y su ubicación, administrar inquilinos, crear alquileres con su canon y cadencia de cobro, emitir facturas, registrar abonos totales o parciales, generar actas de entrega con inventario y fotografías, calcular reajustes de canon con el IPC y producir documentos en texto, PDF o JSON. Cada arrendador trabaja con su propia información: las consultas y formularios filtran por `user_id`, de modo que el aislamiento es lógico y se aplica en la capa de aplicación.
 
 El proyecto usa Laravel 12, PHP 8.2, Filament 3, Livewire, Tailwind CSS 4 y una base de datos relacional configurable; por defecto el archivo de entorno de ejemplo usa SQLite y las pruebas usan SQLite en memoria. La interfaz está disponible en español e inglés mediante el plugin de cambio de idioma de Filament.
 
-Esta entrega documenta la implementación actual y los seis patrones de diseño verificados en el código:
+Esta entrega documenta la implementación actual y los siete patrones de diseño verificados en el código:
 
 - cinco patrones creacionales: **Singleton**, **Prototype**, **Builder**, **Abstract Factory** y **Factory Method**;
-- un patrón estructural: **Adapter**, aplicado a los días hábiles y al IPC del DANE.
+- dos patrones estructurales: **Adapter**, aplicado a los días hábiles y al IPC del DANE, y **Bridge**, aplicado a los documentos y sus formatos de entrega.
 
-Los documentos individuales de cada patrón se encuentran en [`docs/Patrones creacionales`](Patrones%20creacionales) y [`docs/Patrones estructurales`](Patrones%20estructurales). Este documento principal explica el contexto funcional, el diseño, la arquitectura, la base de datos y la forma en que los patrones se integran en la aplicación.
+Los documentos individuales de cada patrón se enlazan en sus secciones y en el Anexo A; están en [`docs/Patrones creacionales`](Patrones%20creacionales), [`Adapter.md`](Patrones%20estructurales/Adapter.md) y [`Bridge.md`](patrones%20estructurales/Bridge.md). Este documento principal explica el contexto funcional, el diseño, la arquitectura, la base de datos y la forma en que los patrones se integran en la aplicación.
 
 ### 1.1. Convenciones del documento
 
@@ -88,7 +88,7 @@ El modelo actual supera las cinco entidades iniciales del planteamiento original
 - Actas de entrega y recepción con inventario y fotografías.
 - Facturación por cadencia, abonos y comprobantes.
 - Reajustes de canon con IPC nacional o de ciudad, cadena de reajustes y validaciones legales.
-- Documentos en texto y PDF.
+- Documentos en texto, PDF y JSON.
 - Panel de control con indicadores, gráficos y facturas pendientes.
 - Configuración de datos de la empresa, perfil y cambio de idioma.
 
@@ -128,7 +128,7 @@ El modelo actual supera las cinco entidades iniciales del planteamiento original
 | RF-11 | Mostrar las páginas informativas “Acerca de” y “Contacto”. | Arrendador | Baja | Ambas páginas son accesibles desde la navegación. |
 | RF-12 | Gestionar actas de entrega, recepción y cambio de arrendatario. | Arrendador | Alta | El acta se asocia a un alquiler; incluye partes, lecturas, inventario, compromisos, observaciones y firmas. |
 | RF-13 | Gestionar el catálogo de espacios del inventario. | Arrendador | Media | Los espacios se crean por arrendador y se usan para clasificar los elementos del acta. |
-| RF-14 | Generar documentos de factura, recibo, estado de cuenta y carta de reajuste. | Arrendador | Alta | El usuario elige el formato texto o PDF y descarga o previsualiza el documento. |
+| RF-14 | Generar documentos de factura, recibo, estado de cuenta y carta de reajuste. | Arrendador | Alta | El usuario elige el formato texto, PDF o JSON; el texto se previsualiza o copia y el PDF/JSON se descarga. |
 | RF-15 | Gestionar reajustes de canon con IPC. | Arrendador | Alta | Se calcula el tope legal, se registra el reajuste, se controla la cadena y se registra la comunicación. |
 | RF-16 | Sincronizar y consultar las series IPC. | Arrendador / Sistema | Media | Los comandos actualizan la copia local; las pantallas consultan la serie sin depender del DANE en tiempo real. |
 | RF-17 | Configurar los datos de la empresa y las preferencias de facturación. | Arrendador | Media | Se guardan razón social, NIT, dirección, moneda, logo, correo, teléfono, días de vencimiento y pie legal. |
@@ -219,7 +219,7 @@ flowchart LR
 | CU-09 | Consultar panel | Arrendador | Indicadores y gráficos del negocio. |
 | CU-10 | Gestionar actas | Arrendador | Acta con inventario, lecturas, firmas y observaciones. |
 | CU-11 | Gestionar espacios | Arrendador | Catálogo de espacios disponible para las actas. |
-| CU-12 | Generar documentos | Arrendador | Documento en texto o PDF. |
+| CU-12 | Generar documentos | Arrendador | Documento en texto, PDF o JSON. |
 | CU-13 | Gestionar reajustes | Arrendador / Sistema | Reajuste registrado, validado y comunicado. |
 | CU-14 | Consultar y sincronizar IPC | Arrendador / Sistema | Serie local consultable y actualizada por comando. |
 | CU-15 | Configurar empresa | Arrendador | Datos del emisor y preferencias de facturación. |
@@ -269,7 +269,7 @@ El diseño se organiza alrededor del arrendador como propietario lógico de los 
 | RN-07 | El reajuste de vivienda urbana sigue la Ley 820 de 2003. | Validaciones de IPC, doce meses, topes y comunicación. |
 | RN-08 | El IPC se lee de una copia local. | `IpcSeriesRepository` y tabla `ipc_series`; sincronización explícita. |
 | RN-09 | El acta copiada no conserva identidad ni firmas. | `DeliveryAct::__clone()` y `ActItem::__clone()`. |
-| RN-10 | Los documentos se producen por familia de formato. | `DocumentFactory`, `TextDocumentFactory` y `PdfDocumentFactory`. |
+| RN-10 | Los documentos se producen por familia de formato. | `DocumentFactory`, `TextDocumentFactory`, `PdfDocumentFactory` y `JsonDocumentFactory`. |
 
 ##### Flujo conceptual de cobro
 
@@ -340,7 +340,7 @@ flowchart TB
 | Autenticación y perfil | Login, registro, recuperación y edición de perfil. | Filament y Laravel Auth. |
 | Servicios de aplicación | Casos de uso de cobros, pagos, actas, reajustes y configuración. | PHP 8.2. |
 | Modelos Eloquent | Entidades, relaciones, casts y reglas de persistencia. | Laravel 12. |
-| Documentos | Cuatro tipos de documento en familias texto/PDF. | `DocumentFactory`, FlexPDF, Blade. |
+| Documentos | Cuatro tipos de documento en familias texto, PDF y JSON. | `DocumentFactory`, `DocumentRenderer`, FlexPDF y Blade. |
 | IPC | Sincronización y lectura local de la serie del DANE. | Adaptadores, repositorio y comandos. |
 | Base de datos | Persistencia relacional y restricciones de integridad. | SQLite/MySQL. |
 | Almacenamiento | Contratos, fotografías de inventario, firmas y comprobantes. | Disco `public` de Laravel. |
@@ -601,7 +601,7 @@ classDiagram
 | CC-03 | Catálogo de espacios | El catálogo vivía en la configuración global. | Tabla `spaces` por arrendador; `space_id` en el inventario. | Evitar que un arrendador vea o modifique espacios de otro. |
 | CC-04 | Reajustes con IPC | Cálculo aislado, sin cadena reproducible. | Ancla del alquiler, cadena de ajustes, IPC local y validaciones legales. | Cumplir la Ley 820 y permitir recálculos consistentes. |
 | CC-05 | Serie IPC | Consulta al DANE en tiempo real o datos puntuales. | Copia local `ipc_series` y sincronización por comando. | Evitar dependencia de disponibilidad y preservar el dato usado. |
-| CC-06 | Documentos | Generación acoplada a un formato. | Familias de documentos texto/PDF con fábricas y renderizadores. | Agregar formatos sin cambiar los casos de uso. |
+| CC-06 | Documentos | Generación acoplada a un formato. | Familias de documentos texto, PDF y JSON con fábricas y renderizadores. | Agregar formatos sin cambiar los casos de uso. |
 | CC-07 | Actas reutilizables | Crear cada acta desde cero. | Copia profunda de acta e inventario desde una existente. | Reducir trabajo repetitivo sin arrastrar firmas ni identidad. |
 | CC-08 | Configuración | Lecturas dispersas de la configuración. | `AppSettings` como singleton inmutable del contenedor. | Una sola fuente de verdad por petición. |
 | CC-09 | Días hábiles | Cálculo directo de fechas y festivos. | `BusinessCalendar` con adaptador Nager.Date y respaldo local. | Aislar el servicio externo y permitir pruebas deterministas. |
@@ -692,7 +692,7 @@ El backend sigue una separación por responsabilidades:
 2. **Registro de pagos.** `PaymentRecordingService` valida que la factura admita pagos, crea el `Payment`, lo asocia a factura, alquiler y usuario, y ejecuta `Invoice::refreshStatus()`. El estado de la factura se deriva del saldo y del vencimiento.
 3. **Actas de entrega.** `DeliveryActBuilder` acumula secciones opcionales, valida el inventario contra el catálogo de espacios y persiste el acta con sus elementos. `DeliveryActDraft` traduce una copia al formulario cuando se reutiliza un acta.
 4. **Reajustes.** `RentAdjustmentService` obtiene el IPC de la serie local, calcula el tope legal, valida las reglas, registra el ajuste y reprocesa la cadena desde el ancla. `AdjustmentChainCalculator` y `AdjustmentChainRecalculator` mantienen coherentes los valores derivados.
-5. **Documentos.** `DocumentService` selecciona la fábrica de texto o PDF y produce factura, recibo, estado de cuenta o carta de reajuste. Los documentos comparten el cuerpo y delegan el formato al renderizador de la familia.
+5. **Documentos.** `DocumentService` selecciona la fábrica de texto, PDF o JSON y produce factura, recibo, estado de cuenta o carta de reajuste. Los documentos comparten el cuerpo y delegan el formato al renderizador de la familia.
 6. **IPC.** `IpcSynchronizer` recibe un `IpcProvider`; los comandos usan el adaptador remoto `DaneCdaIpcProvider`; las pantallas y los cálculos leen la copia local mediante `IpcSeriesRepository`.
 7. **Configuración.** `SettingsService` guarda la fila única y descarta la instancia de `AppSettings` del contenedor para que la siguiente lectura use los valores nuevos.
 
@@ -715,9 +715,10 @@ La verificación se apoya en pruebas de feature. En la última ejecución report
 | Prototype | `DeliveryActPrototypeTest` | 5 pruebas, 66 aserciones. |
 | Prototype desde formulario | `CreateDeliveryActFromTest` | 8 pruebas, 50 aserciones. |
 | Builder y alta de acta | `DeliveryActBuilderTest` + `CreateDeliveryActTest` | 19 pruebas, 82 aserciones. |
-| Abstract Factory | `DocumentFactoryTest` | 14 pruebas, 63 aserciones. |
+| Abstract Factory | `DocumentFactoryTest` | 14 pruebas, 84 aserciones. |
 | Factory Method | `PaymentPlanGeneratorTest` | 7 pruebas, 18 aserciones. |
 | Adapter | `BusinessCalendarTest` + `DaneCdaIpcProviderTest` | 25 pruebas, 47 aserciones. |
+| Bridge | `JsonDocumentBridgeTest` | 6 pruebas, 68 aserciones. |
 
 Comandos de operación:
 
@@ -794,10 +795,11 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | CC-C05 | Copiar un acta y su inventario a mano duplicaba filas y arrastraba identidad. | `DeliveryAct` y `ActItem` implementan `Prototype` con `__clone()`; `DeliveryActDraft` adapta la copia al formulario. | `app/Contracts/Prototype.php`, `app/Models/DeliveryAct.php`, `app/Models/ActItem.php`, `app/Services/Acts/DeliveryActDraft.php` | Prototype. |
 | CC-C06 | El cálculo del reajuste dependía del canon vigente y no era reproducible. | Se agregó el ancla del alquiler, la cadena de ajustes, el recálculo y la separación entre porcentaje legal y aplicado. | `app/Services/RentAdjustmentService.php`, `app/Services/Adjustment/`, `app/Models/RentAdjustment.php`, migraciones de reajustes. | Cadena reproducible y SRP. |
 | CC-C07 | El IPC se consultaba en línea y un fallo del DANE impedía calcular. | Se creó la serie local `ipc_series`, el repositorio, los proveedores y los comandos de sincronización. | `app/Services/Ipc/`, `app/Infrastructure/Ipc/`, `app/Console/Commands/`, migraciones de IPC. | Adapter y Repository. |
-| CC-C08 | La generación de documentos estaba acoplada a un formato. | Se incorporaron `DocumentFactory`, las familias texto/PDF, los productos y los renderizadores. | `app/Documents/`, `app/Filament/Support/DocumentAction.php`, `app/Filament/Pages/DocumentsPage.php` | Abstract Factory. |
+| CC-C08 | La generación de documentos estaba acoplada a un formato. | Se incorporaron `DocumentFactory`, las familias texto/PDF/JSON, los productos y los renderizadores. | `app/Documents/`, `app/Filament/Support/DocumentAction.php`, `app/Filament/Pages/DocumentsPage.php` | Abstract Factory. |
 | CC-C09 | La lógica de facturación por cadencia estaba centralizada en condicionales. | Se crearon `PaymentPlanGenerator` y las subclases mensual, quincenal y anticipo; el resolver elige el generador. | `app/Services/PaymentPlans/`, `app/Services/PaymentPlanService.php` | Factory Method. |
 | CC-C10 | La configuración se leía en varios puntos y podía quedar desactualizada en la misma petición. | `AppSettings` se registra como singleton inmutable; `SettingsService` descarta la instancia al guardar. | `app/Settings/AppSettings.php`, `app/Services/SettingsService.php`, `app/Providers/AppServiceProvider.php` | Singleton. |
 | CC-C11 | El cálculo de días hábiles dependía directamente de un servicio externo. | `BusinessCalendar` define el contrato; `NagerDateBusinessCalendar` adapta Nager.Date y `WeekendBusinessCalendar` sirve de respaldo. | `app/Contracts/BusinessCalendar.php`, `app/Infrastructure/Holidays/`, `app/Providers/AppServiceProvider.php` | Adapter. |
+| CC-C12 | La exportación de documentos solo cubría texto/PDF, la entrega del PDF se duplicaba y el cuerpo apuntaba al modelo en tres documentos. | Se agregó `JsonRenderer`/`JsonDocumentFactory`, se unificó la entrega por `content()` y cada documento se adjunta a su cuerpo. | `app/Documents/AbstractDocument.php`, `app/Documents/Rendering/JsonRenderer.php`, `app/Documents/Factories/JsonDocumentFactory.php`, `app/Documents/DocumentFactoryLocator.php`, `app/Filament/Support/DocumentAction.php` | Bridge y Abstract Factory. |
 
 **Notas de implementación**
 
@@ -813,9 +815,10 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | **Singleton** | Creacional | `AppSettings` y `CurrentUserContextInterface` registrados en el contenedor. | Evitar lecturas repetidas de configuración y contexto dentro de una petición. | Una instancia compartida e inmutable por petición. | No es un singleton estático: `fromDatabase()` y `defaults()` pueden crear otras instancias; la configuración es global. |
 | **Prototype** | Creacional | `DeliveryAct` y `ActItem` implementan `__clone()`; `DeliveryActDraft` es el cliente. | Reutilizar un acta y su inventario sin copiar filas manualmente ni arrastrar identidad, firmas o lecturas. | Copia profunda controlada y menos trabajo repetitivo. | La copia no se guarda sola: el guardado sigue pasando por el Builder; la foto conserva la misma ruta. |
 | **Builder** | Creacional | `DeliveryActBuilder` con métodos encadenados; `CreateDeliveryAct::assemble()` como director. | Construir un acta con muchas secciones opcionales sin un constructor frágil. | Código legible, validaciones centralizadas y persistencia coherente. | No hay interfaz `Builder` ni `Director` separado; el builder es `scoped`, acumula estado y no es idempotente. |
-| **Abstract Factory** | Creacional | `DocumentFactory` con familias `TextDocumentFactory` y `PdfDocumentFactory`; cuatro productos. | Producir varios documentos relacionados sin acoplar los casos de uso a un formato. | Familias intercambiables y consistencia de formato. | Los métodos devuelven tipos concretos; la entrega PDF de Filament a veces vuelve a renderizar con FlexPDF. |
+| **Abstract Factory** | Creacional | `DocumentFactory` con familias `TextDocumentFactory`, `PdfDocumentFactory` y `JsonDocumentFactory`; cuatro productos. | Producir varios documentos relacionados sin acoplar los casos de uso a un formato. | Familias intercambiables y consistencia de formato. | Los métodos devuelven tipos concretos; agregar un producto exige actualizar las tres fábricas. |
 | **Factory Method** | Creacional | `PaymentPlanGenerator` y subclases mensual, quincenal y anticipo; `PaymentPlanGeneratorResolver` selecciona. | Crear facturas según la cadencia sin llenar el servicio de condicionales. | Extensión de cadencias y pruebas por generador. | El producto siempre es `Invoice`; la variación es la política de creación, por lo que se acerca a Template Method. |
 | **Adapter** | Estructural | `BusinessCalendar` + `NagerDateBusinessCalendar`; `IpcProvider` + `DaneCdaIpcProvider`/`LocalSeriesIpcProvider`. | Aislar el dominio de Nager.Date y del CDA del DANE. | Dominio desacoplado, pruebas deterministas y lectura local del IPC. | Si Nager.Date falla, los festivos entre semana se tratan como hábiles; la lectura de IPC no pasa siempre por el Target. |
+| **Bridge** | Estructural | `AbstractDocument` + `DocumentRenderer`; `PaymentReceipt`, `AdjustmentLetter`, `MonthlyStatement` y `RentInvoice` como abstracciones refinadas; `PlainTextRenderer`, `PdfRenderer` y `JsonRenderer`. | Separar el tipo de documento de su formato de serialización y evitar ramas por formato. | Agregar formatos sin tocar la lógica de los documentos y unificar la entrega por `content()`. | `PdfRenderer::selectView()` conoce las clases concretas; el JSON usa valores de presentación y excluye `meta`; agregar un documento exige actualizar las tres fábricas. |
 
 ##### Cobertura de pruebas por patrón
 
@@ -824,9 +827,10 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | Singleton | Pruebas de configuración y contexto de usuario. | Verificado en la suite de feature. |
 | Prototype | `DeliveryActPrototypeTest`, `CreateDeliveryActFromTest`. | 13 pruebas, 116 aserciones. |
 | Builder | `DeliveryActBuilderTest`, `CreateDeliveryActTest`. | 19 pruebas, 82 aserciones. |
-| Abstract Factory | `DocumentFactoryTest`. | 14 pruebas, 63 aserciones. |
+| Abstract Factory | `DocumentFactoryTest`. | 14 pruebas, 84 aserciones. |
 | Factory Method | `PaymentPlanGeneratorTest`. | 7 pruebas, 18 aserciones. |
 | Adapter | `BusinessCalendarTest`, `DaneCdaIpcProviderTest`. | 25 pruebas, 47 aserciones. |
+| Bridge | `JsonDocumentBridgeTest`. | 6 pruebas, 68 aserciones. |
 
 ##### Documentos individuales
 
@@ -836,10 +840,11 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 - [Abstract Factory](Patrones%20creacionales/Abstract%20Factory.md)
 - [Factory Method](Patrones%20creacionales/Factory%20Method.md)
 - [Adapter](Patrones%20estructurales/Adapter.md)
+- [Bridge](patrones%20estructurales/Bridge.md)
 
 ##### Patrones fuera del alcance
 
-El código contiene otras estructuras que podrían analizarse con patrones adicionales, pero esta entrega se limita a los seis patrones verificados y aprobados. No se documentan otros patrones estructurales para no ampliar el alcance sin autorización.
+El código contiene otras estructuras que podrían analizarse con patrones adicionales, pero esta entrega se limita a los siete patrones verificados y aprobados. Facade, Composite, Flyweight y Proxy aparecen en documentos de planificación, pero no se documentan como implementaciones de esta entrega.
 
 ---
 
@@ -855,6 +860,7 @@ El código contiene otras estructuras que podrían analizarse con patrones adici
 | Abstract Factory | [`Abstract Factory.md`](Patrones%20creacionales/Abstract%20Factory.md) | PlantUML con roles GoF. |
 | Factory Method | [`Factory Method.md`](Patrones%20creacionales/Factory%20Method.md) | PlantUML con roles GoF. |
 | Adapter | [`Adapter.md`](Patrones%20estructurales/Adapter.md) | Dos diagramas PlantUML: días hábiles e IPC. |
+| Bridge | [`Bridge.md`](patrones%20estructurales/Bridge.md) | Un diagrama PlantUML con las dos jerarquías y roles GoF. |
 
 ### Anexo B. Comandos de operación
 
@@ -901,6 +907,7 @@ npm run build
 | Versión | Fecha | Cambio |
 | --- | --- | --- |
 | 1.0 | Octubre de 2026 | Versión Markdown inicial basada en el PDF y actualizada contra el código de `patrones-2`. |
+| 1.1 | Octubre de 2026 | Se documentó Bridge y el formato JSON; Abstract Factory pasó a tres familias y el mapa quedó en siete patrones. |
 
 ---
 

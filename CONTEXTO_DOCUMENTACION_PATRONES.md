@@ -4,7 +4,7 @@
 
 - **Proyecto:** Prometheus (Laravel 12 + Filament 3, PHP 8.2)
 - **Fecha de este corte:** 2026-10-25
-- **Estado:** los seis patrones del alcance documentados con estructura simplificada y roles GoF en los diagramas; documento principal actualizado en Markdown; pendiente la revisión final y los commits.
+- **Estado:** los siete patrones del alcance documentados con estructura simplificada y roles GoF en los diagramas; documento principal actualizado en Markdown; pendiente la revisión final y los commits.
 
 ---
 
@@ -15,7 +15,7 @@ Documentar los patrones de diseño implementados en Prometheus, con base en el c
 La entrega debe incluir:
 
 1. Documentos individuales de los patrones creacionales confirmados.
-2. Documento del patrón estructural confirmado (Adapter).
+2. Documentos de los patrones estructurales confirmados (Adapter y Bridge).
 3. Actualización del documento principal del parcial.
 4. Documentación de apoyo (diagramas, guías o resúmenes), solo si aporta y no duplica.
 
@@ -30,7 +30,7 @@ La entrega debe incluir:
 - **No inventar.** No se agregan clases, archivos, requerimientos ni relaciones que no estén verificados.
 - **No confundir el nombre con el patrón.** Una clase llamada `Factory` no convierte automáticamente su uso en Factory Method; hay que comprobar los roles.
 - **Jerarquía de fuentes:** código actual > documentación existente > CodeGraph. Si hay conflicto, manda el código.
-- **Alcance estructural restringido:** de los patrones estructurales, solo está confirmado **Adapter**. Los demás que aparecen en el código (Decorator, por ejemplo) no se documentan hasta que se autoricen.
+- **Alcance estructural restringido:** de los patrones estructurales están confirmados **Adapter** y **Bridge**. Los demás que aparecen en el código o en documentos de planificación (Facade, Composite, Flyweight, Proxy, Decorator, por ejemplo) no se documentan como implementados hasta que se autoricen.
 - **No hacer cambios masivos.** Cada edición debe ser revisable y justificada.
 
 ### Criterios permanentes de documentación
@@ -45,16 +45,17 @@ La entrega debe incluir:
 
 ## 3. Patrones confirmados
 
-Los cinco creacionales y el Adapter fueron verificados directamente en el código. Los seis patrones y el documento principal ya están documentados; queda la revisión final y los commits.
+Los cinco creacionales, el Adapter y el Bridge fueron verificados directamente en el código. Los siete patrones y el documento principal ya están documentados; queda la revisión final y los commits.
 
 | Patrón | Implementación verificada | Clases y archivos clave | Estado de la doc. |
 | --- | --- | --- | --- |
 | **Singleton** | `AppSettings` y `CurrentUserContextInterface` registrados como singleton en el contenedor | `app/Settings/AppSettings.php`, `app/Infrastructure/AuthUserContext.php`, `app/Providers/AppServiceProvider.php` | Documentado; pendiente de revisión |
 | **Builder** | `DeliveryActBuilder`, registrado como `scoped`, con secciones opcionales y `build()` | `app/Services/Acts/DeliveryActBuilder.php` | Documentado; pendiente de revisión |
-| **Abstract Factory** | `DocumentFactory` con dos familias (`TextDocumentFactory`, `PdfDocumentFactory`) y cuatro productos | `app/Documents/Factories/`, `app/Documents/DocumentFactoryLocator.php` | Documentado; pendiente de revisión |
+| **Abstract Factory** | `DocumentFactory` con tres familias (`TextDocumentFactory`, `PdfDocumentFactory`, `JsonDocumentFactory`) y cuatro productos | `app/Documents/Factories/`, `app/Documents/DocumentFactoryLocator.php` | Documentado; pendiente de revisión |
 | **Factory Method** | `PaymentPlanGenerator` y tres subclases por cadencia de cobro | `app/Services/PaymentPlans/`, `app/Services/PaymentPlanService.php` | Documentado; pendiente de revisión |
 | **Prototype** | `Prototype`, `__clone()` en `DeliveryAct` y `ActItem`, cliente `DeliveryActDraft` | `app/Contracts/Prototype.php`, `app/Models/DeliveryAct.php`, `app/Models/ActItem.php`, `app/Services/Acts/DeliveryActDraft.php` | Documentado; pendiente de revisión |
 | **Adapter** | `BusinessCalendar` + `NagerDateBusinessCalendar`; segunda aplicación para el IPC | `app/Contracts/BusinessCalendar.php`, `app/Infrastructure/Holidays/`, `app/Contracts/Ipc/IpcProvider.php`, `app/Infrastructure/Ipc/` | Documentado; pendiente de revisión |
+| **Bridge** | `AbstractDocument` como abstracción; `DocumentRenderer` como implementador; `PlainTextRenderer`, `PdfRenderer` y `JsonRenderer` como implementadores concretos | `app/Documents/AbstractDocument.php`, `app/Documents/Rendering/`, `app/Documents/Factories/JsonDocumentFactory.php` | Documentado; pendiente de revisión |
 
 ### 3.1. Singleton
 
@@ -79,13 +80,14 @@ Los cinco creacionales y el Adapter fueron verificados directamente en el códig
 ### 3.3. Abstract Factory
 
 - `DocumentFactory` declara cuatro productos: `paymentReceipt()`, `adjustmentLetter()`, `monthlyStatement()` y `rentInvoice()`.
-- Familias: `TextDocumentFactory` y `PdfDocumentFactory`.
+- Familias: `TextDocumentFactory`, `PdfDocumentFactory` y `JsonDocumentFactory`.
 - `DocumentFactoryLocator` traduce el formato elegido a la fábrica correspondiente; `for(null)` usa texto y un formato desconocido lanza `InvalidArgumentException`.
-- El binding por defecto es `TextDocumentFactory`; el PDF se pide por nombre desde el locator.
+- El binding por defecto es `TextDocumentFactory`; PDF y JSON se piden por nombre desde el locator.
 - Los productos heredan de `AbstractDocument` y comparten `DocumentBody`; el renderizador de la familia decide el formato.
+- La familia JSON usa `JsonRenderer` y entrega `title`, `document_type`, `fields`, `table`, `warnings`, `notes` y `footer`; excluye `meta` para no incluir la imagen del comprobante.
 - Los métodos de `DocumentFactory` devuelven tipos concretos (`PaymentReceipt`, `AdjustmentLetter`, etc.), no el contrato `Document`. Es una desviación menor del modelo clásico.
 - El comentario de `AppServiceProvider` dice que las fábricas son scoped, pero el binding real es `bind(DocumentFactory::class, TextDocumentFactory::class)`. No se documentan como scoped.
-- La entrega PDF de Filament vuelve a renderizar con FlexPDF en `DocumentAction` y `DocumentsPage`; no siempre usa `content()` del producto.
+- La entrega de PDF, texto y JSON se unificó en `DocumentAction::download()` y `DocumentsPage::deliver()`: ambos usan `content()`, `filename()` y `mimeType()` del documento.
 
 ### 3.4. Factory Method
 
@@ -121,6 +123,16 @@ Los cinco creacionales y el Adapter fueron verificados directamente en el códig
 - La lectura de IPC en pantallas y reajustes usa `IpcSeriesRepository` directamente en varios puntos; el Target no cubre todos los consumidores.
 - `DaneCdaIpcProvider` normaliza coma decimal, meses abreviados, `PAI_ID` con ceros, columnas por nombre y nulos; reintenta con espera creciente y lanza `DaneIpcUnavailable`.
 
+### 3.7. Bridge
+
+- **Abstraction:** `AbstractDocument` contiene un `DocumentBody` y un `DocumentRenderer`; delega `content()`, nombre, MIME, etiqueta y modo de entrega.
+- **RefinedAbstraction:** `PaymentReceipt`, `RentInvoice`, `AdjustmentLetter` y `MonthlyStatement`. Cada uno arma su cuerpo y se adjunta mediante `attachToBody()`.
+- **Implementor:** `DocumentRenderer`; **ConcreteImplementor:** `PlainTextRenderer`, `PdfRenderer` y `JsonRenderer`.
+- `JsonRenderer` es el tercer implementador concreto; `JsonDocumentFactory` es la familia JSON. `DocumentFactoryLocator` resuelve `text`, `pdf` y `json`.
+- `PdfRenderer::selectView()` elige la plantilla comparando la clase del documento; es una desviación real porque el implementador conoce las abstracciones refinadas.
+- El JSON usa valores de presentación y excluye `meta`; no es un feed contable crudo.
+- Agregar un formato no obliga a tocar la lógica de los documentos; agregar un documento sí exige actualizar las tres fábricas y la selección de plantilla PDF.
+
 ---
 
 ## 4. Adapter: dos aplicaciones verificadas
@@ -148,7 +160,7 @@ Decisión tomada: las dos aplicaciones se documentan en un solo archivo `docs/Pa
 - Problemas detectados:
   - `RF-06` (alquileres) no menciona la cadencia de facturación.
   - `RF-07` (pagos) sigue describiendo el modelo antiguo de booleanos y estados, reemplazado por facturas y pagos parciales.
-  - Faltan módulos y funciones actuales: ajustes de empresa, espacios, actas de entrega, facturas, planes de cobro, documentos PDF/texto, reajustes con IPC, series IPC, multiempresa, cambio de idioma y perfil.
+  - Faltan módulos y funciones actuales: ajustes de empresa, espacios, actas de entrega, facturas, planes de cobro, documentos PDF/texto/JSON, reajustes con IPC, series IPC, multiempresa, cambio de idioma y perfil.
   - No había diagrama de casos de uso ni versión Markdown editable.
 - Decisión tomada: crear una versión Markdown desde el PDF, actualizarla contra el código y conservar el PDF como referencia histórica.
 
@@ -158,9 +170,10 @@ Decisión tomada: las dos aplicaciones se documentan en un solo archivo `docs/Pa
 
 | Archivo | Tipo | Estado |
 | --- | --- | --- |
-| `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md` | Documento principal | Actualizado; versión Markdown editable del PDF, con RF-01 a RF-18 y las seis secciones de patrones |
+| `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md` | Documento principal | Actualizado; versión Markdown editable del PDF, con RF-01 a RF-18 y las siete secciones de patrones |
 | `docs/Patrones creacionales/*.md` | Patrones creacionales | Documentados: Singleton, Prototype, Builder, Abstract Factory y Factory Method |
 | `docs/Patrones estructurales/Adapter.md` | Patrón estructural | Documentado con las aplicaciones de días hábiles e IPC |
+| `docs/patrones estructurales/Bridge.md` | Patrón estructural | Documentado en cinco apartados; cubre documentos, formatos y la familia JSON |
 | `docs/DOCUMENTACION-PATRONES.md` | Documento integrador | Desactualizado; cubre cinco patrones sin Prototype y con Factory Method mal enfocado |
 | `docs/ADAPTER-DIAS-HABILES.md` | Adapter | Útil y mayormente vigente; fragmentos y alcance desactualizados |
 | `docs/DOCUMENTACION-FLUJOS.md` | Flujos | Desactualizado en catálogo, firmas y campos de `AppSettings` |
@@ -226,7 +239,7 @@ Decisión tomada: las dos aplicaciones se documentan en un solo archivo `docs/Pa
 ## 8. Fuentes de verdad
 
 - Código de `app/` para clases, métodos, dependencias y flujos.
-- `tests/Feature/` para confirmar comportamientos: `AppSettingsSingletonTest`, `DeliveryActBuilderTest`, `DeliveryActPrototypeTest`, `DocumentFactoryTest`, `PaymentPlanGeneratorTest`, `BusinessCalendarTest`.
+- `tests/Feature/` para confirmar comportamientos: `AppSettingsSingletonTest`, `DeliveryActBuilderTest`, `DeliveryActPrototypeTest`, `DocumentFactoryTest`, `JsonDocumentBridgeTest`, `PaymentPlanGeneratorTest`, `BusinessCalendarTest`.
 - `app/Providers/AppServiceProvider.php` para bindings y alcance de las instancias.
 - CodeGraph solo como apoyo de navegación; no reemplaza la lectura del código.
 - La documentación existente se usa como referencia, no como verdad.
@@ -252,6 +265,8 @@ docs/
     Factory Method.md
   Patrones estructurales/
     Adapter.md
+  patrones estructurales/
+    Bridge.md
 CONTEXTO_DOCUMENTACION_PATRONES.md
 ```
 
@@ -290,7 +305,7 @@ Contenido de cada documento de patrón:
    - revisar contra el código;
    - actualizar este contexto.
 4. Revisión y aprobación antes de pasar al siguiente.
-5. Al terminar los seis patrones, actualizar el documento principal y consolidar enlaces.
+5. Al terminar los siete patrones, actualizar el documento principal y consolidar enlaces.
 
 Orden recomendado, de menor a mayor complejidad:
 
@@ -300,6 +315,7 @@ Orden recomendado, de menor a mayor complejidad:
 4. Abstract Factory.
 5. Factory Method.
 6. Adapter.
+7. Bridge.
 
 El orden puede cambiar si se prefiere empezar por el patrón más reciente o por el que se va a sustentar primero.
 
@@ -307,17 +323,17 @@ El orden puede cambiar si se prefiere empezar por el patrón más reciente o por
 
 ## 12. Estado actual
 
-- Análisis de código: completo para los seis patrones del alcance.
+- Análisis de código: completo para los siete patrones del alcance.
 - Verificación de pruebas: completa.
 - Inventario documental: completo.
 - Discrepancias: identificadas.
-- Documentos de patrón creados: `docs/Patrones creacionales/Singleton.md`, `docs/Patrones creacionales/Prototype.md`, `docs/Patrones creacionales/Builder.md`, `docs/Patrones creacionales/Abstract Factory.md`, `docs/Patrones creacionales/Factory Method.md` y `docs/Patrones estructurales/Adapter.md`.
+- Documentos de patrón creados: `docs/Patrones creacionales/Singleton.md`, `docs/Patrones creacionales/Prototype.md`, `docs/Patrones creacionales/Builder.md`, `docs/Patrones creacionales/Abstract Factory.md`, `docs/Patrones creacionales/Factory Method.md`, `docs/Patrones estructurales/Adapter.md` y `docs/patrones estructurales/Bridge.md`.
 - Estructura aplicada: cinco apartados, sin contenido redundante.
 - Diagramas actualizados: roles GoF junto al nombre real de cada clase; clases ajenas al patrón marcadas `(no GoF)`.
 - Documento principal actualizado: sí, en `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`; incluye RF-01 a RF-18, casos de uso, C4, UML, control de cambios, frontend, backend, base de datos y mapa de patrones.
 - Este archivo de contexto: creado y actualizado.
-- Orden elegido: Singleton, Prototype, Builder, Abstract Factory, Factory Method y Adapter documentados; documento principal actualizado; pendiente revisión final y commits.
-- Pruebas ejecutadas: `DeliveryActPrototypeTest` (5 pruebas, 66 aserciones), `CreateDeliveryActFromTest` (8 pruebas, 50 aserciones), `DeliveryActBuilderTest` y `CreateDeliveryActTest` (19 pruebas, 82 aserciones), `DocumentFactoryTest` (14 pruebas, 63 aserciones), `PaymentPlanGeneratorTest` (7 pruebas, 18 aserciones), `BusinessCalendarTest` y `DaneCdaIpcProviderTest` (25 pruebas, 47 aserciones), todas en verde.
+- Orden elegido: Singleton, Prototype, Builder, Abstract Factory, Factory Method, Adapter y Bridge documentados; documento principal actualizado; pendiente revisión final y commits.
+- Pruebas ejecutadas: `DeliveryActPrototypeTest` (5 pruebas, 66 aserciones), `CreateDeliveryActFromTest` (8 pruebas, 50 aserciones), `DeliveryActBuilderTest` y `CreateDeliveryActTest` (19 pruebas, 82 aserciones), `DocumentFactoryTest` (14 pruebas, 84 aserciones), `JsonDocumentBridgeTest` (6 pruebas, 68 aserciones), `PaymentPlanGeneratorTest` (7 pruebas, 18 aserciones), `BusinessCalendarTest` y `DaneCdaIpcProviderTest` (25 pruebas, 47 aserciones), todas en verde.
 
 ---
 
@@ -325,4 +341,4 @@ El orden puede cambiar si se prefiere empezar por el patrón más reciente o por
 
 1. **Resuelta:** se creó la versión Markdown del documento principal en `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`.
 2. Decidir si los documentos antiguos se corrigen, se reemplazan o se dejan como histórico.
-3. **Resuelta:** el documento principal ya incluye enlaces a los seis documentos de patrón.
+3. **Resuelta:** el documento principal ya incluye enlaces a los siete documentos de patrón.
