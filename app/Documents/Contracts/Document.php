@@ -42,6 +42,15 @@ interface Document
     public function content(): string;
 
     /**
+     * Si el documento no tiene contenido de negocio.
+     *
+     * No significa que sea invalido: un estado de cuenta sin facturas es una
+     * respuesta correcta. La pantalla lo consulta para avisar, sin conocer el
+     * documento concreto ni inspeccionar su cuerpo.
+     */
+    public function isEmpty(): bool;
+
+    /**
      * Texto breve para identificar el documento en un listado y para leer sin
      * abrirlo.
      */

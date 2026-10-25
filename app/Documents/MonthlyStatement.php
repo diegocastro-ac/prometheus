@@ -119,6 +119,11 @@ class MonthlyStatement extends AbstractDocument
         return $this->invoices;
     }
 
+    public function isEmpty(): bool
+    {
+        return $this->invoices === [];
+    }
+
     public function preview(): string
     {
         $balance = array_sum(array_map(

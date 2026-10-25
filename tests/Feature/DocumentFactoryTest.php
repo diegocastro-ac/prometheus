@@ -111,6 +111,7 @@ class DocumentFactoryTest extends DocumentTestCase
 
             foreach ($documents as $document) {
                 $this->assertInstanceOf(\App\Documents\Contracts\Document::class, $document);
+                $this->assertFalse($document->isEmpty());
                 $this->assertSame(__($labelKey), $document->deliveryLabel());
                 $this->assertSame($downloads, $document->isDownload());
                 $this->assertStringEndsWith($extension, $document->filename());

@@ -77,4 +77,9 @@ abstract class AbstractDocument implements DocumentContract
     {
         return $this->rendered ??= $this->renderer->render($this->body);
     }
+
+    public function isEmpty(): bool
+    {
+        return false;
+    }
 }

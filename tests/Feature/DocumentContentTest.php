@@ -146,6 +146,7 @@ class DocumentContentTest extends DocumentTestCase
         $billed = array_sum(array_map(fn (Invoice $invoice): float => $invoice->amount, $invoices));
 
         $this->assertInstanceOf(MonthlyStatement::class, $statement);
+        $this->assertFalse($statement->isEmpty());
         $this->assertSame(__('document.monthly_statement'), $statement->body()->title);
         $this->assertSame('2026-01', $statement->body()->fields[__('document.period')]);
         $this->assertSame((string) count($invoices), $statement->body()->fields[__('document.invoices')]);
@@ -227,6 +228,7 @@ class DocumentContentTest extends DocumentTestCase
 
         // No debe fallar ni inventar cifras: un estado de cuenta vacio es la
         // respuesta correcta a "no me deben nada".
+        $this->assertTrue($statement->isEmpty());
         $this->assertSame([], $statement->invoices());
         $this->assertSame(Money::exact(0), $statement->body()->fields[__('document.outstanding_balance')]);
         $this->assertSame([], $statement->body()->rows);

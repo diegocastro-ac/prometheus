@@ -166,7 +166,7 @@ class DocumentsPage extends Page
             format: $data['format'] ?? 'text',
         );
 
-        if ($statement->invoices() === []) {
+        if ($statement->isEmpty()) {
             Notification::make()
                 ->warning()
                 ->title(__('invoice.documents.empty_statement'))
