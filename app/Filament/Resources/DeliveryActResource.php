@@ -5,6 +5,7 @@ namespace App\Filament\Resources;
 use App\Contracts\CurrentUserContextInterface;
 use App\Enums\ActItemState;
 use App\Filament\Resources\DeliveryActResource\Pages;
+use App\Filament\Support\MasterInventoryItemCatalogField;
 use App\Filament\Support\SpaceCatalogField;
 use App\Models\DeliveryAct;
 use App\Models\Rental;
@@ -129,13 +130,12 @@ class DeliveryActResource extends Resource
                                         Forms\Components\Grid::make(2)
                                             ->schema([
                                                 SpaceCatalogField::make(
-                                                    Forms\Components\Select::make('space'),
+                                                    Forms\Components\Select::make('space_id'),
                                                 ),
 
-                                                Forms\Components\TextInput::make('name')
-                                                    ->label(__('act.form.item_name'))
-                                                    ->required()
-                                                    ->maxLength(255),
+                                                MasterInventoryItemCatalogField::make(
+                                                    Forms\Components\Select::make('master_inventory_item_id'),
+                                                ),
                                             ]),
 
                                         Forms\Components\Grid::make(2)
@@ -165,7 +165,9 @@ class DeliveryActResource extends Resource
                             ])
                             ->defaultItems(0)
                             ->addActionLabel('+')
-                            ->itemLabel(fn (array $state): ?string => $state['name'] ?? null),
+                            ->itemLabel(fn (array $state): ?string => MasterInventoryItemCatalogField::labelFor(
+                                $state['master_inventory_item_id'] ?? null,
+                            ) ?? ($state['name'] ?? null)),
                     ]),
 
                 Forms\Components\Section::make(__('act.sections.commitments'))
@@ -242,6 +244,21 @@ class DeliveryActResource extends Resource
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),
+
+                Tables\Actions\Action::make('inventory_tree')
+                    ->label(__('act.actions.inventory_tree'))
+                    ->icon('heroicon-o-folder')
+                    ->modalHeading(__('act.sections.inventory'))
+                    ->modalSubmitAction(false)
+                    ->modalCancelActionLabel(__('act.buttons.close'))
+                    ->modalWidth('2xl')
+                    ->modalContent(fn (DeliveryAct $record) => view(
+                        'filament.acts.inventory-tree',
+                        [
+                            'nodes' => $record->inventoryTree(),
+                            'depth' => 0,
+                        ],
+                    )),
 
                 // Entrada del Prototype: no guarda nada, solo abre el
                 // formulario de creacion con ?from= para que la copia se haga

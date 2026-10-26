@@ -8,7 +8,7 @@
 **Docente:** Jairo Francisco Seoanes León  
 **Fecha:** Octubre de 2026  
 **Repositorio:** <https://github.com/diegocastro-ac/prometheus/tree/patrones-2>  
-**Versión:** 1.3 — documento editable en Markdown, actualizado contra el código de la rama `patrones-2`.
+**Versión:** 1.4 — documento editable en Markdown, actualizado contra el código de la rama `patrones-2`.
 
 > Este documento reemplaza la plantilla del PDF para facilitar su edición y revisión. Los diagramas están escritos en Mermaid; los documentos individuales de los patrones conservan diagramas PlantUML compatibles con Draw.io. Las cifras y comportamientos descritos se contrastaron contra el código; los conteos de pruebas corresponden a los archivos presentes y esta actualización documental no reejecutó la suite.
 
@@ -43,10 +43,10 @@ La aplicación permite registrar propiedades y su ubicación, administrar inquil
 
 El proyecto usa Laravel 12, PHP 8.2, Filament 3, Livewire, Tailwind CSS 4 y una base de datos relacional configurable; por defecto el archivo de entorno de ejemplo usa SQLite y las pruebas usan SQLite en memoria. La interfaz está disponible en español e inglés mediante el plugin de cambio de idioma de Filament.
 
-Esta entrega documenta la implementación actual y los ocho patrones de diseño verificados en el código:
+Esta entrega documenta la implementación actual y los doce patrones de diseño verificados en el código:
 
 - cinco patrones creacionales: **Singleton**, **Prototype**, **Builder**, **Abstract Factory** y **Factory Method**;
-- tres patrones estructurales: **Adapter**, aplicado a los días hábiles y al IPC del DANE; **Bridge**, aplicado a los documentos y sus formatos de entrega; y **Proxy**, aplicado a la caché y degradación de la fuente de festivos.
+- siete patrones estructurales: **Adapter**, aplicado a los días hábiles y al IPC del DANE; **Bridge**, aplicado a los documentos y sus formatos de entrega; **Composite**, aplicado al árbol de espacios del inventario; **Decorator**, aplicado al tope pactado del reajuste; **Facade**, aplicado al punto de entrada de las operaciones del alquiler; **Flyweight**, aplicado al catálogo maestro de elementos de inventario; y **Proxy**, aplicado a la caché de festivos y a la auditoría de acceso a documentos.
 
 Los documentos individuales de cada patrón se enlazan en sus secciones y en el Anexo A; están en [`docs/Patrones creacionales`](Patrones%20creacionales) y [`docs/Patrones estructurales`](Patrones%20estructurales). Este documento principal explica el contexto funcional, el diseño, la arquitectura, la base de datos y la forma en que los patrones se integran en la aplicación.
 
@@ -338,9 +338,9 @@ flowchart TB
 | --- | --- | --- |
 | Panel Filament | Recursos, formularios, tablas, acciones y navegación. | Filament 3, Livewire. |
 | Autenticación y perfil | Login, registro, recuperación y edición de perfil. | Filament y Laravel Auth. |
-| Servicios de aplicación | Casos de uso de cobros, pagos, actas, reajustes y configuración. | PHP 8.2. |
-| Modelos Eloquent | Entidades, relaciones, casts y reglas de persistencia. | Laravel 12. |
-| Documentos | Cuatro tipos de documento en familias texto, PDF y JSON. | `DocumentFactory`, `DocumentRenderer`, FlexPDF y Blade. |
+| Servicios de aplicación | Casos de uso de cobros, pagos, actas, reajustes, inventario y configuración; la fachada de alquiler coordina el punto de entrada. | PHP 8.2. |
+| Modelos Eloquent | Entidades, relaciones, casts, árbol de espacios y reglas de persistencia. | Laravel 12. |
+| Documentos | Cuatro tipos de documento en familias texto, PDF y JSON, protegidos por un Proxy de auditoría. | `DocumentFactory`, `DocumentRenderer`, `DocumentProxy`, FlexPDF y Blade. |
 | IPC | Sincronización y lectura local de la serie del DANE. | Adaptadores, repositorio y comandos. |
 | Base de datos | Persistencia relacional y restricciones de integridad. | SQLite/MySQL. |
 | Almacenamiento | Contratos, fotografías de inventario, firmas y comprobantes. | Disco `public` de Laravel. |
@@ -682,17 +682,17 @@ El backend sigue una separación por responsabilidades:
 | Dominio y persistencia | `app/Models`, `app/Enums`, `app/ValueObjects`, `app/Dto` | Entidades, estados, valores y reglas de negocio. |
 | Documentos | `app/Documents` | Contratos, productos, fábricas y renderizadores. |
 | Infraestructura | `app/Infrastructure` | Adaptadores de IPC, festivos, almacenamiento y contexto de usuario. |
-| Contratos | `app/Contracts` | Interfaces de calendario, fuente de festivos, IPC, prototipo, almacenamiento y usuario actual. |
+| Contratos | `app/Contracts` | Interfaces de calendario, fuente de festivos, IPC, prototipo, almacenamiento, usuario actual, flyweight de inventario y auditoría de documentos. |
 | Comandos | `app/Console/Commands` | Sincronización de IPC y recálculo de cadenas. |
 | Pruebas | `tests/Feature`, `tests/Unit` | Verificación de flujos y comportamientos críticos. |
 
 ##### Flujos principales
 
-1. **Alta de alquiler y plan de cobro.** El recurso de alquiler captura propiedad, inquilino, fechas, canon, tipo y cadencia. `PaymentPlanService` resuelve el generador adecuado y crea las facturas del periodo. La generación reutiliza facturas existentes para no duplicar cobros. Los vencimientos usan `BusinessCalendar`; en producción la cadena es `NagerDateBusinessCalendar → CachedHolidaySource → NagerDateHolidaySource`.
+1. **Alta de alquiler y plan de cobro.** El recurso de alquiler captura propiedad, inquilino, fechas, canon, tipo y cadencia. `CreateRental` llama `RentalFacade::generatePaymentPlan()`; la fachada reenvía a `PaymentPlanService`, que resuelve el generador adecuado y crea las facturas del periodo. La generación reutiliza facturas existentes para no duplicar cobros. Los vencimientos usan `BusinessCalendar`; en producción la cadena es `NagerDateBusinessCalendar → CachedHolidaySource → NagerDateHolidaySource`.
 2. **Registro de pagos.** `PaymentRecordingService` valida que la factura admita pagos, crea el `Payment`, lo asocia a factura, alquiler y usuario, y ejecuta `Invoice::refreshStatus()`. El estado de la factura se deriva del saldo y del vencimiento.
-3. **Actas de entrega.** `DeliveryActBuilder` acumula secciones opcionales, valida el inventario contra el catálogo de espacios y persiste el acta con sus elementos. `DeliveryActDraft` traduce una copia al formulario cuando se reutiliza un acta.
-4. **Reajustes.** `RentAdjustmentService` obtiene el IPC de la serie local, calcula el tope legal, valida las reglas, registra el ajuste y reprocesa la cadena desde el ancla. `AdjustmentChainCalculator` y `AdjustmentChainRecalculator` mantienen coherentes los valores derivados.
-5. **Documentos.** `DocumentService` selecciona la fábrica de texto, PDF o JSON y produce factura, recibo, estado de cuenta o carta de reajuste. Los documentos comparten el cuerpo y delegan el formato al renderizador de la familia. La pantalla consulta `isEmpty()` del contrato para avisar cuando un estado de cuenta no tiene facturas.
+3. **Actas de entrega.** `DeliveryActBuilder` acumula secciones opcionales, valida el espacio contra el árbol del arrendador y el elemento contra el catálogo maestro, y persiste el acta con sus referencias y snapshots. `SpaceTreeBuilder` arma el árbol que consumen la vista y el selector; `InventoryItemFactory` comparte el catálogo de elementos durante la petición. `DeliveryActDraft` traduce una copia al formulario cuando se reutiliza un acta.
+4. **Reajustes.** `RentalFacade` expone el registro, la previsualización, la validación, la aplicación y el recálculo; `RentAdjustmentService` obtiene el IPC de la serie local, calcula el tope legal, valida las reglas, registra el ajuste y reprocesa la cadena desde el ancla. `AdjustmentChainCalculator` y `AdjustmentChainRecalculator` mantienen coherentes los valores derivados.
+5. **Documentos.** `DocumentService` selecciona la fábrica de texto, PDF o JSON y devuelve un `DocumentProxy` que audita el contenido y memoriza la construcción del documento real al primer uso. Lo diferido es la auditoría y el render de contenido; la metadata no deja rastro. Los documentos comparten el cuerpo y delegan el formato al renderizador de la familia. La pantalla consulta `isEmpty()` del contrato para avisar cuando un estado de cuenta no tiene facturas.
 6. **IPC.** `IpcSynchronizer` recibe un `IpcProvider`; los comandos usan el adaptador remoto `DaneCdaIpcProvider`; las pantallas y los cálculos leen la copia local mediante `IpcSeriesRepository`.
 7. **Configuración.** `SettingsService` guarda la fila única y descarta la instancia de `AppSettings` del contenedor para que la siguiente lectura use los valores nuevos.
 
@@ -719,7 +719,12 @@ La verificación se apoya en pruebas de feature. Conteo de pruebas presentes en 
 | Factory Method | `PaymentPlanGeneratorTest` | 7 pruebas, 18 aserciones. |
 | Adapter | `BusinessCalendarTest` + `DaneCdaIpcProviderTest` | 25 pruebas, 47 aserciones. |
 | Bridge | `JsonDocumentBridgeTest` | 6 pruebas, 68 aserciones. |
-| Proxy | `CachedHolidaySourceTest` | 4 pruebas, 11 aserciones. |
+| Composite | `SpaceHierarchyCompositeTest` | 7 pruebas. |
+| Decorator | `PactadoCapDecoratorTest` | 4 pruebas, 12 aserciones. |
+| Facade | `RentalFacadeTest` | 5 pruebas, 11 aserciones. |
+| Flyweight | `InventoryItemFlyweightTest` | 5 pruebas. |
+| Proxy de festivos | `CachedHolidaySourceTest` | 4 pruebas, 11 aserciones. |
+| Proxy de documentos | `DocumentProxyTest` | 6 pruebas. |
 
 Comandos de operación:
 
@@ -749,13 +754,15 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | `invoice_sequences` | Consecutivo anual por arrendador. | Único `(user_id, year)`. |
 | `payments` | Abonos contra facturas. | `invoice_id`, `rental_id`, `user_id`; método, referencia y comprobante. |
 | `delivery_acts` | Actas de entrega/recepción. | `user_id`, `rental_id`; firmas, lecturas y fechas. |
-| `act_items` | Inventario de un acta. | `delivery_act_id`, `space_id`; estado, nota y foto. |
-| `spaces` | Catálogo de espacios por arrendador. | `user_id`; nombre. |
+| `act_items` | Inventario de un acta. | `delivery_act_id`, `space_id`, `master_inventory_item_id`; nombre y espacio como snapshots; estado, nota y foto. |
+| `spaces` | Árbol de espacios por arrendador. | `user_id`, `parent_id`; único `(user_id, parent_id, name)`; FK autorreferente con `nullOnDelete`. |
+| `master_inventory_items` | Catálogo maestro de elementos por arrendador. | `user_id`; único `(user_id, name)`. |
 | `rent_adjustments` | Reajustes de canon. | `user_id`, `rental_id`, `ipc_rate_id`; secuencia, porcentajes y fechas. |
 | `ipc_rates` | Variación anual del IPC. | Año, porcentaje, fuente y fecha de publicación. |
 | `ipc_series` | Serie mensual del IPC por geografía. | Único `(geography_code, year, month)`; índice de consulta. |
 | `geographies` | Catálogo de ciudades y total nacional. | Código único; `has_ipc`; departamento. |
 | `app_settings` | Configuración global de la empresa. | Fila única con `id = 1`; no tiene `user_id`. |
+| `document_accesses` | Auditoría de entregas de documentos. | `user_id` nullable con `nullOnDelete`; tipo, referencia, formato, contexto JSON y `accessed_at`. |
 | `cache`, `jobs` | Infraestructura de Laravel. | Uso interno del framework. |
 
 ##### Integridad y decisiones de datos
@@ -764,6 +771,9 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 - **Consecutivos:** `invoice_sequences` evita colisiones entre arrendadores y reinicia el consecutivo por año.
 - **Periodo:** `invoices.period` usa `YYYY-MM` y es independiente de la fecha de emisión.
 - **Catálogo de espacios:** se migró desde la configuración global a `spaces`, con `user_id`; los elementos de acta conservan además el nombre textual de respaldo.
+- **Árbol de espacios:** `spaces.parent_id` guarda la jerarquía. El unique `(user_id, parent_id, name)` no impide dos raíces homónimas porque los `NULL` no colisionan; esa regla se refuerza en `Space`. `space_id` y `space` en `act_items` permiten distinguir la referencia actual del snapshot histórico.
+- **Catálogo maestro:** `master_inventory_items` define un elemento por arrendador y `act_items.master_inventory_item_id` lo referencia. El nombre del acta sigue siendo un snapshot, por lo que renombrar el catálogo no reescribe actas firmadas.
+- **Auditoría de documentos:** `document_accesses` registra el contenido efectivamente entregado. La FK de usuario es nullable para conservar el histórico si se elimina la cuenta.
 - **Reajustes:** `anchor_monthly_amount` y `anchor_established_on` congelan el punto de partida; `sequence` y `effective_from` permiten reproducir el orden de la cadena.
 - **IPC:** `ipc_series` tiene una fila por geografía, año y mes; la sincronización usa `upsert` lógico. `geographies.has_ipc` distingue las ciudades con serie de las que solo existen en DIVIPOLA.
 - **Aislamiento:** no hay RLS ni esquemas separados. La integridad por arrendador se apoya en `user_id` y en las consultas de la aplicación.
@@ -778,6 +788,10 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | `2026_10_03_205453_create_delivery_acts_table.php` | Crea actas de entrega. |
 | `2026_10_03_205454_create_act_items_table.php` | Crea el inventario de actas. |
 | `2026_10_05_022842_create_spaces_table.php` | Crea el catálogo de espacios por usuario. |
+| `2026_10_25_100000_add_parent_id_to_spaces_table.php` | Agrega `parent_id`, quita el unique plano y crea el unique por hermano. |
+| `2026_10_25_110000_create_master_inventory_items_table.php` | Crea el catálogo maestro por arrendador. |
+| `2026_10_25_110100_add_master_inventory_item_id_to_act_items_table.php` | Agrega la FK nullable del elemento maestro al inventario del acta. |
+| `2026_10_25_120000_create_document_accesses_table.php` | Crea la auditoría de accesos a documentos. |
 | `2026_10_13_090000_create_ipc_series_table.php` | Crea la serie mensual del IPC. |
 | `2026_10_13_090100_create_geographies_table.php` | Crea el catálogo de geografías. |
 | `2026_10_13_090200_add_ipc_fields_to_rentals_table.php` | Agrega tipo, valores legales y ancla al alquiler. |
@@ -802,6 +816,10 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | CC-C11 | El cálculo de días hábiles dependía directamente de un servicio externo. | `BusinessCalendar` define el contrato; `NagerDateBusinessCalendar` compone `HolidaySource`, `NagerDateHolidaySource` adapta Nager.Date y `WeekendBusinessCalendar` sirve de respaldo. | `app/Contracts/BusinessCalendar.php`, `app/Contracts/HolidaySource.php`, `app/Infrastructure/Holidays/`, `app/Providers/AppServiceProvider.php` | Adapter. |
 | CC-C12 | La exportación de documentos solo cubría texto/PDF, la entrega del PDF se duplicaba, el cuerpo apuntaba al modelo en tres documentos y la pantalla inspeccionaba `invoices()` del producto concreto. | Se agregó `JsonRenderer`/`JsonDocumentFactory`, se unificó la entrega por `content()`, cada documento se adjunta a su cuerpo y `Document::isEmpty()` permite detectar el estado de cuenta vacío sin conocer el producto. | `app/Documents/AbstractDocument.php`, `app/Documents/Contracts/Document.php`, `app/Documents/MonthlyStatement.php`, `app/Documents/Rendering/JsonRenderer.php`, `app/Documents/Factories/JsonDocumentFactory.php`, `app/Documents/DocumentFactoryLocator.php`, `app/Filament/Pages/DocumentsPage.php`, `app/Filament/Support/DocumentAction.php` | Bridge y Abstract Factory. |
 | CC-C13 | El adaptador de días hábiles mezclaba la traducción de Nager.Date con la caché y la degradación por fallo. | `HolidaySource` define el Subject; `CachedHolidaySource` cachea por país/año y degrada a `[]`; `NagerDateHolidaySource` solo traduce HTTP/JSON; `NagerDateBusinessCalendar` queda como cliente del Subject. | `app/Contracts/HolidaySource.php`, `app/Infrastructure/Holidays/CachedHolidaySource.php`, `app/Infrastructure/Holidays/NagerDateHolidaySource.php`, `app/Infrastructure/Holidays/NagerDateBusinessCalendar.php`, `app/Providers/AppServiceProvider.php` | Proxy y SRP. |
+| CC-C14 | El catálogo de espacios era plano y no representaba jerarquía ni nombres repetidos en ramas distintas. | `spaces` ganó `parent_id`; se crearon `SpaceComponent`, `SpaceLeaf`, `SpaceComposite` y `SpaceTreeBuilder`; el acta guarda `space_id` y snapshot; la vista recorre el árbol con una interfaz común. | `app/Models/Space.php`, `app/Models/SpaceComponent.php`, `app/Models/SpaceLeaf.php`, `app/Models/SpaceComposite.php`, `app/Services/Acts/SpaceTreeBuilder.php`, `app/Services/Acts/DeliveryActBuilder.php`, `resources/views/filament/acts/inventory-tree.blade.php` | Composite. |
+| CC-C15 | Cada acta repetía el nombre del elemento y no existía un catálogo maestro por arrendador. | Se creó `master_inventory_items`, el contrato `InventoryItemFlyweight`, el pool scoped `InventoryItemFactory` y la FK en `act_items`; el nombre del acta queda como snapshot. | `app/Contracts/InventoryItemFlyweight.php`, `app/Models/MasterInventoryItem.php`, `app/Services/InventoryItemFactory.php`, `app/Filament/Support/MasterInventoryItemCatalogField.php`, `database/migrations/2026_10_25_110000_create_master_inventory_items_table.php` | Flyweight. |
+| CC-C16 | Cada pantalla resolvía y coordinaba por su cuenta los servicios de cobros, reajustes, fechas y documentos. | Se creó `RentalFacade` como punto de entrada; `CreateRental`, los recursos de factura y reajuste, y `DocumentsPage` usan la fachada; la lógica sigue en los servicios. | `app/Services/RentalFacade.php`, `app/Providers/AppServiceProvider.php`, `app/Filament/Resources/RentalResource/Pages/CreateRental.php`, `app/Filament/Resources/InvoiceResource.php`, `app/Filament/Resources/RentAdjustmentResource.php`, `app/Filament/Pages/DocumentsPage.php` | Facade. |
+| CC-C17 | La entrega de documentos no dejaba rastro del contenido y el acceso quedaba acoplado a cada pantalla. | `DocumentProxy` implementa `Document`, audita `content()` una vez por proxy, memoriza el documento real y bloquea la entrega si la auditoría falla; la metadata no audita. `DocumentService` devuelve el Proxy y `document_accesses` persiste el acceso. | `app/Documents/DocumentProxy.php`, `app/Documents/DocumentDescriptor.php`, `app/Contracts/DocumentAccessLogger.php`, `app/Documents/Audit/DatabaseDocumentAccessLogger.php`, `app/Documents/DocumentService.php`, `app/Models/DocumentAccess.php` | Proxy. |
 
 **Notas de implementación**
 
@@ -821,7 +839,11 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | **Factory Method** | Creacional | `PaymentPlanGenerator` y subclases mensual, quincenal y anticipo; `PaymentPlanGeneratorResolver` selecciona. | Crear facturas según la cadencia sin llenar el servicio de condicionales. | Extensión de cadencias y pruebas por generador. | El producto siempre es `Invoice`; la variación es la política de creación, por lo que se acerca a Template Method. |
 | **Adapter** | Estructural | `BusinessCalendar` + `NagerDateBusinessCalendar` + `NagerDateHolidaySource`; `IpcProvider` + `DaneCdaIpcProvider`/`LocalSeriesIpcProvider`. | Aislar el dominio de Nager.Date y del CDA del DANE. | Dominio desacoplado, pruebas deterministas y lectura local del IPC. | La lectura de IPC no pasa siempre por el Target; la caché y la degradación de festivos ya no viven en el adaptador. |
 | **Bridge** | Estructural | `AbstractDocument` + `DocumentRenderer`; `PaymentReceipt`, `AdjustmentLetter`, `MonthlyStatement` y `RentInvoice` como abstracciones refinadas; `PlainTextRenderer`, `PdfRenderer` y `JsonRenderer`. | Separar el tipo de documento de su formato de serialización y evitar ramas por formato. | Agregar formatos sin tocar la lógica de los documentos y unificar la entrega por `content()`. | `PdfRenderer::selectView()` conoce las clases concretas; el JSON usa valores de presentación y excluye `meta`; agregar un documento exige actualizar las tres fábricas. |
-| **Proxy** | Estructural | `HolidaySource` + `CachedHolidaySource`; `NagerDateHolidaySource` como RealSubject/Adapter y `NagerDateBusinessCalendar` como cliente. | Evitar llamadas repetidas a Nager.Date y aislar al calendario de sus fallos sin contaminar el adaptador. | Caché por país/año, degradación controlada y separación entre traducción y control de acceso. | TTL de un día; un fallo y una lista vacía se ven igual desde el cliente; no hay reintentos ni invalidación por tags. |
+| **Composite** | Estructural | `SpaceComponent` + `SpaceLeaf`/`SpaceComposite`; `SpaceTreeBuilder` arma el árbol y `DeliveryAct` lo consume. | Representar espacios con jerarquía y nombres repetidos sin ramas por tipo en la vista. | Hojas y compuestos se recorren igual; rutas calculadas y snapshots históricos. | El Component es inmutable (sin `add()`/`remove()`); la unicidad de raíces se refuerza en aplicación y no hay control de profundidad. |
+| **Decorator** | Estructural | `IpcBasisStrategy` + `AnnualVariationStrategy`/`IndexRatioStrategy`/`FrozenSnapshotStrategy`; `PactadoCapDecorator`; cliente `RentAdjustmentService`. | Aplicar el porcentaje pactado sin contaminar la estrategia que calcula el IPC legal. | Separa cifra legal y aplicada; el pacto se compone con cualquier estrategia. | Añade `legalSnapshot()`, `inner()` y `hasPactadoCap()` fuera del Component; siempre se decora, incluso sin pacto. |
+| **Facade** | Estructural | `RentalFacade` sobre siete servicios; clientes en alquileres, facturas, reajustes y documentos. | Dar un punto de entrada único sin duplicar la coordinación en cada pantalla. | Menos acoplamiento y contratos de servicio conservados. | Interfaz amplia de 16 métodos, sin contrato propio; no centraliza transacciones, autorización ni accesos auxiliares del formulario. |
+| **Flyweight** | Estructural | `InventoryItemFlyweight` + `MasterInventoryItem`; `InventoryItemFactory` como pool scoped; `ActItem` como contexto. | Compartir el catálogo maestro por arrendador y separar el estado propio de cada acta. | Menos duplicación, catálogo único y snapshots que no se reescriben. | El pool vive por petición; el catálogo se carga completo por dueño; el nombre existe también como snapshot. |
+| **Proxy** | Estructural | `HolidaySource` + `CachedHolidaySource`; `Document` + `DocumentProxy` con `DocumentAccessLogger`. | Evitar llamadas repetidas a Nager.Date y auditar la entrega de contenido sin acoplar a la pantalla. | Caché con degradación controlada y auditoría fail-closed con construcción memorizada. | Festivos: TTL de un día y fallo indistinguible de lista vacía. Documentos: audita por instancia, no por documento lógico, y la metadata no deja rastro. |
 
 ##### Cobertura de pruebas por patrón
 
@@ -834,7 +856,12 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | Factory Method | `PaymentPlanGeneratorTest`. | 7 pruebas, 18 aserciones. |
 | Adapter | `BusinessCalendarTest`, `DaneCdaIpcProviderTest`. | 25 pruebas, 47 aserciones. |
 | Bridge | `JsonDocumentBridgeTest`. | 6 pruebas, 68 aserciones. |
-| Proxy | `CachedHolidaySourceTest`. | 4 pruebas, 11 aserciones. |
+| Composite | `SpaceHierarchyCompositeTest`. | 7 pruebas. |
+| Decorator | `PactadoCapDecoratorTest`. | 4 pruebas, 12 aserciones. |
+| Facade | `RentalFacadeTest`. | 5 pruebas, 11 aserciones. |
+| Flyweight | `InventoryItemFlyweightTest`. | 5 pruebas. |
+| Proxy de festivos | `CachedHolidaySourceTest`. | 4 pruebas, 11 aserciones. |
+| Proxy de documentos | `DocumentProxyTest`. | 6 pruebas. |
 
 ##### Documentos individuales
 
@@ -845,11 +872,15 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 - [Factory Method](Patrones%20creacionales/Factory%20Method.md)
 - [Adapter](Patrones%20estructurales/Adapter.md)
 - [Bridge](Patrones%20estructurales/Bridge.md)
+- [Composite](Patrones%20estructurales/Composite.md)
+- [Decorator](Patrones%20estructurales/Decorator.md)
+- [Facade](Patrones%20estructurales/Facade.md)
+- [Flyweight](Patrones%20estructurales/Flyweight.md)
 - [Proxy](Patrones%20estructurales/Proxy.md)
 
 ##### Patrones fuera del alcance
 
-El código contiene otras estructuras que podrían analizarse con patrones adicionales, pero esta entrega se limita a los ocho patrones verificados y aprobados. Facade, Composite, Flyweight y Decorator aparecen en documentos de planificación, pero no se documentan como implementaciones de esta entrega.
+El código contiene otras estructuras que podrían analizarse con patrones adicionales, pero esta entrega se limita a los doce patrones verificados y aprobados. No se documentan aquí otras variantes de estos patrones que no tengan una implementación y una prueba asociadas, ni se presentan como patrones las clases de infraestructura que solo cumplen una responsabilidad auxiliar.
 
 ---
 
@@ -866,7 +897,11 @@ El código contiene otras estructuras que podrían analizarse con patrones adici
 | Factory Method | [`Factory Method.md`](Patrones%20creacionales/Factory%20Method.md) | PlantUML con roles GoF. |
 | Adapter | [`Adapter.md`](Patrones%20estructurales/Adapter.md) | Dos diagramas PlantUML: días hábiles (con el Proxy) e IPC. |
 | Bridge | [`Bridge.md`](Patrones%20estructurales/Bridge.md) | Un diagrama PlantUML con las dos jerarquías y roles GoF. |
-| Proxy | [`Proxy.md`](Patrones%20estructurales/Proxy.md) | Un diagrama PlantUML con Subject, Proxy, RealSubject y Client. |
+| Composite | [`Composite.md`](Patrones%20estructurales/Composite.md) | Un diagrama PlantUML con Component, Leaf, Composite, árbol y clientes. |
+| Decorator | [`Decorator.md`](Patrones%20estructurales/Decorator.md) | Un diagrama PlantUML con Component, ConcreteComponent, Decorator y Client. |
+| Facade | [`Facade.md`](Patrones%20estructurales/Facade.md) | Un diagrama PlantUML con la fachada, el subsistema y los clientes. |
+| Flyweight | [`Flyweight.md`](Patrones%20estructurales/Flyweight.md) | Un diagrama PlantUML con Flyweight, fábrica, pool y contexto. |
+| Proxy | [`Proxy.md`](Patrones%20estructurales/Proxy.md) | Dos diagramas PlantUML: Proxy de festivos y Proxy de documentos. |
 
 ### Anexo B. Comandos de operación
 
@@ -916,6 +951,7 @@ npm run build
 | 1.1 | Octubre de 2026 | Se documentó Bridge y el formato JSON; Abstract Factory pasó a tres familias y el mapa quedó en siete patrones. |
 | 1.2 | Octubre de 2026 | Se documentó `Document::isEmpty()` y se movió Bridge a `docs/Patrones estructurales/`. |
 | 1.3 | Octubre de 2026 | Se documentó el Proxy de festivos; el mapa quedó en ocho patrones y Adapter se actualizó a la cadena Client → Proxy → Adapter. |
+| 1.4 | Octubre de 2026 | Se incorporaron Composite, Decorator, Facade y Flyweight, y el Proxy de documentos; el mapa quedó en doce patrones. |
 
 ---
 

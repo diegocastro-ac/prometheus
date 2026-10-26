@@ -5,13 +5,12 @@ namespace App\Filament\Resources;
 use App\Contracts\BusinessCalendar;
 use App\Contracts\CurrentUserContextInterface;
 use App\Documents\Contracts\Document;
-use App\Documents\DocumentService;
 use App\Enums\InvoiceStatus;
 use App\Filament\Resources\InvoiceResource\Pages;
 use App\Filament\Support\DocumentAction;
 use App\Models\Invoice;
 use App\Models\Rental;
-use App\Services\PaymentRecordingService;
+use App\Services\RentalFacade;
 use App\Settings\AppSettings;
 use DomainException;
 use Filament\Forms;
@@ -211,9 +210,9 @@ class InvoiceResource extends Resource
                     self::recordPaymentAction(),
                     self::annulAction(),
                 ])
-                ->label(__('invoice.buttons.download_document_pdf'))
-                ->icon('heroicon-o-ellipsis-vertical')
-                ->color('primary'),
+                    ->label(__('invoice.buttons.download_document_pdf'))
+                    ->icon('heroicon-o-ellipsis-vertical')
+                    ->color('primary'),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
@@ -237,21 +236,21 @@ class InvoiceResource extends Resource
             DocumentAction::pdf(
                 name: 'receipt_pdf',
                 label: __('invoice.buttons.download_receipt'),
-                builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
+                builder: fn (Invoice $record, string $format): Document => app(RentalFacade::class)
                     ->receiptFor($record, $format),
             )->visible(fn (Invoice $record): bool => $record->isPaid()),
 
             DocumentAction::text(
                 name: 'receipt_text',
                 label: __('invoice.buttons.copy_receipt'),
-                builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
+                builder: fn (Invoice $record, string $format): Document => app(RentalFacade::class)
                     ->receiptFor($record, $format),
             )->visible(fn (Invoice $record): bool => $record->isPaid()),
 
             DocumentAction::file(
                 name: 'receipt_json',
                 label: __('invoice.buttons.download_receipt').' · JSON',
-                builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
+                builder: fn (Invoice $record, string $format): Document => app(RentalFacade::class)
                     ->receiptFor($record, $format),
             )->visible(fn (Invoice $record): bool => $record->isPaid()),
         ];
@@ -271,21 +270,21 @@ class InvoiceResource extends Resource
             DocumentAction::pdf(
                 name: 'invoice_pdf',
                 label: __('invoice.buttons.download_invoice'),
-                builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
+                builder: fn (Invoice $record, string $format): Document => app(RentalFacade::class)
                     ->invoiceFor($record, $format),
             ),
 
             DocumentAction::text(
                 name: 'invoice_text',
                 label: __('invoice.buttons.copy_invoice'),
-                builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
+                builder: fn (Invoice $record, string $format): Document => app(RentalFacade::class)
                     ->invoiceFor($record, $format),
             ),
 
             DocumentAction::file(
                 name: 'invoice_json',
                 label: __('invoice.buttons.download_invoice').' · JSON',
-                builder: fn (Invoice $record, string $format): Document => app(DocumentService::class)
+                builder: fn (Invoice $record, string $format): Document => app(RentalFacade::class)
                     ->invoiceFor($record, $format),
             ),
         ];
@@ -335,7 +334,7 @@ class InvoiceResource extends Resource
             ])
             ->action(function (Invoice $record, array $data): void {
                 try {
-                    $result = app(PaymentRecordingService::class)->record(
+                    $result = app(RentalFacade::class)->recordPayment(
                         invoice: $record,
                         amount: (float) $data['amount'],
                         method: $data['method'] ?? null,

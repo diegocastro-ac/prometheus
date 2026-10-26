@@ -3,9 +3,8 @@
 namespace App\Filament\Resources\RentalResource\Pages;
 
 use App\Filament\Resources\RentalResource;
-use App\Services\PaymentPlanService;
+use App\Services\RentalFacade;
 use App\ValueObjects\RentalPeriod;
-use Filament\Actions;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Support\Carbon;
 
@@ -13,17 +12,18 @@ class CreateRental extends CreateRecord
 {
     protected static string $resource = RentalResource::class;
 
-    private PaymentPlanService $paymentPlanService;
+    private RentalFacade $rentals;
 
     public function __construct()
     {
-        $this->paymentPlanService = app(PaymentPlanService::class);
+        $this->rentals = app(RentalFacade::class);
     }
 
     protected function mutateFormDataBeforeCreate(array $data): array
     {
         $period = RentalPeriod::for(Carbon::parse($data['start_date']), (int) $data['total_months']);
         $data['end_date'] = $period->endDateFormatted();
+
         return $data;
     }
 
@@ -31,7 +31,7 @@ class CreateRental extends CreateRecord
     {
         $rental = parent::handleRecordCreation($data);
 
-        $this->paymentPlanService->generateFor($rental);
+        $this->rentals->generatePaymentPlan($rental);
 
         return $rental;
     }

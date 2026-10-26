@@ -4,6 +4,8 @@ namespace App\Services\Acts;
 
 use App\Models\ActItem;
 use App\Models\DeliveryAct;
+use App\Models\MasterInventoryItem;
+use App\Models\Space;
 
 /**
  * Client (GoF): nunca construye un acta con veinte argumentos. Le pide al
@@ -12,6 +14,16 @@ use App\Models\DeliveryAct;
  */
 class DeliveryActDraft
 {
+    /**
+     * @var array<string, int>|null
+     */
+    private ?array $spaceIdsByName = null;
+
+    /**
+     * @var array<string, int>|null
+     */
+    private ?array $masterItemIdsByName = null;
+
     public function __construct(private readonly DeliveryAct $source) {}
 
     /**
@@ -39,7 +51,8 @@ class DeliveryActDraft
             'gas_reading' => $act->gas_reading,
             'items' => $act->items
                 ->map(fn (ActItem $item): array => [
-                    'space' => $item->space,
+                    'space_id' => $this->spaceIdFor($item),
+                    'master_inventory_item_id' => $this->masterItemIdFor($item),
                     'name' => $item->name,
                     'state' => $item->state?->value,
                     'note' => $item->note,
@@ -53,5 +66,96 @@ class DeliveryActDraft
             'tenant_signature_path' => $act->tenant_signature_path,
             'signed_at' => $act->signed_at?->format('Y-m-d H:i:s'),
         ];
+    }
+
+    /**
+     * Las actas anteriores al arbol pueden no tener space_id. En ese caso se
+     * resuelve por el nombre guardado para que el formulario pueda mostrar el
+     * espacio en el selector nuevo.
+     */
+    private function spaceIdFor(ActItem $item): ?int
+    {
+        if ($item->space_id !== null) {
+            return (int) $item->space_id;
+        }
+
+        $name = $this->normalise((string) $item->space);
+
+        if ($name === '') {
+            return null;
+        }
+
+        return $this->spaceIdsByName()[$name] ?? null;
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function spaceIdsByName(): array
+    {
+        if ($this->spaceIdsByName !== null) {
+            return $this->spaceIdsByName;
+        }
+
+        $spaces = Space::query()
+            ->where('user_id', $this->source->user_id)
+            ->get()
+            ->sortBy(fn (Space $space): int => $space->parent_id === null ? 0 : 1);
+
+        $this->spaceIdsByName = [];
+
+        foreach ($spaces as $space) {
+            $this->spaceIdsByName[$this->normalise($space->name)] ??= (int) $space->getKey();
+        }
+
+        return $this->spaceIdsByName;
+    }
+
+    /**
+     * Las actas anteriores al catalogo maestro pueden no tener la referencia.
+     * Se resuelve por el nombre del elemento para que el selector nuevo muestre
+     * algo conocido; si el nombre ya no existe, el usuario tendra que elegir o
+     * crear uno al guardar.
+     */
+    private function masterItemIdFor(ActItem $item): ?int
+    {
+        if ($item->master_inventory_item_id !== null) {
+            return (int) $item->master_inventory_item_id;
+        }
+
+        $name = $this->normalise((string) $item->name);
+
+        if ($name === '') {
+            return null;
+        }
+
+        return $this->masterItemIdsByName()[$name] ?? null;
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function masterItemIdsByName(): array
+    {
+        if ($this->masterItemIdsByName !== null) {
+            return $this->masterItemIdsByName;
+        }
+
+        $this->masterItemIdsByName = [];
+
+        MasterInventoryItem::query()
+            ->where('user_id', $this->source->user_id)
+            ->orderBy('name')
+            ->get()
+            ->each(function (MasterInventoryItem $item): void {
+                $this->masterItemIdsByName[$this->normalise($item->name())] ??= (int) $item->id();
+            });
+
+        return $this->masterItemIdsByName;
+    }
+
+    private function normalise(string $name): string
+    {
+        return mb_strtolower(trim($name));
     }
 }

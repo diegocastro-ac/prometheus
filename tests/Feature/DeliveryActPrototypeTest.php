@@ -6,12 +6,16 @@ use App\Contracts\Prototype;
 use App\Enums\ActItemState;
 use App\Models\ActItem;
 use App\Models\DeliveryAct;
+use App\Models\MasterInventoryItem;
 use App\Models\Rental;
+use App\Models\Space;
 use App\Models\User;
 use App\Services\Acts\DeliveryActDraft;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use PHPUnit\Framework\Attributes\Test;
 use ReflectionClass;
+use Tests\SeedsMasterInventoryCatalog;
+use Tests\SeedsSpaceCatalog;
 use Tests\TestCase;
 
 /**
@@ -24,6 +28,8 @@ use Tests\TestCase;
 class DeliveryActPrototypeTest extends TestCase
 {
     use RefreshDatabase;
+    use SeedsMasterInventoryCatalog;
+    use SeedsSpaceCatalog;
 
     private User $user;
 
@@ -35,6 +41,25 @@ class DeliveryActPrototypeTest extends TestCase
 
         $this->user = User::factory()->create();
         $this->rental = Rental::factory()->create(['user_id' => $this->user->id]);
+
+        $this->seedSpaces($this->user, ['Sala', 'Cocina']);
+        $this->seedMasterInventory($this->user, ['Refrigerador', 'Televisor']);
+    }
+
+    private function spaceId(string $name): int
+    {
+        return (int) Space::query()
+            ->where('user_id', $this->user->id)
+            ->where('name', $name)
+            ->value('id');
+    }
+
+    private function masterItemId(string $name): int
+    {
+        return (int) MasterInventoryItem::query()
+            ->where('user_id', $this->user->id)
+            ->where('name', $name)
+            ->value('id');
     }
 
     /**
@@ -55,7 +80,9 @@ class DeliveryActPrototypeTest extends TestCase
 
         ActItem::factory()->create([
             'delivery_act_id' => $act->id,
+            'space_id' => $this->spaceId('Cocina'),
             'space' => 'Cocina',
+            'master_inventory_item_id' => $this->masterItemId('Refrigerador'),
             'name' => 'Refrigerador',
             'state' => ActItemState::REPARABLE,
             'note' => 'Gotea',
@@ -64,7 +91,9 @@ class DeliveryActPrototypeTest extends TestCase
 
         ActItem::factory()->create([
             'delivery_act_id' => $act->id,
+            'space_id' => $this->spaceId('Sala'),
             'space' => 'Sala',
+            'master_inventory_item_id' => $this->masterItemId('Televisor'),
             'name' => 'Televisor',
             'state' => ActItemState::NUEVO,
             'note' => null,
@@ -92,7 +121,8 @@ class DeliveryActPrototypeTest extends TestCase
             $this->assertNull($item->id);
             $this->assertFalse($item->exists);
             $this->assertNull($item->delivery_act_id);
-            $this->assertNull($item->space_id);
+            $this->assertSame($act->items[$index]->space_id, $item->space_id);
+            $this->assertSame($act->items[$index]->master_inventory_item_id, $item->master_inventory_item_id);
         }
 
         // El acta original no pierde nada de lo suyo.
@@ -212,7 +242,8 @@ class DeliveryActPrototypeTest extends TestCase
 
         $this->assertCount(2, $state['items']);
         $this->assertSame([
-            'space' => 'Cocina',
+            'space_id' => $this->spaceId('Cocina'),
+            'master_inventory_item_id' => $this->masterItemId('Refrigerador'),
             'name' => 'Refrigerador',
             'state' => 'reparable',
             'note' => 'Gotea',

@@ -15,28 +15,41 @@ class SpaceSeeder extends Seeder
     {
         $user = User::first();
 
-        if (!$user) {
+        if (! $user) {
             return;
         }
 
-        $defaultSpaces = [
-            'Sala',
-            'Cocina',
-            'Dormitorio principal',
-            'Baño',
-            'Balcon',
-            'Patio',
-            'Garaje',
-            'Terraza',
-            'Lavandería',
-            'Jardín',
+        $tree = [
+            'Interiores' => [
+                'Sala',
+                'Cocina',
+                'Dormitorio principal',
+                'Baño',
+            ],
+            'Exteriores' => [
+                'Balcón',
+                'Patio',
+                'Garaje',
+                'Terraza',
+                'Lavadero',
+                'Jardín',
+            ],
         ];
 
-        foreach ($defaultSpaces as $spaceName) {
-            Space::firstOrCreate(
-                ['name' => $spaceName, 'user_id' => $user->id],
-                ['name' => $spaceName, 'user_id' => $user->id]
-            );
+        foreach ($tree as $rootName => $children) {
+            $root = Space::firstOrCreate([
+                'name' => $rootName,
+                'user_id' => $user->id,
+                'parent_id' => null,
+            ]);
+
+            foreach ($children as $childName) {
+                Space::firstOrCreate([
+                    'name' => $childName,
+                    'user_id' => $user->id,
+                    'parent_id' => $root->id,
+                ]);
+            }
         }
     }
 }

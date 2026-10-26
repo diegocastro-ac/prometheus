@@ -46,10 +46,17 @@ class SpaceCatalogFieldTest extends TestCase
 
         Livewire::test(CreateDeliveryAct::class)->assertSuccessful();
 
+        $options = \App\Filament\Support\SpaceCatalogField::options();
+
         $this->assertSame(
             ['Baño', 'Cocina', 'Sala'],
-            array_keys(\App\Filament\Support\SpaceCatalogField::options()),
+            array_values($options),
             'el catálogo debe venir ordenado alfabéticamente',
+        );
+        $this->assertSame(
+            Space::query()->where('user_id', $this->user->id)->pluck('id')->sort()->values()->all(),
+            collect($options)->keys()->sort()->values()->all(),
+            'las opciones usan el id del espacio como valor',
         );
     }
 
@@ -66,10 +73,10 @@ class SpaceCatalogFieldTest extends TestCase
         // El selector lee el usuario autenticado, así que la comprobación es
         // cambiar quién está dentro.
         $this->actingAs($this->user);
-        $mias = array_keys(\App\Filament\Support\SpaceCatalogField::options());
+        $mias = array_values(\App\Filament\Support\SpaceCatalogField::options());
 
         $this->actingAs($otro);
-        $suyas = array_keys(\App\Filament\Support\SpaceCatalogField::options());
+        $suyas = array_values(\App\Filament\Support\SpaceCatalogField::options());
 
         $this->assertSame(['Sala'], $mias);
         $this->assertSame(['Balcón French', 'Estar'], $suyas);
@@ -107,6 +114,7 @@ class SpaceCatalogFieldTest extends TestCase
         // el efecto tiene que ser el mismo porque es el mismo código.
         $space = Space::query()->firstOrCreate([
             'user_id' => $this->user->id,
+            'parent_id' => null,
             'name' => 'Zona de lavado',
         ]);
 
@@ -114,7 +122,7 @@ class SpaceCatalogFieldTest extends TestCase
         $this->assertTrue($space->wasRecentlyCreated);
         $this->assertContains(
             'Zona de lavado',
-            array_keys(\App\Filament\Support\SpaceCatalogField::options()),
+            array_values(\App\Filament\Support\SpaceCatalogField::options()),
         );
     }
 
@@ -128,11 +136,13 @@ class SpaceCatalogFieldTest extends TestCase
         // usar el botón.
         $primero = Space::query()->firstOrCreate([
             'user_id' => $this->user->id,
+            'parent_id' => null,
             'name' => 'Bodega',
         ]);
 
         $segundo = Space::query()->firstOrCreate([
             'user_id' => $this->user->id,
+            'parent_id' => null,
             'name' => 'Bodega',
         ]);
 

@@ -28,6 +28,7 @@ trait SeedsSpaceCatalog
         foreach ($spaces as $space) {
             Space::query()->firstOrCreate([
                 'user_id' => $user->id,
+                'parent_id' => null,
                 'name' => $space,
             ]);
         }

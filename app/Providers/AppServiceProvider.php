@@ -5,7 +5,9 @@ namespace App\Providers;
 use App\Contracts\AgreementStorageInterface;
 use App\Contracts\BusinessCalendar;
 use App\Contracts\CurrentUserContextInterface;
+use App\Contracts\DocumentAccessLogger;
 use App\Contracts\Ipc\IpcProvider;
+use App\Documents\Audit\DatabaseDocumentAccessLogger;
 use App\Documents\DocumentFactoryLocator;
 use App\Documents\Factories\DocumentFactory;
 use App\Documents\Factories\TextDocumentFactory;
@@ -34,8 +36,10 @@ use App\Services\Adjustment\Validation\StatutoryCalendarYear;
 use App\Services\Adjustment\Validation\WithinCapOrAcknowledged;
 use App\Services\Adjustment\Validation\WithinOnePercentOfCommercialValue;
 use App\Services\Adjustment\Validation\WithinTwelveMonthsSamePrice;
+use App\Services\InventoryItemFactory;
 use App\Services\Ipc\CdaQueryFactory;
 use App\Services\Ipc\IpcSeriesRepository;
+use App\Services\RentalFacade;
 use App\Settings\AppSettings;
 use BezhanSalleh\FilamentLanguageSwitch\LanguageSwitch;
 use Filament\Support\Facades\FilamentView;
@@ -67,7 +71,15 @@ class AppServiceProvider extends ServiceProvider
         // acta, asi que una instancia unica para toda la aplicacion tendria
         // que reiniciarse a mano entre actas. Con scoped hay una instancia por
         // peticion, que es justo lo que hace falta sin arrastrar estado.
-        $this->app->scoped(DeliveryActBuilder::class, fn (): DeliveryActBuilder => new DeliveryActBuilder);
+        //
+        // El pool de flyweights tambien es scoped: comparte el catalogo maestro
+        // durante la peticion y lo descarta al terminar, sin reutilizar objetos
+        // de otro usuario.
+        $this->app->scoped(InventoryItemFactory::class, fn (): InventoryItemFactory => new InventoryItemFactory);
+
+        $this->app->scoped(DeliveryActBuilder::class, fn ($app): DeliveryActBuilder => new DeliveryActBuilder(
+            $app->make(InventoryItemFactory::class),
+        ));
 
         // Abstract Factory: la familia de documentos por defecto es la de texto
         // plano, porque no depende de dompdf y por eso los tests y la vista
@@ -80,6 +92,15 @@ class AppServiceProvider extends ServiceProvider
         // compartir un producto entre peticiones.
         $this->app->singleton(DocumentFactoryLocator::class);
         $this->app->bind(DocumentFactory::class, TextDocumentFactory::class);
+
+        // Proxy de documentos: el contrato permite cambiar el destino de la
+        // auditoria sin que el servicio ni las pantallas lo sepan.
+        $this->app->bind(DocumentAccessLogger::class, DatabaseDocumentAccessLogger::class);
+
+        // Facade: un solo punto de entrada para las operaciones del alquiler.
+        // Singleton porque no tiene estado propio; las dependencias conservan
+        // sus ciclos de vida y la logica de negocio sigue en ellas.
+        $this->app->singleton(RentalFacade::class);
 
         // Adapter + Proxy: el dominio pregunta "es dia habil?" sin conocer la
         // fuente de festivos. En produccion el calendario consulta un Proxy que

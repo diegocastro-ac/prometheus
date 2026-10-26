@@ -6,12 +6,15 @@ use App\Enums\ActItemState;
 use App\Filament\Resources\DeliveryActResource\Pages\CreateDeliveryAct;
 use App\Filament\Resources\DeliveryActResource\Pages\ListDeliveryActs;
 use App\Models\DeliveryAct;
+use App\Models\MasterInventoryItem;
 use App\Models\Rental;
+use App\Models\Space;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Livewire\Livewire;
 use PHPUnit\Framework\Attributes\Test;
+use Tests\SeedsMasterInventoryCatalog;
 use Tests\SeedsSpaceCatalog;
 use Tests\TestCase;
 
@@ -23,6 +26,7 @@ use Tests\TestCase;
 class CreateDeliveryActTest extends TestCase
 {
     use RefreshDatabase;
+    use SeedsMasterInventoryCatalog;
     use SeedsSpaceCatalog;
 
     private User $user;
@@ -50,6 +54,7 @@ class CreateDeliveryActTest extends TestCase
         // app_settings.space_catalog, que era global y por eso se sembraba una
         // sola vez para toda la base.
         $this->seedSpaces($this->user, ['Sala', 'Cocina', 'Baño', 'Terraza']);
+        $this->seedMasterInventory($this->user, ['Refrigerador', 'Lavadora', 'Televisor']);
 
         $this->actingAs($this->user);
     }
@@ -65,6 +70,22 @@ class CreateDeliveryActTest extends TestCase
             'tenant_document' => '222',
             'occurred_at' => today()->format('Y-m-d'),
         ], $overrides);
+    }
+
+    private function spaceId(string $name): int
+    {
+        return (int) Space::query()
+            ->where('user_id', $this->user->id)
+            ->where('name', $name)
+            ->value('id');
+    }
+
+    private function masterItemId(string $name): int
+    {
+        return (int) MasterInventoryItem::query()
+            ->where('user_id', $this->user->id)
+            ->where('name', $name)
+            ->value('id');
     }
 
     #[Test]
@@ -111,9 +132,9 @@ class CreateDeliveryActTest extends TestCase
         Livewire::test(CreateDeliveryAct::class)
             ->fillForm($this->baseForm([
                 'items' => [
-                    ['space' => 'Cocina', 'name' => 'Refrigerador', 'state' => 'bueno', 'note' => '', 'photo_path' => null],
-                    ['space' => 'Cocina', 'name' => 'Lavadora', 'state' => 'reparable', 'note' => 'Gotea', 'photo_path' => null],
-                    ['space' => 'Sala', 'name' => 'Televisor', 'state' => 'nuevo', 'note' => '', 'photo_path' => null],
+                    ['space_id' => $this->spaceId('Cocina'), 'master_inventory_item_id' => $this->masterItemId('Refrigerador'), 'state' => 'bueno', 'note' => '', 'photo_path' => null],
+                    ['space_id' => $this->spaceId('Cocina'), 'master_inventory_item_id' => $this->masterItemId('Lavadora'), 'state' => 'reparable', 'note' => 'Gotea', 'photo_path' => null],
+                    ['space_id' => $this->spaceId('Sala'), 'master_inventory_item_id' => $this->masterItemId('Televisor'), 'state' => 'nuevo', 'note' => '', 'photo_path' => null],
                 ],
             ]))
             ->call('create')
@@ -124,22 +145,23 @@ class CreateDeliveryActTest extends TestCase
         $this->assertCount(3, $act->items);
         $this->assertSame(['Cocina', 'Sala'], array_keys($act->itemsBySpace()));
         $this->assertSame(ActItemState::REPARABLE, $act->items->firstWhere('name', 'Lavadora')->state);
+        $this->assertSame($this->masterItemId('Lavadora'), $act->items->firstWhere('name', 'Lavadora')->master_inventory_item_id);
     }
 
     #[Test]
-    public function un_elemento_sin_nombre_lo_rechaza_la_validacion_del_formulario(): void
+    public function un_elemento_sin_maestro_lo_rechaza_la_validacion_del_formulario(): void
     {
-        // El formulario exige el nombre, asi que una fila vacia nunca llega al
-        // Builder. El Builder igual lo valida, pero la primera linea de defensa
-        // es la pantalla.
+        // El formulario exige elegir un elemento del catalogo, asi que una fila
+        // vacia nunca llega al Builder. El Builder igual lo valida, pero la
+        // primera linea de defensa es la pantalla.
         Livewire::test(CreateDeliveryAct::class)
             ->fillForm($this->baseForm([
                 'items' => [
-                    ['space' => 'Cocina', 'name' => '', 'state' => 'bueno', 'note' => '', 'photo_path' => null],
+                    ['space_id' => $this->spaceId('Cocina'), 'master_inventory_item_id' => null, 'state' => 'bueno', 'note' => '', 'photo_path' => null],
                 ],
             ]))
             ->call('create')
-            ->assertHasFormErrors(['items.0.name']);
+            ->assertHasFormErrors(['items.0.master_inventory_item_id']);
 
         $this->assertSame(0, DeliveryAct::count());
     }
@@ -150,7 +172,24 @@ class CreateDeliveryActTest extends TestCase
         Livewire::test(CreateDeliveryAct::class)
             ->fillForm($this->baseForm([
                 'items' => [
-                    ['space' => 'Bodega', 'name' => 'Estante', 'state' => 'bueno', 'note' => '', 'photo_path' => null],
+                    ['space_id' => 999999, 'master_inventory_item_id' => $this->masterItemId('Refrigerador'), 'state' => 'bueno', 'note' => '', 'photo_path' => null],
+                ],
+            ]))
+            ->call('create')
+            ->assertNotified();
+
+        $this->assertSame(0, DeliveryAct::count());
+    }
+
+    #[Test]
+    public function un_elemento_maestro_de_otro_arrendador_muestra_el_error_del_builder(): void
+    {
+        $foreign = $this->masterInventoryItem(User::factory()->create(), 'Refrigerador');
+
+        Livewire::test(CreateDeliveryAct::class)
+            ->fillForm($this->baseForm([
+                'items' => [
+                    ['space_id' => $this->spaceId('Cocina'), 'master_inventory_item_id' => $foreign->id, 'state' => 'bueno', 'note' => '', 'photo_path' => null],
                 ],
             ]))
             ->call('create')

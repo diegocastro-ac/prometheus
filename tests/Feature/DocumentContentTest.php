@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Documents\DocumentService;
+use App\Documents\Factories\TextDocumentFactory;
 use App\Documents\Money;
 use App\Documents\MonthlyStatement;
 use App\Enums\InvoiceStatus;
@@ -19,9 +19,9 @@ use PHPUnit\Framework\Attributes\Test;
  */
 class DocumentContentTest extends DocumentTestCase
 {
-    private function documents(): DocumentService
+    private function factory(): TextDocumentFactory
     {
-        return app(DocumentService::class);
+        return app(TextDocumentFactory::class);
     }
 
     #[Test]
@@ -29,7 +29,7 @@ class DocumentContentTest extends DocumentTestCase
     {
         $invoice = $this->paidInvoice(['amount' => 800_000, 'concept' => 'rent']);
 
-        $body = $this->documents()->receiptFor($invoice, 'text')->body();
+        $body = $this->factory()->paymentReceipt($invoice)->body();
 
         $this->assertSame(__('document.payment_receipt'), $body->title);
         $this->assertSame($invoice->number, $body->fields[__('document.invoice_number')]);
@@ -71,7 +71,7 @@ class DocumentContentTest extends DocumentTestCase
 
         $this->assertSame(InvoiceStatus::PAGADA, $invoice->status);
 
-        $rows = $this->documents()->receiptFor($invoice->refresh(), 'text')->body()->rows;
+        $rows = $this->factory()->paymentReceipt($invoice->refresh())->body()->rows;
 
         $this->assertCount(2, $rows);
         $this->assertStringContainsString('600.000', $rows[0][1]);
@@ -86,7 +86,7 @@ class DocumentContentTest extends DocumentTestCase
         // El metodo se guarda como clave: en el documento debe salir la etiqueta.
         $invoice->payments()->update(['method' => 'consignacion']);
 
-        $rows = $this->documents()->receiptFor($invoice->refresh(), 'text')->body()->rows;
+        $rows = $this->factory()->paymentReceipt($invoice->refresh())->body()->rows;
 
         $this->assertSame(__('invoice.methods.consignacion'), $rows[0][2]);
     }
@@ -94,7 +94,7 @@ class DocumentContentTest extends DocumentTestCase
     #[Test]
     public function el_comprobante_avisa_que_no_sustituye_la_factura_electronica(): void
     {
-        $body = $this->documents()->receiptFor($this->paidInvoice(), 'text')->body();
+        $body = $this->factory()->paymentReceipt($this->paidInvoice())->body();
 
         $this->assertNotEmpty($body->notes);
         $this->assertStringContainsString(
@@ -116,7 +116,7 @@ class DocumentContentTest extends DocumentTestCase
             'method' => 'efectivo',
         ]);
 
-        $body = $this->documents()->invoiceFor($invoice->refresh(), 'text')->body();
+        $body = $this->factory()->rentInvoice($invoice->refresh())->body();
 
         $this->assertSame(__('document.invoice'), $body->title);
         $this->assertSame(Money::exact(1_000_000), $body->fields[__('document.total_due')]);
@@ -127,7 +127,7 @@ class DocumentContentTest extends DocumentTestCase
     #[Test]
     public function la_factura_lleva_el_aviso_de_que_no_es_factura_dian(): void
     {
-        $body = $this->documents()->invoiceFor($this->issuedInvoice(), 'text')->body();
+        $body = $this->factory()->rentInvoice($this->issuedInvoice())->body();
 
         $this->assertContains(__('invoice.descriptions.legal'), $body->notes);
     }
@@ -137,11 +137,7 @@ class DocumentContentTest extends DocumentTestCase
     {
         $invoices = $this->invoiceForPeriod('2026-01');
 
-        $statement = $this->documents()->statementFor(
-            rental: $invoices[0]->rental,
-            period: '2026-01',
-            format: 'text',
-        );
+        $statement = $this->factory()->monthlyStatement('2026-01', $invoices);
 
         $billed = array_sum(array_map(fn (Invoice $invoice): float => $invoice->amount, $invoices));
 
@@ -175,11 +171,7 @@ class DocumentContentTest extends DocumentTestCase
             'method' => 'efectivo',
         ]);
 
-        $statement = $this->documents()->statementFor(
-            rental: $invoices[0]->rental,
-            period: '2026-02',
-            format: 'text',
-        );
+        $statement = $this->factory()->monthlyStatement('2026-02', $invoices);
 
         $this->assertSame(Money::exact(100_000), $statement->body()->fields[__('document.total_paid')]);
 
@@ -205,11 +197,7 @@ class DocumentContentTest extends DocumentTestCase
             'period' => '2026-04',
         ]);
 
-        $statement = $this->documents()->statementFor(
-            rental: $invoices[0]->rental,
-            period: '2026-03',
-            format: 'text',
-        );
+        $statement = $this->factory()->monthlyStatement('2026-03', $invoices);
 
         $this->assertCount(count($invoices), $statement->invoices());
         $this->assertSame('2026-03', $statement->period());
@@ -220,11 +208,7 @@ class DocumentContentTest extends DocumentTestCase
     {
         $invoices = $this->invoiceForPeriod('2026-05');
 
-        $statement = $this->documents()->statementFor(
-            rental: $invoices[0]->rental,
-            period: '2026-06',
-            format: 'text',
-        );
+        $statement = $this->factory()->monthlyStatement('2026-06', []);
 
         // No debe fallar ni inventar cifras: un estado de cuenta vacio es la
         // respuesta correcta a "no me deben nada".
@@ -245,7 +229,7 @@ class DocumentContentTest extends DocumentTestCase
             'legal_cap_rent' => 1_092_800,
         ]);
 
-        $body = $this->documents()->adjustmentLetterFor($adjustment, 'text')->body();
+        $body = $this->factory()->adjustmentLetter($adjustment)->body();
 
         $this->assertSame(__('document.adjustment_letter'), $body->title);
         $this->assertStringContainsString('9,28', $body->fields[__('document.ipc_applied')]);
@@ -264,7 +248,7 @@ class DocumentContentTest extends DocumentTestCase
     {
         $adjustment = RentAdjustment::factory()->withinCap()->create();
 
-        $body = $this->documents()->adjustmentLetterFor($adjustment, 'text')->body();
+        $body = $this->factory()->adjustmentLetter($adjustment)->body();
 
         $this->assertSame([], $body->warnings);
     }
@@ -278,7 +262,7 @@ class DocumentContentTest extends DocumentTestCase
             'new_rent' => 1_292_800,
         ]);
 
-        $body = $this->documents()->adjustmentLetterFor($adjustment, 'text')->body();
+        $body = $this->factory()->adjustmentLetter($adjustment)->body();
 
         // El aviso no es decorativo: debe decir cuanto se pasa y cual es el
         // canon que queda vigente si no hay acuerdo escrito.
@@ -300,12 +284,12 @@ class DocumentContentTest extends DocumentTestCase
 
         $this->assertStringNotContainsString(
             'Comunicada el',
-            implode(' ', $this->documents()->adjustmentLetterFor($pending, 'text')->body()->notes),
+            implode(' ', $this->factory()->adjustmentLetter($pending)->body()->notes),
         );
 
         $this->assertStringContainsString(
             'Comunicada el',
-            implode(' ', $this->documents()->adjustmentLetterFor($notified, 'text')->body()->notes),
+            implode(' ', $this->factory()->adjustmentLetter($notified)->body()->notes),
         );
     }
 }

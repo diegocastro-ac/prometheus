@@ -6,7 +6,7 @@ use App\Enums\IpcBasis;
 use App\Filament\Resources\RentAdjustmentResource;
 use App\Models\RentAdjustment;
 use App\Models\Rental;
-use App\Services\RentAdjustmentService;
+use App\Services\RentalFacade;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Database\Eloquent\Model;
@@ -46,7 +46,7 @@ class CreateRentAdjustment extends CreateRecord
         $pactado = $data['pactado_pct'] ?? null;
 
         try {
-            $this->adjustment = app(RentAdjustmentService::class)->record(
+            $this->adjustment = app(RentalFacade::class)->recordAdjustment(
                 rental: $rental,
                 newRent: (float) $data['new_rent'],
                 effectiveFrom: \Illuminate\Support\Carbon::parse($data['effective_from']),

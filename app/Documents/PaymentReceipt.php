@@ -31,9 +31,11 @@ class PaymentReceipt extends AbstractDocument
     }
 
     /**
+     * Valida la regla antes de que el Proxy difiera la construccion.
+     *
      * @throws DomainException si la factura no esta pagada
      */
-    public static function forInvoice(Invoice $invoice, DocumentRenderer $renderer): self
+    public static function ensureInvoiceIsPaid(Invoice $invoice): void
     {
         if ($invoice->status !== InvoiceStatus::PAGADA) {
             throw new DomainException(
@@ -41,6 +43,14 @@ class PaymentReceipt extends AbstractDocument
                 .'. El comprobante solo existe para facturas pagadas.'
             );
         }
+    }
+
+    /**
+     * @throws DomainException si la factura no esta pagada
+     */
+    public static function forInvoice(Invoice $invoice, DocumentRenderer $renderer): self
+    {
+        self::ensureInvoiceIsPaid($invoice);
 
         $document = new self(
             body: self::buildBody($invoice),
@@ -68,18 +78,18 @@ class PaymentReceipt extends AbstractDocument
     private static function buildBody(Invoice $invoice): DocumentBody
     {
         // Cargar relaciones para evitar N+1
-        $invoice->load(['rental', 'user', 'payments' => fn($q) => $q->orderBy('date')->orderBy('id')]);
+        $invoice->load(['rental', 'user', 'payments' => fn ($q) => $q->orderBy('date')->orderBy('id')]);
 
         // Obtener la imagen del comprobante del último pago
         $receiptImage = null;
         $lastPayment = $invoice->payments->last();
         if ($lastPayment && $lastPayment->receipt_image) {
-            $imagePath = public_path('storage/' . $lastPayment->receipt_image);
+            $imagePath = public_path('storage/'.$lastPayment->receipt_image);
             if (file_exists($imagePath)) {
                 // Convertir a data URI (base64)
                 $imageData = base64_encode(file_get_contents($imagePath));
                 $mimeType = mime_content_type($imagePath);
-                $receiptImage = 'data:' . $mimeType . ';base64,' . $imageData;
+                $receiptImage = 'data:'.$mimeType.';base64,'.$imageData;
             }
         }
 

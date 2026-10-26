@@ -6,6 +6,8 @@ use App\Enums\ActItemState;
 use App\Models\DeliveryAct;
 use App\Models\Rental;
 use App\Models\Space;
+use App\Services\InventoryItemFactory;
+use Illuminate\Support\Collection;
 use RuntimeException;
 
 /**
@@ -36,15 +38,17 @@ class DeliveryActBuilder
 
     private bool $inventoryRequested = false;
 
-    /*
-    | Sin dependencias inyectadas.
-    |
-    | Antes recibía AppSettings, el único uso que tenía era leer el catálogo de
-    | espacios. Con el catálogo en `spaces` ya no necesita nada del contenedor: el
-    | constructor vacío es la señal de que el Builder no depende del contexto, que
-    | es lo que hace que una prueba pueda ejercitarlo sin montar la aplicación.
-    */
-    public function __construct() {}
+    private InventoryItemFactory $inventoryItems;
+
+    /**
+     * El pool de flyweights es opcional para que una prueba pueda construir el
+     * Builder sin contenedor. En la aplicacion se inyecta la instancia scoped,
+     * que es la que comparte el catalogo durante toda la peticion.
+     */
+    public function __construct(?InventoryItemFactory $inventoryItems = null)
+    {
+        $this->inventoryItems = $inventoryItems ?? app(InventoryItemFactory::class);
+    }
 
     /**
      * Datos obligatorios: el alquiler y la fecha de la visita. El Builder los
@@ -114,7 +118,16 @@ class DeliveryActBuilder
      * cada uno tiene el suyo), y la palabra "ajustes" era el lugar equivocado
      * (un ajuste global no puede ser la fuente de verdad de un dato por usuario).
      *
-     * @param  list<array{space: string, name: string, state?: string, note?: string|null, photo_path?: string|null}>  $items
+     * Acepta `space_id`, que es la referencia que usa el formulario, y tambien
+     * el nombre `space` de las actas y llamadas antiguas. En ambos casos el
+     * espacio tiene que pertenecer al arrendador del acta.
+     *
+     * Para el elemento pasa igual: el formulario manda
+     * `master_inventory_item_id`; el nombre suelto se conserva para las actas y
+     * llamadas antiguas y se resuelve o crea en el catalogo maestro. El nombre
+     * que se guarda en la fila es siempre el snapshot del flyweight resuelto.
+     *
+     * @param  list<array{space_id?: int|string|null, space?: string|null, master_inventory_item_id?: int|string|null, name?: string|null, state?: string, note?: string|null, photo_path?: string|null}>  $items
      *
      * @throws RuntimeException
      */
@@ -123,22 +136,40 @@ class DeliveryActBuilder
         $this->inventoryRequested = true;
         $this->items = [];
 
+        $ownerId = $this->catalogOwnerId();
+        $catalog = $this->catalogFor($ownerId);
+
+        if ($catalog->isEmpty()) {
+            throw new RuntimeException(__('act.errors.no_spaces'));
+        }
+
         foreach ($items as $item) {
-            $space = trim((string) ($item['space'] ?? ''));
+            $spaceName = trim((string) ($item['space'] ?? ''));
+            $spaceId = $this->blankToNull($item['space_id'] ?? null);
+            $masterItemId = $this->blankToNull($item['master_inventory_item_id'] ?? null);
             $name = trim((string) ($item['name'] ?? ''));
 
-            if ($space === '' || $name === '') {
-                throw new RuntimeException('Cada elemento del inventario necesita un espacio y un nombre.');
+            if ($spaceId === null && $spaceName === '') {
+                throw new RuntimeException(__('act.errors.inventory_item_required'));
             }
 
-            $this->assertSpaceIsCatalogued($space, $this->catalogOwnerId());
+            if ($masterItemId === null && $name === '') {
+                throw new RuntimeException(__('act.errors.inventory_item_required'));
+            }
+
+            $space = $this->resolveSpace($catalog, $spaceId, $spaceName);
+            $flyweight = $this->inventoryItems->resolve($ownerId, $masterItemId, $name);
 
             $state = ActItemState::tryFrom((string) ($item['state'] ?? ActItemState::BUENO->value))
                 ?? ActItemState::BUENO;
 
             $this->items[] = [
-                'space' => $space,
-                'name' => $name,
+                'master_inventory_item_id' => $flyweight->id(),
+                'space_id' => $space->id,
+                // Los nombres son snapshots: una comparacion futura no cambia
+                // porque alguien renombre el catalogo de espacios o elementos.
+                'space' => $space->name,
+                'name' => $flyweight->name(),
                 'state' => $state,
                 'note' => $item['note'] ?? null,
                 'photo_path' => $item['photo_path'] ?? null,
@@ -188,27 +219,10 @@ class DeliveryActBuilder
         $act->save();
 
         if ($this->inventoryRequested && $this->items !== []) {
-            // El catálogo de espacios es POR ARRENDADOR, asi que se resuelve con
-            // el dueño del acta y no con quien este autenticado en este momento.
-            //
-            // Son la misma persona en el uso normal de la pantalla, pero no en una
-            // prueba, ni en un comando de consola, ni en un trabajo en cola. Con
-            // auth()->id() el acta se guardaba con espacios de null, que es
-            // exactamente el dato que despues no se puede recuperar.
-            $ownerId = (int) $act->user_id;
-
-            $itemsWithSpaceId = array_map(function (array $item) use ($ownerId): array {
-                $space = Space::query()
-                    ->where('user_id', $ownerId)
-                    ->where('name', $item['space'])
-                    ->first();
-
-                $item['space_id'] = $space?->id;
-
-                return $item;
-            }, $this->items);
-
-            $act->items()->createMany($itemsWithSpaceId);
+            // Los espacios ya se resolvieron contra el catalogo del dueno del
+            // acta en withInventory(). Guardar aqui no debe volver a buscarlos
+            // por nombre: dos ramas del arbol pueden tener el mismo nombre.
+            $act->items()->createMany($this->items);
         }
 
         return $act->load('items');
@@ -241,48 +255,74 @@ class DeliveryActBuilder
         return (int) auth()->id();
     }
 
-    /**
-     * Comprueba que el espacio exista en el catálogo del arrendador.
-     *
-     * ANTES este metodo CREABA el espacio si no existia. Eso era un error con dos
-     * caras: por un lado llenaba el catalogo de basura con cada palabra mal
-     * escrita, y por otro lo hacia sin dueno cuando no habia sesion, que es lo
-     * que reventaba la columna user_id.
-     *
-     * El catálogo es vocabulario del arrendador, no un registro que se
-     * improvise. Si "Bodega" no esta en el catalogo, el dato correcto es avisar:
-     * puede ser que el espacio se llame de otra forma, y una acta con espacios
-     * inventados no sirve para comparar el estado de entrega con un inventario
-     * posterior.
-     *
-     * Ahora el aviso dice CREAR el espacio, no "agregalo en Ajustes": el
-     * formulario del inventario tiene un boton para eso, y enviar al usuario a
-     * otra pantalla a(configurar un dato que necesita ahora es la razon por la
-     * que antes no lo hacia.
-     *
-     * @param  int  $ownerId  el arrendador dueno del catalogo.
-     */
-    private function assertSpaceIsCatalogued(string $space, int $ownerId): void
+    private function catalogFor(int $ownerId): Collection
     {
-        $catalog = Space::query()
+        return Space::query()
             ->where('user_id', $ownerId)
             ->orderBy('name')
-            ->pluck('name');
+            ->get();
+    }
 
-        if ($catalog->isEmpty()) {
-            throw new RuntimeException(__('act.errors.no_spaces'));
+    /**
+     * Resuelve la referencia nueva (`space_id`) o la antigua (nombre).
+     *
+     * El formulario manda el id, que no se confunde aunque dos ramas del arbol
+     * tengan un espacio con el mismo nombre. El nombre se conserva para las
+     * actas y pruebas que llaman al Builder sin pasar por la pantalla.
+     *
+     * @param  Collection<int, Space>  $catalog
+     */
+    private function resolveSpace(Collection $catalog, mixed $spaceId, string $spaceName): Space
+    {
+        if ($spaceId !== null) {
+            $space = $catalog->first(
+                fn (Space $candidate): bool => (string) $candidate->getKey() === (string) $spaceId,
+            );
+
+            if ($space instanceof Space) {
+                return $space;
+            }
+
+            $this->throwSpaceNotInCatalog($spaceName !== '' ? $spaceName : '#'.$spaceId, $catalog);
         }
 
-        $normalised = array_map(
-            static fn (string $entry): string => mb_strtolower(trim($entry)),
-            $catalog->all(),
-        );
+        $normalised = mb_strtolower(trim($spaceName));
 
-        if (! in_array(mb_strtolower($space), $normalised, true)) {
-            throw new RuntimeException(__('act.errors.space_not_in_catalog', [
-                'space' => $space,
-                'catalog' => implode(', ', $catalog->all()),
-            ]));
+        $space = $catalog
+            ->filter(fn (Space $candidate): bool => mb_strtolower(trim($candidate->name)) === $normalised)
+            ->sortBy(fn (Space $candidate): string => $candidate->path())
+            ->first();
+
+        if ($space instanceof Space) {
+            return $space;
         }
+
+        $this->throwSpaceNotInCatalog($spaceName, $catalog);
+    }
+
+    /**
+     * @param  Collection<int, Space>  $catalog
+     */
+    private function throwSpaceNotInCatalog(string $space, Collection $catalog): never
+    {
+        $paths = $catalog
+            ->map(fn (Space $candidate): string => $candidate->path())
+            ->sort()
+            ->values()
+            ->all();
+
+        throw new RuntimeException(__('act.errors.space_not_in_catalog', [
+            'space' => $space,
+            'catalog' => implode(', ', $paths),
+        ]));
+    }
+
+    private function blankToNull(mixed $value): mixed
+    {
+        if ($value === null || $value === '' || $value === []) {
+            return null;
+        }
+
+        return $value;
     }
 }

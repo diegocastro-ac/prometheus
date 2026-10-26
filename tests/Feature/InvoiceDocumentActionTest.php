@@ -97,7 +97,7 @@ class InvoiceDocumentActionTest extends DocumentTestCase
 
         $statement = app(DocumentService::class)->statementFor($rental, '2026-07', 'text');
 
-        $this->assertSame([], $statement->invoices());
+        $this->assertTrue($statement->isEmpty());
     }
 
     #[Test]
@@ -111,8 +111,9 @@ class InvoiceDocumentActionTest extends DocumentTestCase
         ]);
 
         $document = app(DocumentService::class)->adjustmentLetterFor($exceeding, 'text');
+        $content = $document->content();
 
-        $this->assertCount(1, $document->body()->warnings);
+        $this->assertStringContainsString(__('document.warning_prefix'), $content);
     }
 
     #[Test]

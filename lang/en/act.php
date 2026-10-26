@@ -26,8 +26,13 @@ return [
         'signatures' => 'Signatures',
     ],
 
+    'inventory_tree' => [
+        'items' => ':count item|:count items',
+        'empty' => 'This act has no registered inventory.',
+    ],
+
     'descriptions' => [
-        'inventory' => 'Group items by space. You can create new spaces by typing.',
+        'inventory' => 'Group items by space. Spaces can have subspaces and are shown with their full path; items are chosen from the landlord\'s master catalogue.',
         'commitments' => 'If there are no commitments, leave the section blank. It will not be printed.',
         'readings' => 'Only fill in the meters that were read during the visit.',
     ],
@@ -50,9 +55,16 @@ return [
         'space_placeholder' => 'Select or create a space',
         'space_new' => 'Name of the new space',
         'space_new_help' => 'It is added to your catalogue and stays available for future inventories.',
-        'space_edit' => 'Rename space',
+        'space_edit' => 'Edit space',
         'space_name' => 'Space name',
+        'space_parent' => 'Parent space',
+        'space_parent_none' => 'No parent (root)',
         'item_name' => 'Item name',
+        'item_master' => 'Item',
+        'item_master_placeholder' => 'Select or create an item',
+        'item_master_new' => 'Name of the new item',
+        'item_master_new_help' => 'It is added to your catalogue and stays available for future inventories.',
+        'item_master_edit' => 'Edit item',
         'item_state' => 'Item state',
         'item_note' => 'Note',
         'item_photo' => 'Photo',
@@ -84,11 +96,13 @@ return [
 
     'actions' => [
         'derive' => 'Create from this',
+        'inventory_tree' => 'View inventory tree',
     ],
 
     'buttons' => [
         'create' => 'Create act',
         'save' => 'Save',
+        'close' => 'Close',
     ],
 
     'created' => 'Act created',
@@ -100,5 +114,12 @@ return [
     'errors' => [
         'no_spaces' => 'Your catalogue has no spaces yet. Use the create button next to the field to add the first one.',
         'space_not_in_catalog' => 'The space ":space" is not in your catalogue. You may use one of the existing ones (:catalog) or create this one with the adjacent button.',
+        'space_duplicate' => 'A space with that name already exists at the same level.',
+        'invalid_space_parent' => 'The parent space is invalid or would create a cycle in the tree.',
+        'inventory_item_required' => 'Each inventory item needs a space and a catalogue item.',
+        'master_item_name_required' => 'The inventory item needs a name.',
+        'master_item_duplicate' => 'An item with that name already exists in your catalogue.',
+        'master_item_not_in_catalog' => 'The item ":item" is not in this landlord\'s catalogue. You may choose one of the existing ones (:catalog) or create this one with the adjacent button.',
+        'master_catalog_empty' => 'empty catalogue',
     ],
 ];

@@ -125,15 +125,20 @@ class CreateDeliveryAct extends CreateRecord
             $builder = $builder->withMeterReadings($readings);
         }
 
-        // Seccion de inventario: solo si hay elementos con nombre.
+        // Seccion de inventario: solo si hay elementos con referencia de
+        // catalogo o, por compatibilidad, con un nombre suelto.
         $items = array_values(array_filter(
             (array) ($data['items'] ?? []),
-            fn (array $item): bool => trim((string) ($item['name'] ?? '')) !== '',
+            fn (array $item): bool => $this->blankToNull($item['master_inventory_item_id'] ?? null) !== null
+                || trim((string) ($item['name'] ?? '')) !== '',
         ));
 
         if ($items !== []) {
             $builder = $builder->withInventory(array_map(fn (array $item): array => [
-                'space' => $item['space'] ?? '',
+                'space_id' => $item['space_id'] ?? null,
+                // Compatibilidad con formularios o llamadas antiguas.
+                'space' => $item['space'] ?? null,
+                'master_inventory_item_id' => $item['master_inventory_item_id'] ?? null,
                 'name' => $item['name'] ?? '',
                 'state' => $this->blankToNull($item['state'] ?? null) ?? ActItemState::BUENO->value,
                 'note' => $this->blankToNull($item['note'] ?? null),

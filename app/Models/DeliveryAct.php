@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Contracts\Prototype;
+use App\Services\Acts\SpaceTreeBuilder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -68,10 +69,42 @@ class DeliveryAct extends Model implements Prototype
     public function itemsBySpace(): array
     {
         return $this->items
-            ->load('space')
-            ->sortBy(fn ($item) => $item->space?->name ?? $item->space)
-            ->groupBy(fn ($item) => $item->space?->name ?? $item->space)
+            ->load('spaceNode')
+            ->sortBy(fn (ActItem $item): string => $item->spaceNode?->name ?? (string) $item->space)
+            ->groupBy(fn (ActItem $item): string => $item->spaceNode?->name ?? (string) $item->space)
             ->all();
+    }
+
+    /**
+     * El inventario agrupado por la ruta completa del espacio.
+     *
+     * Dos espacios pueden llamarse igual en ramas distintas; la ruta es la que
+     * los distingue. Si el espacio fue borrado, se conserva el nombre guardado
+     * como snapshot.
+     *
+     * @return array<string, list<ActItem>>
+     */
+    public function itemsBySpacePath(): array
+    {
+        return $this->items
+            ->load('spaceNode')
+            ->sortBy(fn (ActItem $item): string => $item->spaceNode?->path() ?? (string) $item->space)
+            ->groupBy(fn (ActItem $item): string => $item->spaceNode?->path() ?? (string) $item->space)
+            ->all();
+    }
+
+    /**
+     * El arbol que consume la vista del acta. Las hojas y los compuestos se
+     * recorren con la misma interfaz.
+     *
+     * @return list<\App\Models\SpaceComponent>
+     */
+    public function inventoryTree(): array
+    {
+        return app(SpaceTreeBuilder::class)->forUser(
+            (int) $this->user_id,
+            $this->items->load('spaceNode'),
+        );
     }
 
     /**

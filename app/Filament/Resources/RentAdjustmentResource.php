@@ -4,7 +4,6 @@ namespace App\Filament\Resources;
 
 use App\Contracts\CurrentUserContextInterface;
 use App\Documents\Contracts\Document;
-use App\Documents\DocumentService;
 use App\Enums\IpcBasis;
 use App\Enums\NotificationMethod;
 use App\Filament\Resources\RentAdjustmentResource\Pages;
@@ -14,9 +13,8 @@ use App\Filament\Support\DocumentAction;
 use App\Filament\Support\LegalChecksPanel;
 use App\Models\RentAdjustment;
 use App\Models\Rental;
-use App\Services\Adjustment\AdjustmentChainCalculator;
 use App\Services\Ipc\IpcSeriesRepository;
-use App\Services\RentAdjustmentService;
+use App\Services\RentalFacade;
 use App\Settings\AppSettings;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -535,9 +533,9 @@ class RentAdjustmentResource extends Resource
     {
         $legal = $rental->nextAdjustmentDueDate();
 
-        $proposer = app(\App\Services\Adjustment\AdjustmentDateProposer::class);
+        $proposer = app(RentalFacade::class);
 
-        return max($proposer->suggestedDate($legal), today())->startOfDay();
+        return max($proposer->suggestedAdjustmentDate($legal), today())->startOfDay();
     }
 
     /*
@@ -683,14 +681,14 @@ class RentAdjustmentResource extends Resource
         }
 
         $legal = $rental->nextAdjustmentDueDate();
-        $proposer = app(\App\Services\Adjustment\AdjustmentDateProposer::class);
-        $suggested = $proposer->suggestedDate($legal);
+        $proposer = app(RentalFacade::class);
+        $suggested = $proposer->suggestedAdjustmentDate($legal);
 
         $base = $legal->lessThanOrEqualTo(today())
             ? __('rent_adjustment.form.effective_from_overdue', ['date' => $legal->format('d/m/Y')])
             : __('rent_adjustment.form.effective_from_help');
 
-        $businessDay = $proposer->explanation($legal, $suggested);
+        $businessDay = $proposer->adjustmentDateExplanation($legal, $suggested);
 
         return $businessDay === '' ? $base : $base.' '.$businessDay;
     }
@@ -774,7 +772,7 @@ class RentAdjustmentResource extends Resource
         $pactado = $get('pactado_pct');
 
         return AdjustmentCalculation::make(
-            currentRent: app(AdjustmentChainCalculator::class)->currentRentFor($rental),
+            currentRent: app(RentalFacade::class)->currentRentFor($rental),
             percentage: $snapshot->percentage,
             year: $snapshot->year,
             geographyName: $snapshot->geographyName,
@@ -820,7 +818,7 @@ class RentAdjustmentResource extends Resource
             return;
         }
 
-        $previous = app(AdjustmentChainCalculator::class)->currentRentFor($rental);
+        $previous = app(RentalFacade::class)->currentRentFor($rental);
 
         $set('new_rent', $snapshot->applyTo($previous));
     }
@@ -852,7 +850,7 @@ class RentAdjustmentResource extends Resource
         $ipcYear = $get('ipc_year');
 
         try {
-            return app(RentAdjustmentService::class)->previewIpc(
+            return app(RentalFacade::class)->previewAdjustmentIpc(
                 rental: new Rental(['start_date' => today(), 'monthly_amount' => 1]),
                 effectiveFrom: $effectiveFrom,
                 basis: $basis,
@@ -904,7 +902,7 @@ class RentAdjustmentResource extends Resource
         $pactado = $get('pactado_pct');
         $newRent = $get('new_rent');
 
-        $result = app(RentAdjustmentService::class)->validate(
+        $result = app(RentalFacade::class)->validateAdjustment(
             rental: $rental,
             effectiveFrom: \Carbon\Carbon::parse($effectiveFrom),
             requestedRent: $newRent === null || $newRent === '' ? 0.0 : (float) $newRent,
@@ -1305,21 +1303,21 @@ class RentAdjustmentResource extends Resource
             DocumentAction::pdf(
                 name: 'letter_pdf',
                 label: __('rent_adjustment.buttons.letter'),
-                builder: fn (RentAdjustment $record, string $format): Document => app(DocumentService::class)
+                builder: fn (RentAdjustment $record, string $format): Document => app(RentalFacade::class)
                     ->adjustmentLetterFor($record, $format),
             ),
 
             DocumentAction::text(
                 name: 'letter_text',
                 label: __('invoice.buttons.copy_document_text'),
-                builder: fn (RentAdjustment $record, string $format): Document => app(DocumentService::class)
+                builder: fn (RentAdjustment $record, string $format): Document => app(RentalFacade::class)
                     ->adjustmentLetterFor($record, $format),
             ),
 
             DocumentAction::file(
                 name: 'letter_json',
                 label: __('rent_adjustment.buttons.letter').' · JSON',
-                builder: fn (RentAdjustment $record, string $format): Document => app(DocumentService::class)
+                builder: fn (RentAdjustment $record, string $format): Document => app(RentalFacade::class)
                     ->adjustmentLetterFor($record, $format),
             ),
         ];
@@ -1344,7 +1342,7 @@ class RentAdjustmentResource extends Resource
             ->visible(fn (RentAdjustment $record): bool => $record->state()->canApply())
             ->action(function (RentAdjustment $record): void {
                 try {
-                    app(RentAdjustmentService::class)->applyToRental($record);
+                    app(RentalFacade::class)->applyAdjustment($record);
                 } catch (RuntimeException $exception) {
                     Notification::make()
                         ->warning()
@@ -1392,7 +1390,7 @@ class RentAdjustmentResource extends Resource
             ])
             ->action(function (RentAdjustment $record, array $data): void {
                 try {
-                    app(RentAdjustmentService::class)->markNotified(
+                    app(RentalFacade::class)->markAdjustmentNotified(
                         $record,
                         \Carbon\Carbon::parse($data['notified_on']),
                         NotificationMethod::from($data['notification_method']),
@@ -1425,7 +1423,7 @@ class RentAdjustmentResource extends Resource
             ->color('gray')
             ->requiresConfirmation()
             ->action(function (RentAdjustment $record): void {
-                $result = app(RentAdjustmentService::class)->recalculateChain($record->rental);
+                $result = app(RentalFacade::class)->recalculateAdjustmentChain($record->rental);
 
                 Notification::make()
                     ->success()

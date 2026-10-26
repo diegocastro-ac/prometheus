@@ -7,13 +7,16 @@ use App\Filament\Resources\DeliveryActResource\Pages\CreateDeliveryAct;
 use App\Filament\Resources\DeliveryActResource\Pages\ListDeliveryActs;
 use App\Models\ActItem;
 use App\Models\DeliveryAct;
+use App\Models\MasterInventoryItem;
 use App\Models\Rental;
+use App\Models\Space;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Livewire;
 use PHPUnit\Framework\Attributes\Test;
+use Tests\SeedsMasterInventoryCatalog;
 use Tests\SeedsSpaceCatalog;
 use Tests\TestCase;
 
@@ -27,6 +30,7 @@ use Tests\TestCase;
 class CreateDeliveryActFromTest extends TestCase
 {
     use RefreshDatabase;
+    use SeedsMasterInventoryCatalog;
     use SeedsSpaceCatalog;
 
     private User $user;
@@ -52,8 +56,25 @@ class CreateDeliveryActFromTest extends TestCase
 
         // El catálogo es por usuario desde que vive en spaces.
         $this->seedSpaces($this->user, ['Sala', 'Cocina', 'Baño', 'Terraza']);
+        $this->seedMasterInventory($this->user, ['Refrigerador', 'Televisor']);
 
         $this->actingAs($this->user);
+    }
+
+    private function spaceId(string $name): int
+    {
+        return (int) Space::query()
+            ->where('user_id', $this->user->id)
+            ->where('name', $name)
+            ->value('id');
+    }
+
+    private function masterItemId(string $name): int
+    {
+        return (int) MasterInventoryItem::query()
+            ->where('user_id', $this->user->id)
+            ->where('name', $name)
+            ->value('id');
     }
 
     /**
@@ -74,7 +95,9 @@ class CreateDeliveryActFromTest extends TestCase
 
         ActItem::factory()->create([
             'delivery_act_id' => $act->id,
+            'space_id' => $this->spaceId('Cocina'),
             'space' => 'Cocina',
+            'master_inventory_item_id' => $this->masterItemId('Refrigerador'),
             'name' => 'Refrigerador',
             'state' => ActItemState::REPARABLE,
             'note' => 'Gotea',
@@ -83,7 +106,9 @@ class CreateDeliveryActFromTest extends TestCase
 
         ActItem::factory()->create([
             'delivery_act_id' => $act->id,
+            'space_id' => $this->spaceId('Sala'),
             'space' => 'Sala',
+            'master_inventory_item_id' => $this->masterItemId('Televisor'),
             'name' => 'Televisor',
             'state' => ActItemState::NUEVO,
             'note' => null,
@@ -140,10 +165,12 @@ class CreateDeliveryActFromTest extends TestCase
         $items = collect(array_values($component->get('data.items')));
 
         $this->assertCount(2, $items);
-        $this->assertSame('Cocina', $items->firstWhere('name', 'Refrigerador')['space']);
+        $this->assertSame($this->spaceId('Cocina'), $items->firstWhere('name', 'Refrigerador')['space_id']);
+        $this->assertSame($this->masterItemId('Refrigerador'), $items->firstWhere('name', 'Refrigerador')['master_inventory_item_id']);
         $this->assertSame('reparable', $items->firstWhere('name', 'Refrigerador')['state']);
         $this->assertSame('Gotea', $items->firstWhere('name', 'Refrigerador')['note']);
-        $this->assertSame('Sala', $items->firstWhere('name', 'Televisor')['space']);
+        $this->assertSame($this->spaceId('Sala'), $items->firstWhere('name', 'Televisor')['space_id']);
+        $this->assertSame($this->masterItemId('Televisor'), $items->firstWhere('name', 'Televisor')['master_inventory_item_id']);
     }
 
     #[Test]
@@ -231,6 +258,10 @@ class CreateDeliveryActFromTest extends TestCase
         $this->assertSame('recepcion', $new->type);
         $this->assertSame(today()->toDateString(), $new->occurred_at->toDateString());
         $this->assertCount(2, $new->items);
+        $this->assertSame(
+            $this->masterItemId('Refrigerador'),
+            $new->items->firstWhere('name', 'Refrigerador')->master_inventory_item_id,
+        );
 
         // El original no se modifica ni se duplican sus filas.
         $original = $act->load('items');

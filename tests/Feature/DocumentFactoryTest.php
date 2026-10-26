@@ -2,13 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Documents\Contracts\Document;
 use App\Documents\DocumentFactoryLocator;
 use App\Documents\DocumentService;
 use App\Documents\Factories\DocumentFactory;
 use App\Documents\Factories\JsonDocumentFactory;
 use App\Documents\Factories\PdfDocumentFactory;
 use App\Documents\Factories\TextDocumentFactory;
-use App\Documents\PaymentReceipt;
 use App\Enums\InvoiceStatus;
 use App\Models\RentAdjustment;
 use DomainException;
@@ -175,8 +175,8 @@ class DocumentFactoryTest extends DocumentTestCase
     {
         $service = app(DocumentService::class);
 
-        $this->assertInstanceOf(PaymentReceipt::class, $service->receiptFor($this->paidInvoice(), 'text'));
-        $this->assertInstanceOf(PaymentReceipt::class, $service->receiptFor($this->paidInvoice(), 'pdf'));
+        $this->assertInstanceOf(Document::class, $service->receiptFor($this->paidInvoice(), 'text'));
+        $this->assertInstanceOf(Document::class, $service->receiptFor($this->paidInvoice(), 'pdf'));
     }
 
     #[Test]

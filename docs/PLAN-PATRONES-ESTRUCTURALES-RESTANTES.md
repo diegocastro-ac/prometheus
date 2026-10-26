@@ -5,14 +5,18 @@
 > Alcance: implementar los patrones estructurales que faltan, **excepto Adapter y Bridge**.
 > Eso deja: **Composite, Decorator, Facade, Flyweight y Proxy**.
 >
-> La **Fase 7 (documentación e integración final)** la está ejecutando otro agente. Este plan no la duplica; solo deja los insumos que esa fase necesita.
+> La **Fase 7 (documentación e integración final)** también está cerrada. El plan completo se conserva como registro de ejecución; el estado final por patrón vive en `docs/PLAN-IMPLEMENTACION-5-PATRONES-GOF.md` y en los documentos individuales.
 
 ## Estado de ejecución
 
 - Fase 0: **completada** (2026-10-25).
 - Fase 1: **completada** (2026-10-25).
-- Fases 2 a 6: pendientes.
-- Fase 7: delegada a otro agente.
+- Fase 2: **completada** (2026-10-25).
+- Fase 3: **completada** (2026-10-25).
+- Fase 4: **completada** (2026-10-25).
+- Fase 5: **completada** (2026-10-25).
+- Fase 6: **completada** (2026-10-25).
+- Fase 7: **completada** (2026-10-25). Documentos individuales, documento principal y plan de cinco patrones actualizados.
 
 ## Regla de trabajo
 
@@ -29,17 +33,18 @@
 - **Bridge**: `JsonRenderer`, `JsonDocumentFactory`, `JsonDocumentBridgeTest`, entrega unificada por `content()` y documentación en `docs/Patrones estructurales/Bridge.md`.
 - **Adapter**: `BusinessCalendar` / `NagerDateBusinessCalendar` e `IpcProvider` / adaptadores del DANE.
 - **Decorator de código**: `app/Services/Adjustment/Decorators/PactadoCapDecorator.php`.
-  - Documentado en `docs/PATRONES-IPC-REAJUSTES.md` (§7) y `docs/MODULO-IPC.md` (§13).
-  - Falta su documento dentro de `docs/Patrones estructurales/`.
+  - Documentado en `docs/PATRONES-IPC-REAJUSTES.md` (§7), `docs/MODULO-IPC.md` (§13) y `docs/Patrones estructurales/Decorator.md`.
 
-### Hallazgos que condicionan el plan
+### Hallazgos que condicionaron el plan
 
-1. `docs/PROXY-FESTIVOS.md` afirma que el Proxy de caché está implementado, pero **no existen** `HolidaySource`, `NagerDateHolidaySource` ni `CachedHolidaySource`.
-   - Hoy `NagerDateBusinessCalendar` cachea internamente y degrada por su cuenta.
-   - Decisión: implementar la ruta documentada y dejar la documentación verdadera.
-2. `DocumentService` devuelve tipos concretos, no `Document`.
-3. `DocumentsPage` usa `$statement->invoices()`; un `DocumentProxy` no puede cumplir eso sin cambiar el contrato.
-4. `Document` no declara `isEmpty()`.
+> Describen el estado inicial. Todos se resolvieron durante la ejecución.
+
+1. `docs/PROXY-FESTIVOS.md` afirmaba que el Proxy de caché estaba implementado, pero **no existían** `HolidaySource`, `NagerDateHolidaySource` ni `CachedHolidaySource`.
+   - En ese momento `NagerDateBusinessCalendar` cacheaba internamente y degradaba por su cuenta.
+   - Decisión aplicada: implementar la ruta documentada y dejar la documentación verdadera.
+2. `DocumentService` devolvía tipos concretos, no `Document`.
+3. `DocumentsPage` usaba `$statement->invoices()`; un `DocumentProxy` no podía cumplir eso sin cambiar el contrato.
+4. `Document` no declaraba `isEmpty()`.
 5. El plan que llegó del pull cambió Decorator por Facade. Por eso el Decorator “no se ve” en ese plan, aunque sí existe en el código.
 6. La unicidad de raíces de `spaces` no queda garantizada solo con un índice que incluya `parent_id NULL`; hay que reforzarla en aplicación.
 7. `ActItem.name` se conserva como snapshot histórico aunque se implemente Flyweight.
@@ -230,7 +235,7 @@ feat(flyweight): catalogo maestro de inventario por arrendador
 
 ### Objetivo
 
-Envolver los documentos de `DocumentService` con un Proxy que audita el acceso y difiere la construcción del documento real.
+Envolver los documentos de `DocumentService` con un Proxy que audita el acceso al contenido y memoriza la construcción del documento real. La metadata no se audita, pero el primer método delegado construye el documento; lo diferido es la auditoría y el render de contenido.
 
 ### Cambios
 
@@ -242,8 +247,8 @@ Envolver los documentos de `DocumentService` con un Proxy que audita el acceso y
 - Mantener la validación de comprobante pagado como guard estático de `PaymentReceipt`, para que el error siga siendo inmediato.
 - `DocumentsPage` usa `isEmpty()`.
 - Metadata (`filename`, `mimeType`, `deliveryLabel`, `isDownload`, `preview`, `isEmpty`) no audita.
-- `content()` audita antes de delegar y construye el real una sola vez.
-- Una fila de auditoría por instancia de proxy en el primer `content()`.
+- `content()` audita antes de construir y delegar; la construcción del real se memoriza.
+- Una fila de auditoría por instancia de proxy en el primer `content()`; la metadata puede construir el real, pero no audita.
 - Política fail-closed si falla la auditoría.
 - Ajustar pruebas que esperaban tipos concretos o usaban `body()`/`invoices()`.
 
@@ -298,10 +303,12 @@ Dar un punto de entrada único a las operaciones del alquiler sin mover la lógi
   - `CreateRental`
   - `InvoiceResource`
   - `RentAdjustmentResource`
+  - `CreateRentAdjustment`
   - `DocumentsPage`
 - Mantener en `RentAdjustmentResource` los accesos directos a `IpcSeriesRepository` y `AppSettings`.
 - Métodos de documentos devuelven `Document`.
 - No mover notificaciones ni reglas nuevas a la Facade.
+- Resultado: la Fachada solo reenvía; las notificaciones siguen en `PaymentPlanService` y las reglas en cada servicio. `RentalFacadeTest` cubre singleton, plan, pagos, notificación de reajuste, cadena y documentos: 5 passed (11 assertions).
 
 ### Archivos para commit
 
@@ -310,10 +317,9 @@ Dar un punto de entrada único a las operaciones del alquiler sin mover la lógi
 - `app/Filament/Resources/RentalResource/Pages/CreateRental.php`
 - `app/Filament/Resources/InvoiceResource.php`
 - `app/Filament/Resources/RentAdjustmentResource.php`
+- `app/Filament/Resources/RentAdjustmentResource/Pages/CreateRentAdjustment.php`
 - `app/Filament/Pages/DocumentsPage.php`
 - `tests/Feature/RentalFacadeTest.php`
-- `tests/Feature/InvoiceResourceTest.php` (si requiere ajuste)
-- `tests/Feature/ReajusteScreensRenderTest.php` (si existe y requiere ajuste)
 
 ### Commit sugerido
 
@@ -340,11 +346,12 @@ Documentar el Decorator que ya existe y dejar claro por qué no se reimplementa.
 - Explicar `legalSnapshot()` vs `resolve()`.
 - Verificar cobertura del tope pactado; si no existe prueba explícita, agregar `PactadoCapDecoratorTest`.
 - No modificar el código de producción salvo que la verificación descubra un bug.
+- Resultado: no había prueba unitaria explícita del decorador; se agregó `tests/Unit/PactadoCapDecoratorTest.php` con 4 passed (12 assertions) sin tocar producción.
 
 ### Archivos para commit
 
 - `docs/Patrones estructurales/Decorator.md`
-- `tests/Feature/PactadoCapDecoratorTest.php` (solo si falta cobertura)
+- `tests/Unit/PactadoCapDecoratorTest.php`
 
 ### Commit sugerido
 
@@ -356,25 +363,19 @@ docs(decorator): documentar tope pactado del IPC
 
 ## 8. Fase 7 — Documentación e integración final
 
-**Fuera de este plan: la está ejecutando otro agente.**
+**Completada (2026-10-25).**
 
-Insumos que debe recibir:
+Documentos creados o actualizados:
 
-- Documentos nuevos de Fase 6.
-- Estado real de Composite, Facade, Flyweight, Proxy de festivos y DocumentProxy.
-- Nombres de pruebas por patrón.
-- Decisión de que `PROXY-FESTIVOS.md` ya es implementación real.
-- Actualización de `docs/PLAN-IMPLEMENTACION-5-PATRONES-GOF.md` y `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`.
+- `docs/Patrones estructurales/Composite.md`: roles, esquema, flujo, límites y 7 pruebas.
+- `docs/Patrones estructurales/Facade.md`: API de 16 métodos, subsistemas, límites y 5 pruebas.
+- `docs/Patrones estructurales/Flyweight.md`: estado intrínseco/extrínseco, pool scoped, esquema y 5 pruebas.
+- `docs/Patrones estructurales/Proxy.md`: rutas A (documentos) y C (festivos), auditoría fail-closed y 10 pruebas.
+- `docs/Patrones estructurales/Decorator.md`: tope pactado del IPC y 4 pruebas.
+- `docs/PLAN-IMPLEMENTACION-5-PATRONES-GOF.md`: reescrito como plan ejecutado y cerrado, con estado final, desviaciones y matriz de pruebas.
+- `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`: versión 1.4, mapa de doce patrones, tablas, migraciones y control de cambios.
 
-Documentos que debe crear o actualizar:
-
-- `docs/Patrones estructurales/Composite.md`
-- `docs/Patrones estructurales/Facade.md`
-- `docs/Patrones estructurales/Flyweight.md`
-- `docs/Patrones estructurales/Proxy.md`
-- `docs/Patrones estructurales/Decorator.md`
-- `docs/PLAN-IMPLEMENTACION-5-PATRONES-GOF.md`
-- `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`
+La Fase 7 no reejecutó pruebas porque solo modificó documentación.
 
 ---
 

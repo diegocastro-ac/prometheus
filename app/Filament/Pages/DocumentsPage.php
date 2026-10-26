@@ -3,13 +3,13 @@
 namespace App\Filament\Pages;
 
 use App\Documents\Contracts\Document;
-use App\Documents\DocumentService;
 use App\Documents\Money;
 use App\Enums\InvoiceStatus;
 use App\Filament\Support\DocumentAction;
 use App\Models\Invoice;
 use App\Models\RentAdjustment;
 use App\Models\Rental;
+use App\Services\RentalFacade;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Notifications\Notification;
@@ -86,7 +86,7 @@ class DocumentsPage extends Page
                     ->schema([
                         Forms\Components\Select::make('format')
                             ->label(__('invoice.documents.format.label'))
-                            ->options(fn (): array => app(DocumentService::class)->formatOptions())
+                            ->options(fn (): array => app(RentalFacade::class)->documentFormats())
                             ->default('text')
                             ->required()
                             ->live()
@@ -160,7 +160,7 @@ class DocumentsPage extends Page
             return null;
         }
 
-        $statement = app(DocumentService::class)->statementFor(
+        $statement = app(RentalFacade::class)->statementFor(
             rental: $rental,
             period: (string) ($data['period'] ?? ''),
             format: $data['format'] ?? 'text',
@@ -194,7 +194,7 @@ class DocumentsPage extends Page
             return null;
         }
 
-        return $this->deliver(app(DocumentService::class)->invoiceFor($invoice, $data['format'] ?? 'text'));
+        return $this->deliver(app(RentalFacade::class)->invoiceFor($invoice, $data['format'] ?? 'text'));
     }
 
     /**
@@ -214,7 +214,7 @@ class DocumentsPage extends Page
             return null;
         }
 
-        return $this->deliver(app(DocumentService::class)->adjustmentLetterFor($adjustment, $data['format'] ?? 'text'));
+        return $this->deliver(app(RentalFacade::class)->adjustmentLetterFor($adjustment, $data['format'] ?? 'text'));
     }
 
     /**
@@ -247,7 +247,7 @@ class DocumentsPage extends Page
             return null;
         }
 
-        return $this->deliver(app(DocumentService::class)->receiptFor($invoice, $data['format'] ?? 'text'));
+        return $this->deliver(app(RentalFacade::class)->receiptFor($invoice, $data['format'] ?? 'text'));
     }
 
     /**

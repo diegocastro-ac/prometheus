@@ -35,6 +35,7 @@ class DatabaseSeeder extends Seeder
             PropertySeeder::class,
             RentalSeeder::class,
             SpaceSeeder::class,
+            MasterInventoryItemSeeder::class,
             PaymentSeeder::class,
             DeliveryActSeeder::class,
 

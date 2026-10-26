@@ -4,6 +4,7 @@ namespace Database\Factories;
 
 use App\Enums\ActItemState;
 use App\Models\ActItem;
+use App\Models\MasterInventoryItem;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 /**
@@ -15,6 +16,7 @@ class ActItemFactory extends Factory
     {
         return [
             'space' => $this->faker->randomElement(['Sala', 'Cocina', 'Baño', 'Terraza']),
+            'master_inventory_item_id' => null,
             'name' => $this->faker->randomElement([
                 'Refrigerador', 'Lavadora', 'Estufa', 'Mesa de comedor', 'Sofá', 'Luz de techo',
             ]),
@@ -22,5 +24,13 @@ class ActItemFactory extends Factory
             'note' => null,
             'photo_path' => null,
         ];
+    }
+
+    public function forMasterItem(MasterInventoryItem $item): static
+    {
+        return $this->state(fn (): array => [
+            'master_inventory_item_id' => $item->id,
+            'name' => $item->name(),
+        ]);
     }
 }

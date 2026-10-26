@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\ActItemState;
 use App\Models\DeliveryAct;
+use App\Models\MasterInventoryItem;
 use App\Models\Rental;
 use App\Models\User;
 use App\Services\Acts\DeliveryActBuilder;
@@ -11,6 +12,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\Test;
 use RuntimeException;
+use Tests\SeedsMasterInventoryCatalog;
 use Tests\SeedsSpaceCatalog;
 use Tests\TestCase;
 
@@ -21,6 +23,7 @@ use Tests\TestCase;
 class DeliveryActBuilderTest extends TestCase
 {
     use RefreshDatabase;
+    use SeedsMasterInventoryCatalog;
     use SeedsSpaceCatalog;
 
     protected function setUp(): void
@@ -50,8 +53,17 @@ class DeliveryActBuilderTest extends TestCase
         // El catálogo es por usuario desde que vive en spaces. Cada alquiler de
         // este test tiene el suyo.
         $this->seedSpaces($user, ['Sala', 'Cocina', 'Baño', 'Terraza']);
+        $this->seedMasterInventory($user, ['Refrigerador', 'Estufa', 'Sofá', 'Lampara']);
 
         return Rental::factory()->create(['user_id' => $user->id]);
+    }
+
+    private function masterItemId(Rental $rental, string $name): int
+    {
+        return (int) $this->masterInventoryItem(
+            User::findOrFail($rental->user_id),
+            $name,
+        )->id;
     }
 
     #[Test]
@@ -130,6 +142,101 @@ class DeliveryActBuilderTest extends TestCase
         $estufa = $act->items->firstWhere('name', 'Estufa');
         $this->assertSame(ActItemState::REPARABLE, $estufa->state);
         $this->assertSame('Falla un quemador', $estufa->note);
+    }
+
+    #[Test]
+    public function el_inventario_guarda_la_referencia_y_el_snapshot_del_maestro(): void
+    {
+        $rental = $this->rental();
+        $masterId = $this->masterItemId($rental, 'Refrigerador');
+
+        $act = $this->builder()
+            ->forRental($rental, 'Ana', 'Luis')
+            ->onDate(today())
+            ->withInventory([[
+                'space' => 'Cocina',
+                'master_inventory_item_id' => $masterId,
+                'state' => 'reparable',
+            ]])
+            ->build();
+
+        $item = $act->items->first();
+
+        $this->assertSame($masterId, $item->master_inventory_item_id);
+        $this->assertSame('Refrigerador', $item->name);
+        $this->assertSame(ActItemState::REPARABLE, $item->state);
+    }
+
+    #[Test]
+    public function renombrar_el_maestro_no_cambia_el_snapshot_del_acta(): void
+    {
+        $rental = $this->rental();
+        $masterId = $this->masterItemId($rental, 'Refrigerador');
+
+        $act = $this->builder()
+            ->forRental($rental, 'Ana', 'Luis')
+            ->onDate(today())
+            ->withInventory([[
+                'space' => 'Cocina',
+                'master_inventory_item_id' => $masterId,
+            ]])
+            ->build();
+
+        MasterInventoryItem::query()->whereKey($masterId)->update(['name' => 'Nevera']);
+
+        $item = $act->items()->firstOrFail();
+
+        $this->assertSame('Refrigerador', $item->name);
+        $this->assertSame('Nevera', $item->masterItem->name());
+    }
+
+    #[Test]
+    public function el_nombre_legacy_resuelve_o_crea_el_maestro(): void
+    {
+        $rental = $this->rental();
+
+        $act = $this->builder()
+            ->forRental($rental, 'Ana', 'Luis')
+            ->onDate(today())
+            ->withInventory([['space' => 'Sala', 'name' => 'Microondas']])
+            ->build();
+
+        $item = $act->items()->firstOrFail();
+
+        $this->assertNotNull($item->master_inventory_item_id);
+        $this->assertSame('Microondas', $item->name);
+        $this->assertDatabaseHas('master_inventory_items', [
+            'user_id' => $rental->user_id,
+            'name' => 'Microondas',
+        ]);
+    }
+
+    #[Test]
+    public function un_maestro_de_otro_arrendador_se_rechaza(): void
+    {
+        $rental = $this->rental();
+        $foreign = $this->masterInventoryItem(User::factory()->create(), 'Refrigerador');
+
+        $catalog = MasterInventoryItem::query()
+            ->where('user_id', $rental->user_id)
+            ->orderBy('name')
+            ->pluck('name')
+            ->implode(', ');
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage(__('act.errors.master_item_not_in_catalog', [
+            'item' => '#'.$foreign->id,
+            'catalog' => $catalog,
+        ]));
+
+        $this->builder()
+            ->forRental($rental, 'Ana', 'Luis')
+            ->onDate(today())
+            ->withInventory([[
+                'space' => 'Cocina',
+                'master_inventory_item_id' => $foreign->id,
+            ]])
+            ->build();
     }
 
     #[Test]
