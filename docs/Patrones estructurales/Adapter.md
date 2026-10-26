@@ -6,12 +6,12 @@
 
 En Prometheus el patrón tiene dos aplicaciones verificadas:
 
-- **Días hábiles:** el dominio pregunta si una fecha es hábil y cuál es el siguiente día hábil; el adaptador traduce la respuesta de Nager.Date.
+- **Días hábiles:** el dominio pregunta si una fecha es hábil y cuál es el siguiente día hábil; `NagerDateHolidaySource` traduce Nager.Date a `HolidaySource` y `NagerDateBusinessCalendar` traduce esos festivos al Target `BusinessCalendar`. Entre ambos se compone el Proxy `CachedHolidaySource`.
 - **IPC:** el dominio pide series, geografías y años; los adaptadores traducen el CDA del DANE y la copia local en `ipc_series`.
 
 ## 2. Problema que resuelve en Prometheus
 
-**Días hábiles.** El vencimiento de una factura, el fin de un contrato y la fecha propuesta para un reajuste necesitan saber si un día es hábil. Esa información viene de un servicio externo que devuelve un arreglo JSON de festivos por año y país. El dominio no debe conocer la URL, el código de país, la forma del JSON ni la caché; tampoco puede quedar acoplado a que Nager.Date esté disponible.
+**Días hábiles.** El vencimiento de una factura, el fin de un contrato y la fecha propuesta para un reajuste necesitan saber si un día es hábil. Esa información viene de un servicio externo que devuelve un arreglo JSON de festivos por año y país. El dominio no debe conocer la URL, el código de país, la forma del JSON ni la caché; tampoco puede quedar acoplado a que Nager.Date esté disponible. La traducción HTTP/JSON y el cálculo de días hábiles son responsabilidades distintas: la primera queda en `NagerDateHolidaySource`; la segunda, en `NagerDateBusinessCalendar`. La caché y la degradación se separaron en `CachedHolidaySource`, que es un Proxy y no un Adapter.
 
 **IPC.** Las cartas de reajuste necesitan la variación anual del IPC. El DANE no publica una API REST estable: el dato sale de un CDA de Pentaho sin documentación, con comas decimales, meses abreviados, códigos a los que se les pierde el cero y respuestas 502 intermitentes. Una carta emitida por correo no puede fallar porque el DANE esté caído, ni cambiar su texto si el DANE corrige un dato después.
 
@@ -22,16 +22,18 @@ Sin Adapter, las reglas de facturación, contratos y reajustes tendrían que hab
 | Rol GoF | Días hábiles | IPC |
 | --- | --- | --- |
 | **Target** | `BusinessCalendar` | `IpcProvider` |
-| **Adapter** | `NagerDateBusinessCalendar` | `DaneCdaIpcProvider` (remoto) y `LocalSeriesIpcProvider` (local) |
+| **Adapter** | `NagerDateHolidaySource` (Nager.Date → `HolidaySource`) y `NagerDateBusinessCalendar` (`HolidaySource` → `BusinessCalendar`) | `DaneCdaIpcProvider` (remoto) y `LocalSeriesIpcProvider` (local) |
 | **Adaptee** | API pública Nager.Date | CDA del DANE / tabla local `ipc_series` |
-| **Cliente** | `PaymentPlanGenerator`, `PaymentPlanGeneratorResolver`, `RentalPeriod`, `InvoiceResource`, `AdjustmentDateProposer` | `IpcSynchronizer`, `SyncIpcDane`, `SyncIpcGeographies`, `IpcDoctor` |
+| **Cliente** | `NagerDateBusinessCalendar` es cliente del Subject; `PaymentPlanGenerator`, `PaymentPlanGeneratorResolver`, `RentalPeriod`, `InvoiceResource`, `AdjustmentDateProposer` son clientes del Target | `IpcSynchronizer`, `SyncIpcDane`, `SyncIpcGeographies`, `IpcDoctor` |
+| **Subject del Proxy (no Adapter)** | `HolidaySource` | No aplica |
+| **Proxy (no Adapter)** | `CachedHolidaySource` | No aplica |
 | **Respaldo / doble** | `WeekendBusinessCalendar` (no es Adapter) | `InMemoryIpcProvider` (no es Adapter) |
 
-**Días hábiles.** `BusinessCalendar` declara `isBusinessDay()` y `nextBusinessDay()`. `NagerDateBusinessCalendar` implementa el Target envolviendo la API de Nager.Date: consulta los festivos del año, los cachea por país y año, y traduce las fechas al contrato del dominio. Es un adaptador de objeto: compone la fuente externa y el calendario de respaldo, no hereda de ella.
+**Días hábiles.** `BusinessCalendar` declara `isBusinessDay()` y `nextBusinessDay()`. `NagerDateBusinessCalendar` implementa el Target componiendo un `HolidaySource`: consulta los festivos del año, salta fines de semana y aplica el tope de 366 días con `WeekendBusinessCalendar` como último respaldo. `NagerDateHolidaySource` implementa `HolidaySource` y es el único adaptador que conoce la URL base, el país y la forma del JSON; lanza una excepción si la API falla. `CachedHolidaySource` implementa el mismo Subject, cachea por país y año y degrada a `[]` cuando el adaptador real falla.
 
-El adaptador es el único punto que conoce la URL base, el país y la forma del JSON. Si la API falla, `holidaysFor()` devuelve un arreglo vacío y el comportamiento práctico queda como calendario de fin de semana; además, `nextBusinessDay()` tiene un tope de 366 días y un respaldo explícito en `WeekendBusinessCalendar`.
+La caché y la degradación no son responsabilidad del Adapter: son control de acceso y viven en el Proxy. El adaptador HTTP solo traduce; el adaptador de negocio (`NagerDateBusinessCalendar`) solo calcula días hábiles sobre el Subject. Si la API falla, el Proxy devuelve `[]` y el comportamiento práctico queda como calendario de fin de semana; además, `nextBusinessDay()` tiene un tope de 366 días y un respaldo explícito en `WeekendBusinessCalendar`.
 
-El binding cambia por entorno en `AppServiceProvider`: en `testing` se usa `WeekendBusinessCalendar`; en el resto, `NagerDateBusinessCalendar` con `services.holidays.base_url` y `services.holidays.country`. `WeekendBusinessCalendar` implementa el Target directamente y solo evita sábados y domingos; no envuelve una interfaz incompatible, por eso no es un Adapter.
+El binding cambia por entorno en `AppServiceProvider`: en `testing` se usa `WeekendBusinessCalendar`; en el resto, `NagerDateBusinessCalendar(CachedHolidaySource(NagerDateHolidaySource(...)))` con `services.holidays.base_url` y `services.holidays.country`. `WeekendBusinessCalendar` implementa el Target directamente y solo evita sábados y domingos; no envuelve una interfaz incompatible, por eso no es un Adapter.
 
 **IPC.** `IpcProvider` declara `fetchSeries()`, `fetchGeographies()`, `fetchAvailableYears()` y `name()`. Hay dos adaptadores reales:
 
@@ -56,14 +58,26 @@ interface "BusinessCalendar (Target)" as BusinessCalendar {
   + nextBusinessDay(date : CarbonInterface) : CarbonInterface
 }
 
-class "NagerDateBusinessCalendar (Adapter)" as NagerDateBusinessCalendar {
-  - baseUrl : string
-  - country : string
-  - fallback : WeekendBusinessCalendar
+class "NagerDateBusinessCalendar (Adapter de negocio / Cliente del Proxy)" as NagerDateBusinessCalendar {
+  - source : HolidaySource
   + isBusinessDay(date : CarbonInterface) : bool
   + nextBusinessDay(date : CarbonInterface) : CarbonInterface
-  - holidaysFor(year : int) : string[*]
-  - fetchHolidays(year : int) : string[*]
+}
+
+interface "HolidaySource (Subject - no Adapter)" as HolidaySource {
+  + holidaysFor(year : int) : string[*]
+}
+
+class "CachedHolidaySource (Proxy - no Adapter)" as CachedHolidaySource {
+  - real : HolidaySource
+  - country : string
+  + holidaysFor(year : int) : string[*]
+}
+
+class "NagerDateHolidaySource (Adapter HTTP / RealSubject)" as NagerDateHolidaySource {
+  - baseUrl : string
+  - country : string
+  + holidaysFor(year : int) : string[*]
 }
 
 class "Nager.Date API (Adaptee)" as NagerDateApi {
@@ -100,8 +114,12 @@ class "AdjustmentDateProposer (Cliente)" as AdjustmentDateProposer {
 
 NagerDateBusinessCalendar ..|> BusinessCalendar
 WeekendBusinessCalendar ..|> BusinessCalendar
-NagerDateBusinessCalendar --> NagerDateApi : consulta
-NagerDateBusinessCalendar --> WeekendBusinessCalendar : respaldo
+NagerDateBusinessCalendar --> HolidaySource : usa
+HolidaySource <|.. CachedHolidaySource
+HolidaySource <|.. NagerDateHolidaySource
+CachedHolidaySource --> HolidaySource : envuelve
+NagerDateHolidaySource --> NagerDateApi : traduce
+NagerDateBusinessCalendar --> WeekendBusinessCalendar : respaldo tras 366 días
 
 PaymentPlanGenerator --> BusinessCalendar : usa
 PaymentPlanGeneratorResolver --> BusinessCalendar : inyecta
@@ -198,7 +216,10 @@ IpcDoctor --> DaneCdaIpcProvider : consulta en vivo
 | Clase | Rol | Aplicación | Ruta | Responsabilidad |
 | --- | --- | --- | --- | --- |
 | `BusinessCalendar` | Target | Días hábiles | `app/Contracts/BusinessCalendar.php` | Definir las operaciones de día hábil que espera el dominio. |
-| `NagerDateBusinessCalendar` | Adapter | Días hábiles | `app/Infrastructure/Holidays/NagerDateBusinessCalendar.php` | Traducir Nager.Date al Target, cachear festivos y degradar si falla. |
+| `NagerDateBusinessCalendar` | Adapter de negocio / Cliente del Proxy | Días hábiles | `app/Infrastructure/Holidays/NagerDateBusinessCalendar.php` | Traducir festivos de `HolidaySource` al Target y calcular días hábiles. |
+| `HolidaySource` | Subject del Proxy (no Adapter) | Días hábiles | `app/Contracts/HolidaySource.php` | Declarar `holidaysFor()` para el Proxy y el adaptador HTTP. |
+| `CachedHolidaySource` | Proxy (no Adapter) | Días hábiles | `app/Infrastructure/Holidays/CachedHolidaySource.php` | Cachear por país/año y degradar a `[]` si el real falla. |
+| `NagerDateHolidaySource` | Adapter HTTP / RealSubject | Días hábiles | `app/Infrastructure/Holidays/NagerDateHolidaySource.php` | Traducir Nager.Date a `HolidaySource`; lanzar si la API falla. |
 | `WeekendBusinessCalendar` | Respaldo (no Adapter) | Días hábiles | `app/Infrastructure/Holidays/WeekendBusinessCalendar.php` | Implementar el Target evitando solo fines de semana. |
 | Nager.Date API | Adaptee | Días hábiles | Servicio externo | Entregar festivos por año y país en JSON. |
 | `PaymentPlanGenerator` | Cliente | Días hábiles | `app/Services/PaymentPlans/PaymentPlanGenerator.php` | Calcular vencimientos de facturas con el Target. |
@@ -216,27 +237,27 @@ IpcDoctor --> DaneCdaIpcProvider : consulta en vivo
 | `IpcDoctor` | Cliente diagnóstico | IPC | `app/Console/Commands/IpcDoctor.php` | Comparar la copia local con el adaptador remoto. |
 | `IpcSeriesRepository` | Adaptee local | IPC | `app/Services/Ipc/IpcSeriesRepository.php` | Entregar filas y años de `ipc_series` al adaptador local. |
 | `CdaQueryFactory` | Colaborador (no GoF) | IPC | `app/Services/Ipc/CdaQueryFactory.php` | Construir las consultas que espera el CDA. |
-| `AppServiceProvider` | Configuración (no GoF) | Ambas | `app/Providers/AppServiceProvider.php` | Elegir adaptadores por entorno y registrar bindings. |
+| `AppServiceProvider` | Configuración (no GoF) | Ambas | `app/Providers/AppServiceProvider.php` | Elegir adaptadores por entorno, componer el Proxy y registrar bindings. |
 
 ### 5.1. Ventajas
 
 - **Dominio aislado:** las reglas de facturas, contratos y reajustes no conocen URLs, JSON, SQL ni columnas del DANE.
 - **Fuentes intercambiables:** se puede cambiar Nager.Date, el CDA o la copia local sin tocar a los clientes.
-- **Adaptador remoto encapsulado:** Nager.Date queda detrás de una sola clase; URL, país, caché y fallback viven ahí.
+- **Adaptador remoto encapsulado:** Nager.Date queda detrás de `NagerDateHolidaySource`; URL, país y JSON viven ahí, mientras la caché y el fallback quedan en el Proxy.
 - **Normalización en la frontera:** `DaneCdaIpcProvider` convierte comas decimales, meses abreviados, códigos sin ceros y columnas del CDA antes de entregar datos al dominio.
 - **Disponibilidad:** la copia local permite emitir cartas de reajuste aunque el DANE esté caído; el sincronizador conserva la última serie buena.
 - **Pruebas deterministas:** `WeekendBusinessCalendar` e `InMemoryIpcProvider` permiten probar sin red ni base externa; los adaptadores reales se prueban con `Http::fake()`.
-- **Configuración por entorno:** el calendario se elige en `AppServiceProvider`; en pruebas no se consulta Nager.Date.
+- **Configuración por entorno:** el calendario se elige en `AppServiceProvider`; en pruebas no se consulta Nager.Date y en producción se compone Client → Proxy → Adapter.
 - **Reutilización:** el mismo `BusinessCalendar` sirve para vencimientos, fin de contrato y fechas de reajuste.
 - **Errores explícitos:** el adaptador del DANE lanza `DaneIpcUnavailable` cuando no puede consultar; el sincronizador decide conservar la copia local.
 - **Adaptadores de objeto:** todos los adaptadores componen la fuente; no heredan de APIs externas ni de Eloquent.
 
 ### 5.2. Desventajas
 
-- **Degradación incompleta:** si Nager.Date falla, `holidaysFor()` devuelve `[]` y los festivos entre semana se tratan como hábiles; el respaldo efectivo es solo de fin de semana. El fallback explícito de `nextBusinessDay()` queda después de 366 intentos y en la práctica no es el camino normal.
-- **Fallo silencioso del calendario:** una respuesta HTTP no exitosa de Nager.Date devuelve `null` sin registrar el motivo; solo se registra una excepción. La fecha puede quedar mal sin una señal clara.
+- **Degradación incompleta:** si Nager.Date falla, el Proxy devuelve `[]` y los festivos entre semana se tratan como hábiles; el respaldo efectivo es solo de fin de semana. El fallback explícito de `nextBusinessDay()` queda después de 366 intentos y en la práctica no es el camino normal.
+- **Degradación ambigua:** el cliente recibe `[]` tanto si no hay festivos como si la API falló; el aviso queda solo en el log del Proxy. La fecha puede quedar mal sin una señal directa al dominio.
 - **Cobertura limitada de la degradación:** la prueba de fallo del calendario usa un sábado; no cubre un festivo entre semana cuando la API no responde.
-- **Caché de un día:** un cambio o corrección de festivos puede tardar hasta un día en reflejarse.
+- **Caché de un día:** un cambio o corrección de festivos puede tardar hasta un día en reflejarse; la política vive en el Proxy, no en el Adapter.
 - **Dos rutas para el IPC:** el adaptador remoto se usa para sincronizar y el local para leer; la sincronización es un paso operativo que puede quedar desactualizado.
 - **Abstracción incompleta en lectura:** las pantallas de IPC y reajustes consultan `IpcSeriesRepository` directamente; el binding `IpcProvider -> LocalSeriesIpcProvider` no cubre todos los consumidores.
 - **Dependencia concreta en los comandos:** `SyncIpcDane`, `SyncIpcGeographies` e `IpcDoctor` inyectan `DaneCdaIpcProvider`, no el Target. La abstracción se usa dentro de `IpcSynchronizer`, pero no en todos los puntos de entrada.

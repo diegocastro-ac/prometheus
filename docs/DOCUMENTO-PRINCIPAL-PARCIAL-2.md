@@ -8,9 +8,9 @@
 **Docente:** Jairo Francisco Seoanes León  
 **Fecha:** Octubre de 2026  
 **Repositorio:** <https://github.com/diegocastro-ac/prometheus/tree/patrones-2>  
-**Versión:** 1.0 — documento editable en Markdown, actualizado contra el código de la rama `patrones-2`.
+**Versión:** 1.3 — documento editable en Markdown, actualizado contra el código de la rama `patrones-2`.
 
-> Este documento reemplaza la plantilla del PDF para facilitar su edición y revisión. Los diagramas están escritos en Mermaid; los documentos individuales de los patrones conservan diagramas PlantUML compatibles con Draw.io. Las cifras y comportamientos descritos se verificaron contra el código y las pruebas del repositorio.
+> Este documento reemplaza la plantilla del PDF para facilitar su edición y revisión. Los diagramas están escritos en Mermaid; los documentos individuales de los patrones conservan diagramas PlantUML compatibles con Draw.io. Las cifras y comportamientos descritos se contrastaron contra el código; los conteos de pruebas corresponden a los archivos presentes y esta actualización documental no reejecutó la suite.
 
 ---
 
@@ -43,10 +43,10 @@ La aplicación permite registrar propiedades y su ubicación, administrar inquil
 
 El proyecto usa Laravel 12, PHP 8.2, Filament 3, Livewire, Tailwind CSS 4 y una base de datos relacional configurable; por defecto el archivo de entorno de ejemplo usa SQLite y las pruebas usan SQLite en memoria. La interfaz está disponible en español e inglés mediante el plugin de cambio de idioma de Filament.
 
-Esta entrega documenta la implementación actual y los siete patrones de diseño verificados en el código:
+Esta entrega documenta la implementación actual y los ocho patrones de diseño verificados en el código:
 
 - cinco patrones creacionales: **Singleton**, **Prototype**, **Builder**, **Abstract Factory** y **Factory Method**;
-- dos patrones estructurales: **Adapter**, aplicado a los días hábiles y al IPC del DANE, y **Bridge**, aplicado a los documentos y sus formatos de entrega.
+- tres patrones estructurales: **Adapter**, aplicado a los días hábiles y al IPC del DANE; **Bridge**, aplicado a los documentos y sus formatos de entrega; y **Proxy**, aplicado a la caché y degradación de la fuente de festivos.
 
 Los documentos individuales de cada patrón se enlazan en sus secciones y en el Anexo A; están en [`docs/Patrones creacionales`](Patrones%20creacionales) y [`docs/Patrones estructurales`](Patrones%20estructurales). Este documento principal explica el contexto funcional, el diseño, la arquitectura, la base de datos y la forma en que los patrones se integran en la aplicación.
 
@@ -604,7 +604,7 @@ classDiagram
 | CC-06 | Documentos | Generación acoplada a un formato. | Familias de documentos texto, PDF y JSON con fábricas y renderizadores. | Agregar formatos sin cambiar los casos de uso. |
 | CC-07 | Actas reutilizables | Crear cada acta desde cero. | Copia profunda de acta e inventario desde una existente. | Reducir trabajo repetitivo sin arrastrar firmas ni identidad. |
 | CC-08 | Configuración | Lecturas dispersas de la configuración. | `AppSettings` como singleton inmutable del contenedor. | Una sola fuente de verdad por petición. |
-| CC-09 | Días hábiles | Cálculo directo de fechas y festivos. | `BusinessCalendar` con adaptador Nager.Date y respaldo local. | Aislar el servicio externo y permitir pruebas deterministas. |
+| CC-09 | Días hábiles | Cálculo directo de fechas y festivos. | `BusinessCalendar` con adaptador Nager.Date, Proxy de caché y respaldo local. | Aislar el servicio externo y permitir pruebas deterministas. |
 | CC-10 | Planes de cobro | Lógica condicional por cadencia en un solo lugar. | `PaymentPlanGenerator` y subclases por cadencia. | Extender cadencias sin modificar el servicio cliente. |
 
 ---
@@ -682,13 +682,13 @@ El backend sigue una separación por responsabilidades:
 | Dominio y persistencia | `app/Models`, `app/Enums`, `app/ValueObjects`, `app/Dto` | Entidades, estados, valores y reglas de negocio. |
 | Documentos | `app/Documents` | Contratos, productos, fábricas y renderizadores. |
 | Infraestructura | `app/Infrastructure` | Adaptadores de IPC, festivos, almacenamiento y contexto de usuario. |
-| Contratos | `app/Contracts` | Interfaces de calendario, IPC, prototipo, almacenamiento y usuario actual. |
+| Contratos | `app/Contracts` | Interfaces de calendario, fuente de festivos, IPC, prototipo, almacenamiento y usuario actual. |
 | Comandos | `app/Console/Commands` | Sincronización de IPC y recálculo de cadenas. |
 | Pruebas | `tests/Feature`, `tests/Unit` | Verificación de flujos y comportamientos críticos. |
 
 ##### Flujos principales
 
-1. **Alta de alquiler y plan de cobro.** El recurso de alquiler captura propiedad, inquilino, fechas, canon, tipo y cadencia. `PaymentPlanService` resuelve el generador adecuado y crea las facturas del periodo. La generación reutiliza facturas existentes para no duplicar cobros.
+1. **Alta de alquiler y plan de cobro.** El recurso de alquiler captura propiedad, inquilino, fechas, canon, tipo y cadencia. `PaymentPlanService` resuelve el generador adecuado y crea las facturas del periodo. La generación reutiliza facturas existentes para no duplicar cobros. Los vencimientos usan `BusinessCalendar`; en producción la cadena es `NagerDateBusinessCalendar → CachedHolidaySource → NagerDateHolidaySource`.
 2. **Registro de pagos.** `PaymentRecordingService` valida que la factura admita pagos, crea el `Payment`, lo asocia a factura, alquiler y usuario, y ejecuta `Invoice::refreshStatus()`. El estado de la factura se deriva del saldo y del vencimiento.
 3. **Actas de entrega.** `DeliveryActBuilder` acumula secciones opcionales, valida el inventario contra el catálogo de espacios y persiste el acta con sus elementos. `DeliveryActDraft` traduce una copia al formulario cuando se reutiliza un acta.
 4. **Reajustes.** `RentAdjustmentService` obtiene el IPC de la serie local, calcula el tope legal, valida las reglas, registra el ajuste y reprocesa la cadena desde el ancla. `AdjustmentChainCalculator` y `AdjustmentChainRecalculator` mantienen coherentes los valores derivados.
@@ -708,7 +708,7 @@ El backend sigue una separación por responsabilidades:
 
 ##### Pruebas y comandos
 
-La verificación se apoya en pruebas de feature. En la última ejecución reportada:
+La verificación se apoya en pruebas de feature. Conteo de pruebas presentes en el repositorio; esta actualización documental no ejecutó la suite:
 
 | Área | Prueba(s) | Resultado |
 | --- | --- | --- |
@@ -719,6 +719,7 @@ La verificación se apoya en pruebas de feature. En la última ejecución report
 | Factory Method | `PaymentPlanGeneratorTest` | 7 pruebas, 18 aserciones. |
 | Adapter | `BusinessCalendarTest` + `DaneCdaIpcProviderTest` | 25 pruebas, 47 aserciones. |
 | Bridge | `JsonDocumentBridgeTest` | 6 pruebas, 68 aserciones. |
+| Proxy | `CachedHolidaySourceTest` | 4 pruebas, 11 aserciones. |
 
 Comandos de operación:
 
@@ -798,8 +799,9 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | CC-C08 | La generación de documentos estaba acoplada a un formato. | Se incorporaron `DocumentFactory`, las familias texto/PDF/JSON, los productos y los renderizadores. | `app/Documents/`, `app/Filament/Support/DocumentAction.php`, `app/Filament/Pages/DocumentsPage.php` | Abstract Factory. |
 | CC-C09 | La lógica de facturación por cadencia estaba centralizada en condicionales. | Se crearon `PaymentPlanGenerator` y las subclases mensual, quincenal y anticipo; el resolver elige el generador. | `app/Services/PaymentPlans/`, `app/Services/PaymentPlanService.php` | Factory Method. |
 | CC-C10 | La configuración se leía en varios puntos y podía quedar desactualizada en la misma petición. | `AppSettings` se registra como singleton inmutable; `SettingsService` descarta la instancia al guardar. | `app/Settings/AppSettings.php`, `app/Services/SettingsService.php`, `app/Providers/AppServiceProvider.php` | Singleton. |
-| CC-C11 | El cálculo de días hábiles dependía directamente de un servicio externo. | `BusinessCalendar` define el contrato; `NagerDateBusinessCalendar` adapta Nager.Date y `WeekendBusinessCalendar` sirve de respaldo. | `app/Contracts/BusinessCalendar.php`, `app/Infrastructure/Holidays/`, `app/Providers/AppServiceProvider.php` | Adapter. |
+| CC-C11 | El cálculo de días hábiles dependía directamente de un servicio externo. | `BusinessCalendar` define el contrato; `NagerDateBusinessCalendar` compone `HolidaySource`, `NagerDateHolidaySource` adapta Nager.Date y `WeekendBusinessCalendar` sirve de respaldo. | `app/Contracts/BusinessCalendar.php`, `app/Contracts/HolidaySource.php`, `app/Infrastructure/Holidays/`, `app/Providers/AppServiceProvider.php` | Adapter. |
 | CC-C12 | La exportación de documentos solo cubría texto/PDF, la entrega del PDF se duplicaba, el cuerpo apuntaba al modelo en tres documentos y la pantalla inspeccionaba `invoices()` del producto concreto. | Se agregó `JsonRenderer`/`JsonDocumentFactory`, se unificó la entrega por `content()`, cada documento se adjunta a su cuerpo y `Document::isEmpty()` permite detectar el estado de cuenta vacío sin conocer el producto. | `app/Documents/AbstractDocument.php`, `app/Documents/Contracts/Document.php`, `app/Documents/MonthlyStatement.php`, `app/Documents/Rendering/JsonRenderer.php`, `app/Documents/Factories/JsonDocumentFactory.php`, `app/Documents/DocumentFactoryLocator.php`, `app/Filament/Pages/DocumentsPage.php`, `app/Filament/Support/DocumentAction.php` | Bridge y Abstract Factory. |
+| CC-C13 | El adaptador de días hábiles mezclaba la traducción de Nager.Date con la caché y la degradación por fallo. | `HolidaySource` define el Subject; `CachedHolidaySource` cachea por país/año y degrada a `[]`; `NagerDateHolidaySource` solo traduce HTTP/JSON; `NagerDateBusinessCalendar` queda como cliente del Subject. | `app/Contracts/HolidaySource.php`, `app/Infrastructure/Holidays/CachedHolidaySource.php`, `app/Infrastructure/Holidays/NagerDateHolidaySource.php`, `app/Infrastructure/Holidays/NagerDateBusinessCalendar.php`, `app/Providers/AppServiceProvider.php` | Proxy y SRP. |
 
 **Notas de implementación**
 
@@ -817,8 +819,9 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | **Builder** | Creacional | `DeliveryActBuilder` con métodos encadenados; `CreateDeliveryAct::assemble()` como director. | Construir un acta con muchas secciones opcionales sin un constructor frágil. | Código legible, validaciones centralizadas y persistencia coherente. | No hay interfaz `Builder` ni `Director` separado; el builder es `scoped`, acumula estado y no es idempotente. |
 | **Abstract Factory** | Creacional | `DocumentFactory` con familias `TextDocumentFactory`, `PdfDocumentFactory` y `JsonDocumentFactory`; cuatro productos. | Producir varios documentos relacionados sin acoplar los casos de uso a un formato. | Familias intercambiables y consistencia de formato. | Los métodos devuelven tipos concretos; agregar un producto exige actualizar las tres fábricas. |
 | **Factory Method** | Creacional | `PaymentPlanGenerator` y subclases mensual, quincenal y anticipo; `PaymentPlanGeneratorResolver` selecciona. | Crear facturas según la cadencia sin llenar el servicio de condicionales. | Extensión de cadencias y pruebas por generador. | El producto siempre es `Invoice`; la variación es la política de creación, por lo que se acerca a Template Method. |
-| **Adapter** | Estructural | `BusinessCalendar` + `NagerDateBusinessCalendar`; `IpcProvider` + `DaneCdaIpcProvider`/`LocalSeriesIpcProvider`. | Aislar el dominio de Nager.Date y del CDA del DANE. | Dominio desacoplado, pruebas deterministas y lectura local del IPC. | Si Nager.Date falla, los festivos entre semana se tratan como hábiles; la lectura de IPC no pasa siempre por el Target. |
+| **Adapter** | Estructural | `BusinessCalendar` + `NagerDateBusinessCalendar` + `NagerDateHolidaySource`; `IpcProvider` + `DaneCdaIpcProvider`/`LocalSeriesIpcProvider`. | Aislar el dominio de Nager.Date y del CDA del DANE. | Dominio desacoplado, pruebas deterministas y lectura local del IPC. | La lectura de IPC no pasa siempre por el Target; la caché y la degradación de festivos ya no viven en el adaptador. |
 | **Bridge** | Estructural | `AbstractDocument` + `DocumentRenderer`; `PaymentReceipt`, `AdjustmentLetter`, `MonthlyStatement` y `RentInvoice` como abstracciones refinadas; `PlainTextRenderer`, `PdfRenderer` y `JsonRenderer`. | Separar el tipo de documento de su formato de serialización y evitar ramas por formato. | Agregar formatos sin tocar la lógica de los documentos y unificar la entrega por `content()`. | `PdfRenderer::selectView()` conoce las clases concretas; el JSON usa valores de presentación y excluye `meta`; agregar un documento exige actualizar las tres fábricas. |
+| **Proxy** | Estructural | `HolidaySource` + `CachedHolidaySource`; `NagerDateHolidaySource` como RealSubject/Adapter y `NagerDateBusinessCalendar` como cliente. | Evitar llamadas repetidas a Nager.Date y aislar al calendario de sus fallos sin contaminar el adaptador. | Caché por país/año, degradación controlada y separación entre traducción y control de acceso. | TTL de un día; un fallo y una lista vacía se ven igual desde el cliente; no hay reintentos ni invalidación por tags. |
 
 ##### Cobertura de pruebas por patrón
 
@@ -831,6 +834,7 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 | Factory Method | `PaymentPlanGeneratorTest`. | 7 pruebas, 18 aserciones. |
 | Adapter | `BusinessCalendarTest`, `DaneCdaIpcProviderTest`. | 25 pruebas, 47 aserciones. |
 | Bridge | `JsonDocumentBridgeTest`. | 6 pruebas, 68 aserciones. |
+| Proxy | `CachedHolidaySourceTest`. | 4 pruebas, 11 aserciones. |
 
 ##### Documentos individuales
 
@@ -841,10 +845,11 @@ La persistencia usa Eloquent sobre una base relacional. La conexión se configur
 - [Factory Method](Patrones%20creacionales/Factory%20Method.md)
 - [Adapter](Patrones%20estructurales/Adapter.md)
 - [Bridge](Patrones%20estructurales/Bridge.md)
+- [Proxy](Patrones%20estructurales/Proxy.md)
 
 ##### Patrones fuera del alcance
 
-El código contiene otras estructuras que podrían analizarse con patrones adicionales, pero esta entrega se limita a los siete patrones verificados y aprobados. Facade, Composite, Flyweight y Proxy aparecen en documentos de planificación, pero no se documentan como implementaciones de esta entrega.
+El código contiene otras estructuras que podrían analizarse con patrones adicionales, pero esta entrega se limita a los ocho patrones verificados y aprobados. Facade, Composite, Flyweight y Decorator aparecen en documentos de planificación, pero no se documentan como implementaciones de esta entrega.
 
 ---
 
@@ -859,8 +864,9 @@ El código contiene otras estructuras que podrían analizarse con patrones adici
 | Builder | [`Builder.md`](Patrones%20creacionales/Builder.md) | PlantUML con roles GoF. |
 | Abstract Factory | [`Abstract Factory.md`](Patrones%20creacionales/Abstract%20Factory.md) | PlantUML con roles GoF. |
 | Factory Method | [`Factory Method.md`](Patrones%20creacionales/Factory%20Method.md) | PlantUML con roles GoF. |
-| Adapter | [`Adapter.md`](Patrones%20estructurales/Adapter.md) | Dos diagramas PlantUML: días hábiles e IPC. |
+| Adapter | [`Adapter.md`](Patrones%20estructurales/Adapter.md) | Dos diagramas PlantUML: días hábiles (con el Proxy) e IPC. |
 | Bridge | [`Bridge.md`](Patrones%20estructurales/Bridge.md) | Un diagrama PlantUML con las dos jerarquías y roles GoF. |
+| Proxy | [`Proxy.md`](Patrones%20estructurales/Proxy.md) | Un diagrama PlantUML con Subject, Proxy, RealSubject y Client. |
 
 ### Anexo B. Comandos de operación
 
@@ -909,6 +915,7 @@ npm run build
 | 1.0 | Octubre de 2026 | Versión Markdown inicial basada en el PDF y actualizada contra el código de `patrones-2`. |
 | 1.1 | Octubre de 2026 | Se documentó Bridge y el formato JSON; Abstract Factory pasó a tres familias y el mapa quedó en siete patrones. |
 | 1.2 | Octubre de 2026 | Se documentó `Document::isEmpty()` y se movió Bridge a `docs/Patrones estructurales/`. |
+| 1.3 | Octubre de 2026 | Se documentó el Proxy de festivos; el mapa quedó en ocho patrones y Adapter se actualizó a la cadena Client → Proxy → Adapter. |
 
 ---
 

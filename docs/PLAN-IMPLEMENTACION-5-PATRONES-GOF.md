@@ -4,7 +4,7 @@
 >
 > Este plan parte del prompt del compañero (Bridge, Composite, Facade, Flyweight y Proxy), se contrasta contra el código real de `app/`, y corrige las suposiciones que no se sostienen. El objetivo es que cada patrón tenga un lugar honesto en el proyecto, una estructura GoF clásica y un UML que se pueda leer antes de escribir una línea.
 >
-> Documentos relacionados que no se reemplazan: `docs/DOCUMENTACION-PATRONES.md`, `docs/PATRONES-IPC-REAJUSTES.md`, `docs/UML-PLANTUML-PATRONES.md`, `docs/PROXY-FESTIVOS.md`.
+> Documentos relacionados que no se reemplazan: `docs/DOCUMENTACION-PATRONES.md`, `docs/PATRONES-IPC-REAJUSTES.md`, `docs/UML-PLANTUML-PATRONES.md`, `docs/PROXY-FESTIVOS.md` y `docs/Patrones estructurales/Proxy.md`.
 
 ---
 
@@ -16,7 +16,7 @@
 | 2 | **Composite** | Jerarquía de espacios del inmueble y árbol del inventario del acta | `spaces` es plano; `act_items.space_id` existe pero no hay `parent_id` | Alto |
 | 3 | **Facade** | Operaciones de alquiler: plan, pago, reajuste, documentos | Resources coordinan 5+ servicios a mano | Medio |
 | 4 | **Flyweight** | Catálogo maestro de elementos de inventario | No existe; cada `ActItem` repite el nombre | Alto |
-| 5 | **Proxy** | Auditoría y/o carga diferida de documentos; alternativa: caché de festivos | `DocumentProxy` no existe; el Proxy de festivos está documentado pero no implementado | Medio/Alto según ruta |
+| 5 | **Proxy** | Auditoría y/o carga diferida de documentos; alternativa: caché de festivos | Ruta C implementada y documentada: `HolidaySource` + `CachedHolidaySource` + `NagerDateHolidaySource`; `DocumentProxy` (A) y auditoría de renderer (B) no implementados | Bajo (C); Medio/Alto (A/B) |
 
 ### Decisiones ya cerradas
 
@@ -26,7 +26,7 @@
 | Vínculo del inventario con el catálogo maestro | **FK `master_inventory_item_id`** |
 | Selección de espacios en el acta | **`space_id`** (con `space` como snapshot) |
 | Alcance de interfaz | **Completo**: JSON en pantalla y tablas; árbol de espacios en modal |
-| Ruta del Proxy | **Pendiente de decisión**; este documento analiza tres rutas y recomienda una |
+| Ruta del Proxy | **Ruta C implementada** (festivos) en `a4307bc`; A y B quedan como alternativas no implementadas |
 
 ### Hallazgos que cambian el plan
 
@@ -38,9 +38,11 @@
 6. **`ActItem.space_id` ya existe** desde `2026_10_05_022900_add_space_id_to_act_items_table.php`. Lo que falta es `spaces.parent_id`, el árbol y el cambio de formulario para seleccionar por id.
 7. **`master_inventory_items` necesita `user_id`.** Sin él se reintroduce el bug del catálogo global que ya se corrigió en `2026_10_14_090000_backfill_space_catalog_into_spaces_table.php`.
 8. **`RentAdjustmentService` tiene 4 dependencias, no 8**, y `PaymentPlanService::generateFor()` devuelve `void`, no un array. `PaymentRecordingService::record()` devuelve `array{payment, invoice, just_settled}`.
-9. **El Proxy de festivos está documentado pero no implementado.** `docs/PROXY-FESTIVOS.md` describe `HolidaySource`, `NagerDateHolidaySource` y `CachedHolidaySource`, pero ninguna existe. El `NagerDateBusinessCalendar` actual cachea internamente con TTL de 1 día y degrada a `WeekendBusinessCalendar`.
+9. **El Proxy de festivos quedó implementado en `a4307bc`.** `HolidaySource` es el Subject; `CachedHolidaySource` cachea por país/año y degrada a `[]`; `NagerDateHolidaySource` traduce HTTP/JSON y lanza si falla; `NagerDateBusinessCalendar` ya no cachea ni degrada. El commit anterior lo describía solo en `docs/PROXY-FESTIVOS.md`.
 
 > **Estado del Feature 1:** los hallazgos 1 a 3 ya se resolvieron al implementar el formato JSON y unificar la entrega por `content()`. El Bridge quedó documentado en `docs/Patrones estructurales/Bridge.md`; este plan se conserva como registro de análisis y del alcance de los Features 2 a 5.
+>
+> **Estado del Feature 5:** la Ruta C (Proxy de festivos) se implementó y documentó en `docs/Patrones estructurales/Proxy.md`. Las rutas A (DocumentProxy) y B (auditoría en renderer) no se implementaron; las secciones que las describen se conservan como análisis de alternativas.
 
 ---
 
@@ -1179,7 +1181,7 @@ Client --> Subject (interface)
 1. Cambiar la API de `DocumentService` a `Document` y unificar la entrega por `content()` (Ruta A).
 2. Mover el Proxy al renderizador, que ya es el punto por el que pasa todo renderizado (Ruta B).
 
-La tercera opción es mantener el Proxy de festivos ya decidido (Ruta C).
+La tercera opción, ya implementada, es el Proxy de festivos (Ruta C).
 
 ### 6.4 Ruta A: Proxy de documentos (Virtual + Smart Reference)
 
@@ -1437,23 +1439,24 @@ AuditedDocumentRenderer ..> DocumentBody : lee meta
 | `DocumentFactoryTest` | Las fábricas usan el renderer auditado |
 | `DocumentsPageTest` | La descarga pasa por `content()` |
 
-### 6.6 Ruta C: Proxy de festivos (decisión previa del equipo)
+### 6.6 Ruta C: Proxy de festivos (implementada)
 
 #### Diseño
 
-Ya está documentado en `docs/PROXY-FESTIVOS.md`:
+Implementada en `a4307bc` y documentada en `docs/Patrones estructurales/Proxy.md`; `docs/PROXY-FESTIVOS.md` conserva el detalle de diseño:
 
 | Rol GoF | Clase |
 | --- | --- |
 | **Client** | `NagerDateBusinessCalendar` |
 | **Subject** | `HolidaySource` |
 | **Proxy** | `CachedHolidaySource` |
-| **RealSubject** | `NagerDateHolidaySource` |
+| **RealSubject** | `NagerDateHolidaySource` (también Adapter) |
 
 - `NagerDateHolidaySource`: HTTP + parseo; lanza si falla.
 - `CachedHolidaySource`: clave `holidays:{country}:{year}`, TTL **1 día**, degrada a `[]` si la API falla y no cachea el fallo.
-- `NagerDateBusinessCalendar`: solo pregunta festivos y calcula días hábiles.
+- `NagerDateBusinessCalendar`: solo pregunta festivos y calcula días hábiles; ya no conoce `Http`, `Cache` ni `Log`.
 - `WeekendBusinessCalendar`: implementación de respaldo para tests.
+- `AppServiceProvider`: compone `NagerDateBusinessCalendar(CachedHolidaySource(NagerDateHolidaySource(...)))` en producción.
 
 #### Diagrama de clases
 
@@ -1525,15 +1528,12 @@ NagerDateBusinessCalendar --> HolidaySource : usa
 
 ### 6.8 Recomendación
 
-**Ruta recomendada para la entrega académica: C + B.**
+**Ruta implementada: C (festivos).**
 
-- **C** es el Proxy canónico del proyecto, ya decidido y documentado; cumple el patrón GoF sin riesgo.
-- **B** implementa la auditoría de documentos del prompt sin romper los tipos concretos ni las vistas PDF.
-- El prerrequisito es el mismo para A y B: unificar la entrega por `content()` y corregir `body->document()`.
-
-**Si el enunciado exige exactamente el `DocumentProxy` del prompt**, usar **A**. Es viable, pero hay que aceptar el cambio de API y el costo de la construcción diferida.
-
-**Si solo se necesita el patrón y la auditoría es opcional**, usar **C**. Es la ruta más pequeña y ya está decidida.
+- **C** es el Proxy canónico del proyecto, implementado en `a4307bc` y documentado; cumple el patrón GoF con riesgo bajo.
+- **B** (auditoría en renderer) no se implementó. Era parte de la recomendación original C+B, pero la entrega se cerró con C.
+- **A** (DocumentProxy) no se implementó. Sigue siendo la ruta más fiel al enunciado si se exige auditoría de documentos, pero implica cambiar la API de `DocumentService`.
+- A y B ya no tienen pendiente el prerrequisito de entrega: `DocumentAction`/`DocumentsPage` usan `content()` y `CC-C12` corrigió `body->document()`. A exige cambiar la API de `DocumentService`; B exige agregar la auditoría y su migración.
 
 ### 6.9 Criterios de aceptación (según ruta)
 
@@ -1556,11 +1556,12 @@ Ruta B:
 
 Ruta C:
 
-- [ ] `HolidaySource`, `NagerDateHolidaySource` y `CachedHolidaySource` existen.
-- [ ] TTL 1 día por año.
-- [ ] Fallo de API devuelve `[]` y no cachea.
-- [ ] `NagerDateBusinessCalendar` ya no cachea ni degrada.
-- [ ] Tests con `Http::fake`.
+- [x] `HolidaySource`, `NagerDateHolidaySource` y `CachedHolidaySource` existen.
+- [x] TTL 1 día por año.
+- [x] Fallo de API devuelve `[]` y no cachea.
+- [x] `NagerDateBusinessCalendar` ya no cachea ni degrada.
+- [x] Tests con `Http::fake` y `Cache::flush`.
+- [x] Documento canónico en `docs/Patrones estructurales/Proxy.md`; `Adapter.md` actualizado.
 
 ---
 
@@ -1609,12 +1610,12 @@ El orden busca reducir riesgo: primero lo aislado, después los refactors, al fi
 
 ### Fase 5: Proxy
 
-- **Si se elige C+B:** C primero (aislado, sin migraciones de documentos) y B después (auditoría de renderer). B depende de Fase 0.
-- **Si se elige A:** después de Fase 1 (JSON ya usa `content()`) y de Fase 0. A cambia la API de documentos; hacerlo antes de la Facade obligaría a rehacer la Facade. Por eso A va después de la Facade o se coordina con ella.
-- **Si se elige C:** puede ir primero, junto a Fase 0, porque es independiente.
-- **Documentación:** diagramas de clases antes/después en `docs/Patrones estructurales/Proxy.md`, según la ruta elegida.
+- **Ruta C completada en `a4307bc`:** `HolidaySource`, `CachedHolidaySource` y `NagerDateHolidaySource`; `NagerDateBusinessCalendar` quedó como cliente.
+- **B no implementada:** la auditoría de renderer se mantiene como alternativa si se requiere la auditoría del prompt.
+- **A no implementada:** el `DocumentProxy` sigue siendo la ruta más fiel al enunciado, pero cambia la API de documentos.
+- **Documentación:** `docs/Patrones estructurales/Proxy.md` (cinco apartados) y `docs/PROXY-FESTIVOS.md` (detalle). `Adapter.md` se actualizó para separar traducción de control de acceso.
 
-### Orden recomendado (C + B)
+### Orden originalmente recomendado (C + B; solo C ejecutada)
 
 ```text
 0. Prerrequisitos de documentos
@@ -1622,8 +1623,8 @@ El orden busca reducir riesgo: primero lo aislado, después los refactors, al fi
 2. Facade
 3. Flyweight
 4. Composite
-5. Proxy C (festivos)
-6. Proxy B (auditoría de renderer)
+5. Proxy C (festivos) — implementado
+6. Proxy B (auditoría de renderer) — no implementado
 ```
 
 ### Orden recomendado (A, si se exige DocumentProxy)
@@ -1716,13 +1717,13 @@ vendor/bin/pint --test
 - [ ] El árbol de espacios se ve en la UI y no solo en tests.
 - [ ] El catálogo maestro es por usuario y las actas conservan su snapshot.
 - [ ] La Facade no contiene lógica de negocio nueva.
-- [ ] La ruta del Proxy está decidida y documentada en el commit/PR.
+- [x] La ruta del Proxy está decidida y documentada en el commit/PR: Ruta C en `a4307bc`, con `docs/Patrones estructurales/Proxy.md`.
 
 ---
 
 ## 12. Decisiones abiertas para analizar
 
-1. **Ruta del Proxy:** A (DocumentProxy), B (renderer audit), C (festivos) o C+B. Recomendación: **C+B** para la entrega; A si el enunciado exige el DocumentProxy.
+1. **Ruta del Proxy (resuelta):** se implementó **C** (festivos) en `a4307bc`. A (DocumentProxy) y B (renderer audit) no se implementaron; A sigue siendo la opción si el enunciado exige auditoría de documentos.
 2. **JSON crudo vs formateado:** este plan entrega valores formateados. Si el contador necesita números y fechas crudas, agregar un bloque `data` estructurado a `DocumentBody` en una fase posterior.
 3. **Unicidad de raíces de espacios:** validación en aplicación (simple) vs columna generada `parent_key` (más estricta).
 4. **Auditoría fail-closed vs fail-open:** recomendación fail-closed en web, fail-open con log en consola.
@@ -1750,9 +1751,9 @@ app/Support/Documents/DocumentDescriptor.php        (si Ruta A)
 app/Support/Documents/DocumentProxy.php             (si Ruta A)
 app/Support/Documents/DocumentAuditLogger.php       (si Ruta A/B)
 app/Models/DocumentAccess.php                       (si Ruta A/B)
-app/Contracts/HolidaySource.php                     (si Ruta C)
-app/Infrastructure/Holidays/NagerDateHolidaySource.php (si Ruta C)
-app/Infrastructure/Holidays/CachedHolidaySource.php (si Ruta C)
+app/Contracts/HolidaySource.php                     (Ruta C implementada)
+app/Infrastructure/Holidays/NagerDateHolidaySource.php (Ruta C implementada)
+app/Infrastructure/Holidays/CachedHolidaySource.php (Ruta C implementada)
 app/Documents/Rendering/AuditedDocumentRenderer.php (si Ruta B)
 database/migrations/2026_10_25_000000_add_parent_id_to_spaces_table.php
 database/migrations/2026_10_25_000100_create_master_inventory_items_table.php
@@ -1795,8 +1796,7 @@ app/Models/DeliveryAct.php
 app/Services/Acts/DeliveryActBuilder.php
 app/Services/Acts/DeliveryActDraft.php
 app/Providers/AppServiceProvider.php
-app/Infrastructure/Holidays/NagerDateBusinessCalendar.php (si Ruta C)
-config/services.php (si Ruta C)
+app/Infrastructure/Holidays/NagerDateBusinessCalendar.php (Ruta C implementada)
 lang/es/invoice.php
 lang/en/invoice.php
 database/factories/ActItemFactory.php
@@ -1813,7 +1813,7 @@ tests/Feature/CreateDeliveryActFromTest.php
 tests/Feature/DeliveryActPrototypeTest.php
 tests/Feature/SpaceCatalogFieldTest.php
 tests/Feature/SeedingTest.php
-tests/Feature/BusinessCalendarTest.php (si Ruta C)
+tests/Feature/BusinessCalendarTest.php (Ruta C implementada)
 ```
 
 ---
@@ -1823,7 +1823,8 @@ tests/Feature/BusinessCalendarTest.php (si Ruta C)
 - `docs/DOCUMENTACION-PATRONES.md`: patrones ya implementados (Singleton, Builder, Abstract Factory, Factory Method, Adapter).
 - `docs/PATRONES-IPC-REAJUSTES.md`: patrones del módulo IPC y reajustes.
 - `docs/UML-PLANTUML-PATRONES.md`: UML PlantUML de los patrones existentes.
-- `docs/PROXY-FESTIVOS.md`: diseño del Proxy de festivos (Ruta C).
+- `docs/PROXY-FESTIVOS.md`: diseño detallado del Proxy de festivos (Ruta C).
+- `docs/Patrones estructurales/Proxy.md`: documento canónico del Proxy de festivos (Ruta C implementada).
 - `app/Documents/`: implementación actual del Bridge y la Abstract Factory.
 - `app/Services/`: servicios que la Facade orquesta.
 - `app/Models/Space.php`, `app/Models/ActItem.php`, `app/Models/DeliveryAct.php`: base del Composite y el Flyweight.
