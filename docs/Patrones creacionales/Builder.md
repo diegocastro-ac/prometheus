@@ -41,10 +41,10 @@ El Builder concentra esas decisiones: la pantalla declara qué secciones existen
 - `onDate()` fija `occurred_at` y, si se recibe una hora, arma `scheduled_at` con la fecha de la visita.
 - `withParties()` incorpora los documentos de las partes.
 - `withMeterReadings()` registra únicamente las lecturas recibidas.
-- `withInventory()` marca que la sección fue pedida, reinicia los elementos, valida espacio y nombre, comprueba que el espacio exista en el catálogo del arrendador y normaliza el estado. Un estado desconocido cae en `BUENO`.
+- `withInventory()` marca que la sección fue pedida, reinicia los elementos y resuelve cada fila en ese momento. El espacio se busca por `space_id` en el catálogo del arrendador; el nombre queda como compatibilidad para actas antiguas. El elemento se resuelve por `master_inventory_item_id` o, si falta, por nombre mediante `InventoryItemFactory`. Guarda los nombres resueltos como snapshot y normaliza el estado; un estado desconocido cae en `BUENO`. Para conocer el dueño del catálogo, `forRental()` debe haberse llamado antes; si no, se usa la sesión.
 - `withCommitments()` y `withSignatures()` incorporan las secciones restantes.
 
-**Cierre.** `build()` exige `rental_id`, `landlord_name`, `tenant_name` y `occurred_at`; crea el `DeliveryAct`, guarda y, si el inventario fue pedido y tiene elementos, resuelve cada `space_id` por nombre contra el catálogo del dueño del acta y crea los `ActItem`. Devuelve el acta con el inventario cargado. Las secciones que nunca se pidieron quedan en `null` y no se imprimen.
+**Cierre.** `build()` exige `rental_id`, `landlord_name`, `tenant_name` y `occurred_at`; crea el `DeliveryAct`, lo guarda y, si el inventario fue pedido y tiene elementos, crea los `ActItem` con los ids y snapshots que `withInventory()` ya resolvió. No vuelve a buscar espacios por nombre: dos ramas del árbol pueden compartir nombre. Devuelve el acta con el inventario cargado. Las secciones que nunca se pidieron quedan en `null` y no se imprimen.
 
 **Sin estado compartido.** El Builder es `scoped`, no singleton: acumula secciones e inventario mientras dura la petición. Una instancia global arrastraría los datos de un acta a la siguiente. No tiene un método `reset()`; la separación entre peticiones la garantiza el contenedor.
 
@@ -73,7 +73,9 @@ class "DeliveryActBuilder (Builder concreto)" as DeliveryActBuilder {
   + withSignatures(landlordPath : string?, tenantPath : string?, signedAt : DateTimeInterface?) : self
   + build() : DeliveryAct
   - catalogOwnerId() : int
-  - assertSpaceIsCatalogued(space : string, ownerId : int) : void
+  - catalogFor(ownerId : int) : Collection
+  - resolveSpace(catalog : Collection, spaceId : mixed, spaceName : string) : Space
+  - throwSpaceNotInCatalog(space : string, catalog : Collection) : never
 }
 
 class "DeliveryAct (Producto)" as DeliveryAct {
@@ -99,11 +101,21 @@ class "ActItem (Producto - parte)" as ActItem {
   - id : int
   - space : string
   - space_id : int
+  - master_inventory_item_id : int
   - name : string
   - state : ActItemState
   - note : string
   - photo_path : string
   - delivery_act_id : int
+}
+
+interface "InventoryItemFlyweight (Flyweight - no GoF)" as InventoryItemFlyweight {
+  + id() : int
+  + name() : string
+}
+
+class "InventoryItemFactory (Fábrica de flyweights - no GoF)" as InventoryItemFactory {
+  + resolve(ownerId : int, masterItemId : mixed, name : string) : InventoryItemFlyweight
 }
 
 class "Rental (Entrada - no GoF)" as Rental {
@@ -126,6 +138,8 @@ CreateDeliveryAct ..> Rental : obtiene
 DeliveryActBuilder ..> DeliveryAct : crea y persiste
 DeliveryActBuilder ..> Rental : deduce el dueño
 DeliveryActBuilder ..> Space : valida y resuelve
+DeliveryActBuilder ..> InventoryItemFactory : resuelve elementos
+InventoryItemFactory ..> InventoryItemFlyweight : devuelve
 DeliveryAct *-- "0..*" ActItem : contiene
 Container ..> DeliveryActBuilder : scoped
 @enduml

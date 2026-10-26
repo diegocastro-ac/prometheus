@@ -182,7 +182,7 @@ class MasterInventoryItemCatalogField <<Cliente>> {
 }
 
 class DeliveryActDraft <<Cliente>> {
-  +fromAct(DeliveryAct $act) array
+  +formState() array
 }
 
 class AppServiceProvider <<Composicion>> {

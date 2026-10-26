@@ -27,7 +27,7 @@ El sistema necesitaba conservar la estructura y el inventario, limpiar los datos
 | --- | --- | --- |
 | **Prototype** | `App\Contracts\Prototype` | Declarar que el objeto sabe copiarse mediante `__clone()`. |
 | **ConcretePrototype** | `App\Models\DeliveryAct` | Copiar el acta, limpiar el evento anterior y clonar el inventario. |
-| **ConcretePrototype** | `App\Models\ActItem` | Copiar cada elemento y descartar su identidad y llaves foráneas. |
+| **ConcretePrototype** | `App\Models\ActItem` | Copiar cada elemento, descartar su identidad y conservar las referencias al catálogo. |
 | **Client** | `App\Services\Acts\DeliveryActDraft` | Pedir el clon y traducirlo al estado del formulario. |
 | **Punto de entrada** (no GoF) | `CreateDeliveryAct` y la acción `derive` | Abrir el formulario con `?from=<id>` y recibir el estado. |
 | **Persistencia** (no GoF) | `DeliveryActBuilder` | Armar y guardar el acta nueva. |
@@ -51,13 +51,13 @@ El orden de la copia importa: `__clone()` lee primero `$this->items`, usando tod
 
 | Grupo | Datos | Resultado |
 | --- | --- | --- |
-| Se conserva | `rental_id`, `user_id`, `type`, nombres y documentos de las partes, inventario (`space`, `name`, `state`, `note`, `photo_path`) | La copia mantiene la estructura y lo costoso de rehacer. |
-| Se limpia | `id`, `exists`, `scheduled_at`, lecturas, `commitments`, `observations`, firmas, `signed_at`, `delivery_act_id` y `space_id` de los elementos | Esos datos pertenecen al evento anterior o a la identidad del registro. |
+| Se conserva | `rental_id`, `user_id`, `type`, nombres y documentos de las partes, inventario (`space`, `space_id`, `master_inventory_item_id`, `name`, `state`, `note`, `photo_path`) | La copia mantiene la estructura, las referencias al catálogo y lo costoso de rehacer. |
+| Se limpia | `id`, `exists`, `scheduled_at`, lecturas, `commitments`, `observations`, firmas, `signed_at` y `delivery_act_id` de los elementos | Esos datos pertenecen al evento anterior o a la identidad del registro. |
 | Se redefine | `occurred_at` | La nueva visita es de hoy. |
 
-La foto se conserva por **ruta**, no se duplica el archivo. El Builder resuelve el `space_id` por nombre al guardar, por eso la copia no necesita arrastrar esa llave.
+La foto se conserva por **ruta**, no se duplica el archivo. La copia conserva `space_id` y `master_inventory_item_id`; `DeliveryActDraft` solo resuelve el nombre contra el catálogo actual cuando el acta de origen es anterior a esas referencias.
 
-**Flujo.** La acción `derive` de la tabla abre `CreateDeliveryAct` con `?from=<id>`. La página busca el acta con `DeliveryActResource::getEloquentQuery()`, que limita los resultados al usuario actual; si el acta no existe o es ajena, el formulario queda vacío. Luego `DeliveryActDraft` clona el acta y llena el formulario. Al guardar, `DeliveryActBuilder` valida y persiste un acta nueva; el original no se modifica.
+**Flujo.** La acción `derive` de la tabla abre `CreateDeliveryAct` con `?from=<id>`. La página busca el acta con `DeliveryActResource::getEloquentQuery()`, que limita los resultados al usuario actual; si el acta no existe o es ajena, el formulario queda vacío. Luego `DeliveryActDraft` clona el acta y llena el formulario; para actas antiguas sin `space_id` o sin `master_inventory_item_id`, traduce el nombre guardado al id actual. Al guardar, `DeliveryActBuilder` valida y persiste un acta nueva; el original no se modifica.
 
 ## 4. Diagrama de clases
 
@@ -98,6 +98,7 @@ class "ActItem (Prototipo concreto)" as ActItem {
   - exists : bool
   - space : string
   - space_id : int
+  - master_inventory_item_id : int
   - name : string
   - state : ActItemState
   - note : string
@@ -138,7 +139,7 @@ La cardinalidad es `0..*` y no `1..*`: el inventario es opcional. El formulario 
 | --- | --- | --- | --- |
 | `Prototype` | Prototype | `app/Contracts/Prototype.php` | Declarar que el objeto sabe copiarse mediante `__clone()`. |
 | `DeliveryAct` | ConcretePrototype | `app/Models/DeliveryAct.php` | Copiar el acta, limpiar el evento anterior y clonar el inventario. |
-| `ActItem` | ConcretePrototype | `app/Models/ActItem.php` | Copiar cada elemento y descartar su identidad y llaves foráneas. |
+| `ActItem` | ConcretePrototype | `app/Models/ActItem.php` | Copiar cada elemento, descartar su identidad y conservar las referencias al catálogo. |
 | `DeliveryActDraft` | Client | `app/Services/Acts/DeliveryActDraft.php` | Pedir el clon y traducirlo al estado exacto del formulario. |
 | `CreateDeliveryAct` | Punto de entrada (no GoF) | `app/Filament/Resources/DeliveryActResource/Pages/CreateDeliveryAct.php` | Leer `?from=`, obtener el acta con alcance por usuario, prellenar el formulario y persistir con el Builder. |
 | `DeliveryActResource` | Punto de entrada (no GoF) | `app/Filament/Resources/DeliveryActResource.php` | Ofrecer la acción `derive` y limitar las actas al usuario actual. |

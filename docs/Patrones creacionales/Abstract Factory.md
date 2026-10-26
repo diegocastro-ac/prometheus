@@ -34,7 +34,8 @@ La aplicación necesita elegir el formato una vez, obtener todos los documentos 
 | **AbstractProduct** | `Document` | Contrato común de los documentos ya armados. |
 | **AbstractProduct** (base) | `AbstractDocument` | Compartir cuerpo, renderizador, nombre y contenido memorizado. |
 | **ConcreteProduct** | `PaymentReceipt`, `AdjustmentLetter`, `MonthlyStatement`, `RentInvoice` | Armar cada documento con sus datos y su vista previa. |
-| **Cliente / fachada** (no GoF) | `DocumentService` | Elegir la familia y pedir el producto correspondiente. |
+| **Cliente / servicio** (no GoF) | `DocumentService` | Elegir la familia, pedir el producto y envolverlo en `DocumentProxy`. |
+| **Proxy de entrega** (no GoF para Abstract Factory) | `DocumentProxy` | Auditar el contenido y diferir la construcción del producto. |
 | **Selector de familia** (no GoF) | `DocumentFactoryLocator` | Traducir `text`/`pdf`/`json` a una fábrica concreta. |
 | **Cliente** (no GoF) | `DocumentsPage`, `DocumentAction`, `InvoiceResource`, `RentAdjustmentResource` | Elegir el formato y entregar el documento. |
 | **Contenido** (no GoF) | `DocumentBody` | Guardar los datos sin formato que comparten las familias. |
@@ -43,7 +44,9 @@ La aplicación necesita elegir el formato una vez, obtener todos los documentos 
 
 **Correspondencia con GoF.** `DocumentFactory` es la fábrica abstracta; `TextDocumentFactory`, `PdfDocumentFactory` y `JsonDocumentFactory` son las fábricas concretas. `Document` es el producto abstracto y los cuatro documentos son productos concretos que heredan de `AbstractDocument`.
 
-Hay una desviación menor: los métodos de `DocumentFactory` declaran tipos concretos (`PaymentReceipt`, `AdjustmentLetter`, etc.) en lugar de devolver `Document`. La familia sigue siendo intercambiable porque los cuatro implementan `Document`, pero la interfaz queda acoplada a los productos concretos.
+`DocumentService` no entrega el producto directamente: lo envuelve en `DocumentProxy`, que implementa `Document` y solo construye el producto cuando se pide el contenido. La fábrica sigue produciendo el producto concreto; el Proxy es una capa de entrega ajena al patrón Abstract Factory.
+
+Hay una desviación menor: los métodos de `DocumentFactory` declaran tipos concretos (`PaymentReceipt`, `AdjustmentLetter`, etc.) en lugar de devolver `Document`. La familia sigue siendo intercambiable porque los cuatro implementan `Document`, pero la interfaz queda acoplada a los productos concretos. `DocumentService` recupera el contrato abstracto al devolver siempre `Document`.
 
 **Selección de familia.** `DocumentFactoryLocator` no es la fábrica abstracta: es el punto único que decide qué fábrica usar. `for(null)` devuelve la familia de texto; `for('text')`, `for('pdf')` y `for('json')` devuelven sus fábricas; un formato desconocido lanza `InvalidArgumentException` en lugar de caer silenciosamente en un valor por defecto. `DocumentService` usa ese selector y las pantallas eligen el formato una sola vez.
 
@@ -147,11 +150,16 @@ class "DocumentFactoryLocator (Selector de familia - no GoF)" as DocumentFactory
   + supports(format : string?) : bool
 }
 
-class "DocumentService (Cliente / fachada - no GoF)" as DocumentService {
-  + receiptFor(invoice : Invoice, format : string?) : PaymentReceipt
-  + invoiceFor(invoice : Invoice, format : string?) : RentInvoice
-  + adjustmentLetterFor(adjustment : RentAdjustment, format : string?) : AdjustmentLetter
-  + statementFor(rental : Rental, period : string, format : string?) : MonthlyStatement
+class "DocumentService (Cliente / servicio - no GoF)" as DocumentService {
+  + receiptFor(invoice : Invoice, format : string?) : Document
+  + invoiceFor(invoice : Invoice, format : string?) : Document
+  + adjustmentLetterFor(adjustment : RentAdjustment, format : string?) : Document
+  + statementFor(rental : Rental, period : string, format : string?) : Document
+}
+
+class "DocumentProxy (Proxy de entrega - no GoF para Abstract Factory)" as DocumentProxy {
+  + content() : string
+  + filename() : string
 }
 
 class "DocumentsPage (Cliente - no GoF)" as DocumentsPage
@@ -180,7 +188,9 @@ JsonDocumentFactory ..> AbstractDocument : crea los cuatro
 
 DocumentFactoryLocator ..> DocumentFactory : resuelve
 DocumentService --> DocumentFactoryLocator : usa
-DocumentService ..> Document : devuelve
+DocumentService ..> DocumentProxy : crea y devuelve
+Document <|.. DocumentProxy : implementa
+DocumentProxy ..> Document : delega
 DocumentsPage ..> DocumentService : usa
 @enduml
 ```
@@ -207,7 +217,8 @@ Los cuatro productos concretos están en `app/Documents/`; sus nombres exactos s
 | `PdfRenderer` | Colaborador (no GoF) | `app/Documents/Rendering/PdfRenderer.php` | Renderizar PDF con FlexPDF. |
 | `JsonRenderer` | Colaborador (no GoF) | `app/Documents/Rendering/JsonRenderer.php` | Renderizar JSON estructurado. |
 | `DocumentFactoryLocator` | Selector (no GoF) | `app/Documents/DocumentFactoryLocator.php` | Resolver la familia por formato. |
-| `DocumentService` | Cliente / fachada | `app/Documents/DocumentService.php` | Pedir el producto a la familia elegida. |
+| `DocumentService` | Cliente / servicio | `app/Documents/DocumentService.php` | Pedir el producto a la familia elegida y envolverlo en `DocumentProxy`. |
+| `DocumentProxy` | Proxy de entrega (no GoF para Abstract Factory) | `app/Documents/DocumentProxy.php` | Diferir la construcción del producto y auditar el acceso al contenido. |
 | `DocumentsPage` | Cliente | `app/Filament/Pages/DocumentsPage.php` | Elegir el formato y entregar los cuatro documentos. |
 | `DocumentAction` | Cliente / entrega | `app/Filament/Support/DocumentAction.php` | Acciones de descarga y copia mediante `content()`. |
 | `InvoiceResource` | Cliente | `app/Filament/Resources/InvoiceResource.php` | Acciones de factura y comprobante. |

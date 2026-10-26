@@ -40,7 +40,8 @@ El sistema necesita que el servicio no sepa de fechas ni de cantidades, que cada
 | **Entrada** (no GoF) | `Rental` | Aportar cadencia, fechas, meses y monto. |
 | **Criterio de selección** (no GoF) | `BillingCadence` | Enumerar las cadencias soportadas. |
 | **Colaboradores** (no GoF) | `InvoiceNumberService`, `AppSettings`, `BusinessCalendar` | Numerar facturas, aportar días de plazo y calcular días hábiles. |
-| **Punto de entrada** (no GoF) | `CreateRental` | Invocar el servicio después de crear el alquiler. |
+| **Fachada / cliente** (no GoF) | `RentalFacade` | Delegar en `PaymentPlanService` sin agregar reglas de facturación. |
+| **Punto de entrada** (no GoF) | `CreateRental` | Invocar `RentalFacade::generatePaymentPlan()` después de crear el alquiler. |
 
 **Correspondencia con GoF.** `PaymentPlanGenerator` es el creador abstracto y `MonthlyPlanGenerator`, `QuincenalPlanGenerator` y `AdvancePlanGenerator` son los creadores concretos. El método de fábrica es `createInvoices()`, que devuelve un arreglo de facturas.
 
@@ -49,6 +50,8 @@ El sistema necesita que el servicio no sepa de fechas ni de cantidades, que cada
 **Particularidad del dominio.** Las tres subclases producen la misma clase de producto, `Invoice`; lo que cambia es la política de creación (cantidad, fechas y montos), no el tipo de producto. Por eso el patrón se acerca también a Template Method. Se documenta como Factory Method porque el punto de variación es el método de creación y el cliente no conoce las subclases.
 
 **Selección.** `PaymentPlanGeneratorResolver` no es el creador GoF: es una fábrica simple que instancia el creador concreto según `BillingCadence`. `PaymentPlanService` usa ese selector; si no recibe una cadencia explícita, toma la del alquiler o usa `MENSUAL`. Una cadencia no soportada lanza `InvalidArgumentException`.
+
+**Entrada desde la pantalla.** `CreateRental` no conoce `PaymentPlanService`: después de guardar el alquiler llama `RentalFacade::generatePaymentPlan($rental)`, y la fachada delega en `PaymentPlanService::generateFor()`. La fachada es un punto de entrada, no un Creator ni un ConcreteCreator.
 
 **Comportamiento de las cadencias.**
 
@@ -129,6 +132,10 @@ class "BusinessCalendar (Colaborador - Adapter - no rol FM)" as BusinessCalendar
   + nextBusinessDay(date : Carbon) : Carbon
 }
 
+class "RentalFacade (Fachada / cliente - no GoF)" as RentalFacade {
+  + generatePaymentPlan(rental : Rental, cadence : BillingCadence?) : void
+}
+
 class "CreateRental (Punto de entrada - no GoF)" as CreateRental {
   + handleRecordCreation(data : array) : Model
 }
@@ -145,7 +152,8 @@ PaymentPlanGeneratorResolver ..> PaymentPlanGenerator : instancia
 PaymentPlanGeneratorResolver --> BillingCadence : selecciona
 PaymentPlanService --> PaymentPlanGeneratorResolver : usa
 PaymentPlanService ..> PaymentPlanGenerator : ejecuta
-CreateRental ..> PaymentPlanService : invoca
+CreateRental ..> RentalFacade : invoca
+RentalFacade ..> PaymentPlanService : delega
 @enduml
 ```
 
@@ -167,7 +175,8 @@ Los colaboradores `InvoiceNumberService` y `AppSettings` participan en las tres 
 | `InvoiceNumberService` | Colaborador | `app/Services/InvoiceNumberService.php` | Asignar el número de factura por usuario y año. |
 | `AppSettings` | Colaborador | `app/Settings/AppSettings.php` | Aportar los días de plazo para el vencimiento. |
 | `BusinessCalendar` | Colaborador / Adapter | `app/Contracts/BusinessCalendar.php` | Resolver el siguiente día hábil. |
-| `CreateRental` | Punto de entrada | `app/Filament/Resources/RentalResource/Pages/CreateRental.php` | Generar el plan después de crear el alquiler. |
+| `RentalFacade` | Fachada / cliente | `app/Services/RentalFacade.php` | Delegar `generatePaymentPlan()` en `PaymentPlanService`. |
+| `CreateRental` | Punto de entrada | `app/Filament/Resources/RentalResource/Pages/CreateRental.php` | Generar el plan a través de `RentalFacade` después de crear el alquiler. |
 
 ### 5.1. Ventajas
 

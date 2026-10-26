@@ -32,7 +32,8 @@ La configuración tiene tres características que justifican el patrón:
 | --- | --- | --- |
 | **Singleton** | `AppSettings` | Mantener una única configuración inmutable de la empresa. |
 | **Singleton** (segunda aplicación) | `CurrentUserContextInterface` / `AuthUserContext` | Exponer el usuario actual sin guardar su identidad. |
-| **Cliente** | `AjustesPage`, `PdfRenderer`, `DocumentAction`, `InvoiceResource`, `PropertyResource`, `PaymentPlanGeneratorResolver` | Consumir la configuración compartida. |
+| **Cliente** | `PdfRenderer`, `InvoiceResource`, `PropertyResource`, `PaymentPlanGeneratorResolver` | Consumir la configuración compartida. |
+| **Cliente / actualizador indirecto** | `AjustesPage` | Leer y guardar la configuración a través de `SettingsService`. |
 | **Cliente / actualizador** | `SettingsService` | Guardar la fila única y descartar la instancia para forzar una nueva lectura. |
 | **Registro** (no GoF) | Contenedor de Laravel | Crear y conservar la instancia; no forma parte del modelo clásico del patrón. |
 

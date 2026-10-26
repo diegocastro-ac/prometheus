@@ -518,7 +518,7 @@ end note
 | `el_proxy_degrada_a_lista_vacia_si_la_api_falla` | Un error del real se convierte en `[]`. |
 | `el_proxy_no_cachea_el_fallo_y_reintenta_en_el_siguiente_intento` | El fallo no envenena la caché; el segundo intento consulta de nuevo. |
 | `el_proxy_y_el_real_son_intercambiables_para_el_cliente` | Ambos implementan `HolidaySource` y el calendario los usa igual. |
-| `la_metadata_no_registra_un_acceso` | `filename()`, `mimeType()`, `deliveryLabel()`, `isDownload()`, `preview()` e `isEmpty()` no crean filas. |
+| `la_metadata_no_registra_un_acceso` | `filename()`, `mimeType()`, `isDownload()`, `preview()` e `isEmpty()` no crean filas. |
 | `el_contenido_registra_un_unico_acceso_aunque_se_pida_varias_veces` | Dos `content()` sobre el mismo Proxy producen una fila con usuario, tipo, referencia, formato, contexto y fecha. |
 | `cada_proxy_registra_su_propio_acceso` | Dos proxies distintos producen dos filas, una por formato. |
 | `el_documento_real_se_construye_una_sola_vez` | El builder se ejecuta una vez para dos `content()` sobre el mismo Proxy. |

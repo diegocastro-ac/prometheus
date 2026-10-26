@@ -1,267 +1,242 @@
 # Contexto de la documentación de patrones de diseño
 
-> Documento de trabajo. Registra el encargo, el alcance confirmado, lo que ya se verificó en el código y las discrepancias que hay que resolver antes de escribir la documentación definitiva. No es la entrega final.
+> Documento de trabajo. Registra el encargo, el alcance, los patrones verificados, las correcciones aplicadas y lo que falta antes de cerrar la documentación. No es la entrega final.
 
 - **Proyecto:** Prometheus (Laravel 12 + Filament 3, PHP 8.2)
 - **Fecha de este corte:** 2026-10-25
-- **Estado:** los ocho patrones del alcance documentados con estructura simplificada y roles GoF en los diagramas; documento principal actualizado en Markdown; pendiente la revisión final y el commit documental del Proxy.
+- **Estado:** los 12 patrones están implementados y documentados. La revisión de consistencia está en curso: ya se corrigieron Prototype, Builder, Abstract Factory, Factory Method, Proxy y Flyweight. No se ha modificado código ni se ha reejecutado la suite.
 
 ---
 
 ## 1. Encargo
 
-Documentar los patrones de diseño implementados en Prometheus, con base en el código real, y actualizar la documentación existente y el documento principal del parcial.
+Documentar los patrones de diseño implementados en Prometheus con base en el código real, actualizar los documentos individuales y mantener sincronizado el documento principal del parcial.
 
-La entrega debe incluir:
+La entrega incluye:
 
-1. Documentos individuales de los patrones creacionales confirmados.
-2. Documentos de los patrones estructurales confirmados (Adapter, Bridge y Proxy).
+1. Documentos individuales de los cinco patrones creacionales.
+2. Documentos individuales de los siete patrones estructurales.
 3. Actualización del documento principal del parcial.
-4. Documentación de apoyo (diagramas, guías o resúmenes), solo si aporta y no duplica.
+4. Documentación de apoyo solo cuando aporte detalle y no duplique los documentos de patrón.
 
 ---
 
 ## 2. Reglas de trabajo
 
-- **Solo documentación.** No se modifica código fuente, lógica, pruebas ni configuración funcional.
+- **Solo documentación.** No se modifica código fuente, lógica, pruebas, configuración ni migraciones.
 - **No se implementan patrones.** Solo se documentan los que ya existen.
-- **Avance incremental.** Primero el análisis y el diagnóstico; después un patrón a la vez, con aprobación antes de continuar.
 - **Verificación obligatoria.** Cada clase, ruta, método, relación y flujo debe existir en el código actual antes de escribirse.
-- **No inventar.** No se agregan clases, archivos, requerimientos ni relaciones que no estén verificados.
-- **No confundir el nombre con el patrón.** Una clase llamada `Factory` no convierte automáticamente su uso en Factory Method; hay que comprobar los roles.
+- **No inventar.** No se agregan clases, archivos, requerimientos ni relaciones no verificadas.
+- **No confundir el nombre con el patrón.** Una clase llamada `Factory` no convierte automáticamente su uso en Factory Method; los roles se comprueban en el código.
 - **Jerarquía de fuentes:** código actual > documentación existente > CodeGraph. Si hay conflicto, manda el código.
-- **Alcance estructural restringido:** de los patrones estructurales están confirmados **Adapter**, **Bridge** y **Proxy**. Los demás que aparecen en el código o en documentos de planificación (Facade, Composite, Flyweight, Decorator, por ejemplo) no se documentan como implementados hasta que se autoricen.
-- **No hacer cambios masivos.** Cada edición debe ser revisable y justificada.
-- **Pruebas bajo demanda:** no ejecutar la suite completa ni repetir pruebas ya verificadas. Ejecutar solo el filtro mínimo indispensable cuando el cambio lo requiera; correr toda la suite consume demasiado tiempo para el ritmo de trabajo.
+- **No hacer cambios masivos sin justificación.** Cada edición debe ser revisable.
+- **Pruebas bajo demanda:** no ejecutar la suite completa ni repetir pruebas ya verificadas. Ejecutar solo el filtro mínimo indispensable cuando el cambio lo requiera.
 
-### Criterios permanentes de documentación
+### Criterios de documentación
 
-1. **Estructura fija de cinco apartados:** 1) nombre y propósito, 2) problema que resuelve, 3) solución y roles, 4) diagrama de clases, 5) clases participantes y valoración (ventajas y desventajas). No se agregan apartados de funcionamiento paso a paso, evidencia, resúmenes, relaciones entre patrones ni contenido redundante.
-2. **Concisión:** la información esencial se integra en los cinco apartados. No se elimina lo necesario para entender la implementación.
-3. **Roles GoF en los diagramas:** cada clase debe mostrar su rol junto al nombre real, por ejemplo `AppSettings (Singleton)`, `DeliveryAct (Prototipo concreto)` o `DeliveryActDraft (Cliente)`. Las clases que no cumplen un rol GoF se marcan `(no GoF)`.
-4. **Verificación de roles:** los roles se asignan por la responsabilidad real en el código, no por semejanza de nombres. Si la implementación difiere del modelo clásico, se representa la correspondencia real.
-5. **Compatibilidad:** los diagramas deben seguir siendo válidos y legibles en PlantUML y Draw.io.
+1. **Núcleo común de cinco apartados:** 1) nombre y propósito, 2) problema que resuelve, 3) solución y roles, 4) diagrama de clases, 5) clases participantes y valoración.
+2. **Apartados opcionales de evidencia:** los documentos estructurales más recientes agregan 6) flujo de una llamada, 7) pruebas y 8) decisión de alcance. No sustituyen el núcleo; amplían la sustentación cuando el patrón tiene varios casos o una decisión de diseño relevante.
+3. **Concisión:** la información esencial se integra en los apartados; no se duplica el mismo contenido en varios documentos.
+4. **Roles GoF en los diagramas:** cada clase muestra su rol junto al nombre real. Las clases que no cumplen un rol GoF se marcan `(no GoF)`.
+5. **Verificación de roles:** los roles se asignan por responsabilidad real, no por semejanza de nombres.
+6. **Compatibilidad:** los diagramas deben seguir siendo válidos y legibles en PlantUML y Draw.io.
 
 ---
 
-## 3. Patrones confirmados
+## 3. Patrones implementados
 
-Los cinco creacionales y los tres estructurales fueron verificados directamente en el código. Los ocho patrones y el documento principal ya están documentados; queda la revisión final y el commit documental del Proxy.
+Los 12 patrones fueron verificados en el código y tienen documento individual.
 
-| Patrón | Implementación verificada | Clases y archivos clave | Estado de la doc. |
+| Patrón | Implementación verificada | Archivos clave | Documento |
 | --- | --- | --- | --- |
-| **Singleton** | `AppSettings` y `CurrentUserContextInterface` registrados como singleton en el contenedor | `app/Settings/AppSettings.php`, `app/Infrastructure/AuthUserContext.php`, `app/Providers/AppServiceProvider.php` | Documentado; pendiente de revisión |
-| **Builder** | `DeliveryActBuilder`, registrado como `scoped`, con secciones opcionales y `build()` | `app/Services/Acts/DeliveryActBuilder.php` | Documentado; pendiente de revisión |
-| **Abstract Factory** | `DocumentFactory` con tres familias (`TextDocumentFactory`, `PdfDocumentFactory`, `JsonDocumentFactory`) y cuatro productos | `app/Documents/Factories/`, `app/Documents/DocumentFactoryLocator.php` | Documentado; pendiente de revisión |
-| **Factory Method** | `PaymentPlanGenerator` y tres subclases por cadencia de cobro | `app/Services/PaymentPlans/`, `app/Services/PaymentPlanService.php` | Documentado; pendiente de revisión |
-| **Prototype** | `Prototype`, `__clone()` en `DeliveryAct` y `ActItem`, cliente `DeliveryActDraft` | `app/Contracts/Prototype.php`, `app/Models/DeliveryAct.php`, `app/Models/ActItem.php`, `app/Services/Acts/DeliveryActDraft.php` | Documentado; pendiente de revisión |
-| **Adapter** | `BusinessCalendar` + `NagerDateBusinessCalendar` + `NagerDateHolidaySource`; segunda aplicación para el IPC | `app/Contracts/BusinessCalendar.php`, `app/Contracts/HolidaySource.php`, `app/Infrastructure/Holidays/`, `app/Contracts/Ipc/IpcProvider.php`, `app/Infrastructure/Ipc/` | Documentado; actualizado por el Proxy |
-| **Bridge** | `AbstractDocument` como abstracción; `DocumentRenderer` como implementador; `PlainTextRenderer`, `PdfRenderer` y `JsonRenderer` como implementadores concretos | `app/Documents/AbstractDocument.php`, `app/Documents/Rendering/`, `app/Documents/Factories/JsonDocumentFactory.php` | Documentado; pendiente de revisión |
-| **Proxy** | `HolidaySource` como Subject; `CachedHolidaySource` como Proxy; `NagerDateHolidaySource` como RealSubject/Adapter; `NagerDateBusinessCalendar` como cliente | `app/Contracts/HolidaySource.php`, `app/Infrastructure/Holidays/CachedHolidaySource.php`, `app/Infrastructure/Holidays/NagerDateHolidaySource.php`, `app/Infrastructure/Holidays/NagerDateBusinessCalendar.php`, `app/Providers/AppServiceProvider.php` | Documentado; pendiente de revisión |
+| **Singleton** | `AppSettings` y `CurrentUserContextInterface` registrados como singleton | `app/Settings/AppSettings.php`, `app/Infrastructure/AuthUserContext.php`, `app/Providers/AppServiceProvider.php` | `docs/Patrones creacionales/Singleton.md` |
+| **Prototype** | `Prototype`, `__clone()` en `DeliveryAct` y `ActItem`, cliente `DeliveryActDraft` | `app/Contracts/Prototype.php`, `app/Models/DeliveryAct.php`, `app/Models/ActItem.php`, `app/Services/Acts/DeliveryActDraft.php` | `docs/Patrones creacionales/Prototype.md` |
+| **Builder** | `DeliveryActBuilder` scoped, secciones opcionales y `build()` persistente | `app/Services/Acts/DeliveryActBuilder.php` | `docs/Patrones creacionales/Builder.md` |
+| **Abstract Factory** | `DocumentFactory` con tres familias y cuatro productos | `app/Documents/Factories/`, `app/Documents/DocumentFactoryLocator.php` | `docs/Patrones creacionales/Abstract Factory.md` |
+| **Factory Method** | `PaymentPlanGenerator` y tres subclases por cadencia | `app/Services/PaymentPlans/`, `app/Services/PaymentPlanService.php` | `docs/Patrones creacionales/Factory Method.md` |
+| **Adapter** | `BusinessCalendar` y `NagerDateBusinessCalendar`; segunda aplicación para IPC | `app/Contracts/BusinessCalendar.php`, `app/Contracts/HolidaySource.php`, `app/Infrastructure/Holidays/`, `app/Contracts/Ipc/IpcProvider.php`, `app/Infrastructure/Ipc/` | `docs/Patrones estructurales/Adapter.md` |
+| **Bridge** | `AbstractDocument` como abstracción; `DocumentRenderer` como implementador | `app/Documents/AbstractDocument.php`, `app/Documents/Rendering/` | `docs/Patrones estructurales/Bridge.md` |
+| **Composite** | `SpaceComponent`, `SpaceLeaf` y `SpaceComposite`; árbol construido por `SpaceTreeBuilder` | `app/Models/SpaceComponent.php`, `app/Models/SpaceLeaf.php`, `app/Models/SpaceComposite.php`, `app/Services/Acts/SpaceTreeBuilder.php` | `docs/Patrones estructurales/Composite.md` |
+| **Decorator** | `PactadoCapDecorator` envuelve `IpcBasisStrategy` y limita el porcentaje pactado | `app/Services/Adjustment/Decorators/PactadoCapDecorator.php`, `app/Services/RentAdjustmentService.php` | `docs/Patrones estructurales/Decorator.md` |
+| **Facade** | `RentalFacade` coordina cobros, pagos, reajustes, documentos y fechas | `app/Services/RentalFacade.php` | `docs/Patrones estructurales/Facade.md` |
+| **Flyweight** | `InventoryItemFactory` comparte instancias de `MasterInventoryItem` por arrendador | `app/Services/InventoryItemFactory.php`, `app/Contracts/InventoryItemFlyweight.php`, `app/Models/MasterInventoryItem.php` | `docs/Patrones estructurales/Flyweight.md` |
+| **Proxy** | `CachedHolidaySource` para festivos y `DocumentProxy` para documentos | `app/Infrastructure/Holidays/CachedHolidaySource.php`, `app/Documents/DocumentProxy.php`, `app/Documents/DocumentService.php` | `docs/Patrones estructurales/Proxy.md` |
 
-### 3.1. Singleton
+---
 
-- `AppSettings` es `final`, tiene constructor privado y se construye con `fromDatabase()` o `defaults()`.
+## 4. Verificación por patrón
+
+### 4.1. Singleton
+
+- `AppSettings` es `final`, inmutable y se construye con `fromDatabase()` o `defaults()`.
 - Se registra con `$this->app->singleton(AppSettings::class, fn () => AppSettings::fromDatabase())`.
-- La instancia es inmutable (`readonly`) y se descarta al guardar ajustes para que la siguiente petición la vuelva a leer.
-- `CurrentUserContextInterface` también se registra como singleton; es una segunda aplicación del patrón, no el caso principal.
-- Campos actuales de `AppSettings`: `businessName`, `taxId`, `address`, `currency`, `logoPath`, `email`, `phone`, `invoiceDueDays`, `legalFooter`, `defaultCityCode`.
+- `CurrentUserContextInterface` también es singleton; es una segunda aplicación del patrón.
+- Campos actuales: `businessName`, `taxId`, `address`, `currency`, `logoPath`, `email`, `phone`, `invoiceDueDays`, `legalFooter`, `defaultCityCode`.
 
-### 3.2. Builder
+### 4.2. Prototype
 
-- `DeliveryActBuilder` no tiene dependencias inyectadas; el constructor vacío es intencional.
-- Se registra como `scoped`, no como singleton, porque acumula secciones durante la construcción.
-- Métodos verificados: `forRental()`, `ofType()`, `onDate()`, `withParties()`, `withMeterReadings()`, `withInventory()`, `withCommitments()`, `withSignatures()` y `build()`.
-- `build()` valida los datos obligatorios y solo persiste las secciones solicitadas.
-- El catálogo de espacios ya no vive en `AppSettings`: se consulta en la tabla `spaces`, por dueño (`user_id`).
-- El Builder ya no crea espacios faltantes; falla con un mensaje claro.
+- `Prototype` declara únicamente `__clone(): void`.
+- `DeliveryAct::__clone()` hace copia profunda del acta y de su inventario, limpia el evento anterior y redefine `occurred_at` a hoy.
+- `ActItem::__clone()` limpia `id`, `exists` y `delivery_act_id`; conserva `space_id` y `master_inventory_item_id`.
+- `DeliveryActDraft::formState()` traduce el clon al formulario. Solo resuelve un id por nombre cuando el acta antigua no tiene la referencia.
+- La entrada visual es la acción `derive` del listado, que abre `CreateDeliveryAct` con `?from=<id>`.
+
+### 4.3. Builder
+
+- `DeliveryActBuilder` se registra como `scoped`; opcionalmente recibe `InventoryItemFactory` para pruebas.
+- Métodos: `forRental()`, `ofType()`, `onDate()`, `withParties()`, `withMeterReadings()`, `withInventory()`, `withCommitments()`, `withSignatures()` y `build()`.
+- `withInventory()` resuelve el espacio por `space_id` en el catálogo del arrendador y el elemento por `master_inventory_item_id` o nombre. Guarda nombres resueltos como snapshot.
+- `build()` valida los obligatorios, persiste el acta y crea las filas ya resueltas. No vuelve a buscar espacios por nombre.
 - No hay interfaz `Builder` ni `Director` separados: `DeliveryActBuilder` es el builder concreto y `CreateDeliveryAct::assemble()` cumple el papel de director.
-- `withInventory()` valida contra el catálogo y resuelve el dueño; el orden respecto a `forRental()` importa.
-- `build()` persiste el acta y su inventario, por lo que no es un builder puramente en memoria ni idempotente.
 
-### 3.3. Abstract Factory
+### 4.4. Abstract Factory
 
 - `DocumentFactory` declara cuatro productos: `paymentReceipt()`, `adjustmentLetter()`, `monthlyStatement()` y `rentInvoice()`.
 - Familias: `TextDocumentFactory`, `PdfDocumentFactory` y `JsonDocumentFactory`.
-- `DocumentFactoryLocator` traduce el formato elegido a la fábrica correspondiente; `for(null)` usa texto y un formato desconocido lanza `InvalidArgumentException`.
-- El binding por defecto es `TextDocumentFactory`; PDF y JSON se piden por nombre desde el locator.
-- Los productos heredan de `AbstractDocument` y comparten `DocumentBody`; el renderizador de la familia decide el formato.
-- La familia JSON usa `JsonRenderer` y entrega `title`, `document_type`, `fields`, `table`, `warnings`, `notes` y `footer`; excluye `meta` para no incluir la imagen del comprobante.
-- `Document` declara `isEmpty()`: `AbstractDocument` devuelve `false` y `MonthlyStatement` devuelve `true` cuando no tiene facturas. `DocumentsPage` usa el contrato y ya no llama a `invoices()`. Eso prepara una eventual sustitución por un Proxy de documentos, que no forma parte de esta entrega; el Proxy implementado es el de festivos.
-- Los métodos de `DocumentFactory` devuelven tipos concretos (`PaymentReceipt`, `AdjustmentLetter`, etc.), no el contrato `Document`. Es una desviación menor del modelo clásico.
-- El comentario de `AppServiceProvider` dice que las fábricas son scoped, pero el binding real es `bind(DocumentFactory::class, TextDocumentFactory::class)`. No se documentan como scoped.
-- La entrega de PDF, texto y JSON se unificó en `DocumentAction::download()` y `DocumentsPage::deliver()`: ambos usan `content()`, `filename()` y `mimeType()` del documento.
+- `DocumentFactoryLocator` traduce el formato; `for(null)` usa texto y un formato desconocido lanza `InvalidArgumentException`.
+- Los métodos de la fábrica devuelven tipos concretos; `DocumentService` recupera el contrato `Document` al devolver un `DocumentProxy`.
+- `DocumentService` elige la familia, crea el descriptor y difiere la construcción del producto hasta que se pide `content()`.
+- El Proxy está fuera del patrón Abstract Factory: la fábrica sigue produciendo el producto concreto.
 
-### 3.4. Factory Method
+### 4.5. Factory Method
 
-- `PaymentPlanGenerator` es el creador abstracto; `createInvoices()` es el método de fábrica y `generate()` el método plantilla que lo invoca.
+- `PaymentPlanGenerator` es el creador abstracto; `createInvoices()` es el método de fábrica y `generate()` el método plantilla.
 - Subclases: `MonthlyPlanGenerator`, `QuincenalPlanGenerator` y `AdvancePlanGenerator`.
-- `PaymentPlanGeneratorResolver` es una fábrica simple/selector (no GoF) que decide la subclase según `BillingCadence` (`MENSUAL`, `QUINCENAL`, `ANTICIPO`).
-- `PaymentPlanService` es el cliente usado por la pantalla de alquileres; elige la cadencia explícita, la del alquiler o `MENSUAL`.
-- Las subclases reciben `Rental`, `InvoiceNumberService`, `AppSettings` y `BusinessCalendar`.
-- El producto es `Invoice` en las tres cadencias; lo que varía es la política de creación (cantidad, fechas y montos). Por eso el patrón se acerca también a Template Method.
-- `generate()` devuelve las facturas creadas o existentes; `PaymentPlanService` no usa ese retorno.
-- El Factory Method real del sistema es este, no los métodos estáticos `forInvoice()` de los documentos.
+- `PaymentPlanGeneratorResolver` es una fábrica simple/selector (no GoF).
+- `PaymentPlanService` es el cliente del creador; `RentalFacade::generatePaymentPlan()` delega en él.
+- `CreateRental` llama a `RentalFacade`, no a `PaymentPlanService` directamente.
+- El producto es `Invoice` en las tres cadencias; varía la política de creación, no el tipo de producto.
 
-### 3.5. Prototype
-
-- `Prototype` declara únicamente `__clone(): void`.
-- `DeliveryAct::__clone()` hace copia profunda del acta y de su inventario.
-- `ActItem::__clone()` conserva el contenido del elemento, pero desvincula la copia del registro original.
-- `DeliveryActDraft` es el cliente: clona el acta y traduce la copia al estado del formulario.
-- La entrada visual es la acción `derive` del listado, que abre `CreateDeliveryAct` con `?from=<id>`.
-- La copia no se guarda sola: el guardado sigue pasando por `DeliveryActBuilder`.
-
-### 3.6. Adapter
+### 4.6. Adapter
 
 - **Target:** `BusinessCalendar` (`isBusinessDay()` y `nextBusinessDay()`).
-- **Adapter de negocio:** `NagerDateBusinessCalendar`, que compone un `HolidaySource` y traduce festivos a días hábiles.
-- **Adapter HTTP:** `NagerDateHolidaySource`, que implementa `HolidaySource` y traduce la API Nager.Date (`GET /PublicHolidays/{año}/{país}`).
+- **Adapter de negocio:** `NagerDateBusinessCalendar`, que compone un `HolidaySource`.
+- **Adapter HTTP:** `NagerDateHolidaySource`, que adapta la API Nager.Date.
 - **Adaptee:** la API Nager.Date.
-- **Respaldo:** `WeekendBusinessCalendar`, que solo evita fines de semana; es una implementación del Target, no un Adapter. Se usa en pruebas y como respaldo.
-- **Clientes verificados:** `PaymentPlanGenerator` y sus subclases, `PaymentPlanGeneratorResolver`, `RentalPeriod`, `InvoiceResource` y `AdjustmentDateProposer`.
-- El binding cambia por entorno: `WeekendBusinessCalendar` en `testing`; en producción, `NagerDateBusinessCalendar(CachedHolidaySource(NagerDateHolidaySource(...)))`.
-- La caché y la degradación ya no están en el Adapter: viven en el Proxy `CachedHolidaySource`. Si Nager.Date falla, el Proxy devuelve `[]` y los festivos entre semana se tratan como hábiles; el respaldo efectivo es de fin de semana. `nextBusinessDay()` tiene tope de 366 días y un fallback explícito, pero en la práctica la degradación ocurre antes.
-- **Segunda aplicación (IPC):** Target `IpcProvider`; adaptadores `DaneCdaIpcProvider` (CDA del DANE) y `LocalSeriesIpcProvider` (tabla `ipc_series`); doble de prueba `InMemoryIpcProvider` (no Adapter).
-- El binding por defecto es `IpcProvider -> LocalSeriesIpcProvider`; los comandos `ipc:sync` y `ipc:sync:geographies` usan `DaneCdaIpcProvider` explícitamente y `IpcSynchronizer` lo recibe como `IpcProvider`.
-- La lectura de IPC en pantallas y reajustes usa `IpcSeriesRepository` directamente en varios puntos; el Target no cubre todos los consumidores.
-- `DaneCdaIpcProvider` normaliza coma decimal, meses abreviados, `PAI_ID` con ceros, columnas por nombre y nulos; reintenta con espera creciente y lanza `DaneIpcUnavailable`.
+- **Respaldo:** `WeekendBusinessCalendar` es otra implementación del Target, no un Adapter.
+- **Segunda aplicación (IPC):** Target `IpcProvider`; adaptadores `DaneCdaIpcProvider` y `LocalSeriesIpcProvider`.
+- La caché y la degradación de festivos viven en `CachedHolidaySource`, no en el Adapter.
 
-### 3.7. Bridge
+### 4.7. Bridge
 
-- **Abstraction:** `AbstractDocument` contiene un `DocumentBody` y un `DocumentRenderer`; delega `content()`, nombre, MIME, etiqueta y modo de entrega.
-- **RefinedAbstraction:** `PaymentReceipt`, `RentInvoice`, `AdjustmentLetter` y `MonthlyStatement`. Cada uno arma su cuerpo y se adjunta mediante `attachToBody()`.
+- **Abstraction:** `AbstractDocument` contiene `DocumentBody` y `DocumentRenderer`.
+- **RefinedAbstraction:** `PaymentReceipt`, `RentInvoice`, `AdjustmentLetter` y `MonthlyStatement`.
 - **Implementor:** `DocumentRenderer`; **ConcreteImplementor:** `PlainTextRenderer`, `PdfRenderer` y `JsonRenderer`.
-- `JsonRenderer` es el tercer implementador concreto; `JsonDocumentFactory` es la familia JSON. `DocumentFactoryLocator` resuelve `text`, `pdf` y `json`.
-- `PdfRenderer::selectView()` elige la plantilla comparando la clase del documento; es una desviación real porque el implementador conoce las abstracciones refinadas.
-- El JSON usa valores de presentación y excluye `meta`; no es un feed contable crudo.
-- Agregar un formato no obliga a tocar la lógica de los documentos; agregar un documento sí exige actualizar las tres fábricas y la selección de plantilla PDF.
-- `Document::isEmpty()` forma parte de la abstracción: `AbstractDocument` responde `false` y `MonthlyStatement` lo sobrescribe. La pantalla ya no consulta `invoices()` del producto concreto.
+- `PdfRenderer::selectView()` compara la clase del documento con las abstracciones refinadas; es una desviación real del modelo clásico.
+- `Document::isEmpty()` forma parte de la abstracción y `MonthlyStatement` lo sobrescribe.
 
-### 3.8. Proxy
+### 4.8. Composite
 
-- **Subject:** `HolidaySource`, con `holidaysFor(int $year): array`.
-- **Proxy:** `CachedHolidaySource`; recibe un `HolidaySource` real y el país.
-- **RealSubject:** `NagerDateHolidaySource`; a la vez es Adapter de Nager.Date. Lanza `RuntimeException` si la API falla o responde con un JSON inválido.
-- **Client:** `NagerDateBusinessCalendar`; ya no conoce `Http`, `Cache` ni `Log`.
-- **Composición:** `NagerDateBusinessCalendar(CachedHolidaySource(NagerDateHolidaySource))` en producción; `WeekendBusinessCalendar` en `testing`.
-- **Clave de caché:** `holidays:{country}:{year}`; TTL de un día (`now()->addDay()`).
-- **Fallback:** tras un `Throwable` del real, `Log::warning` y `[]`; el fallo no se cachea.
-- **Cálculo de días hábiles:** `isBusinessDay()` salta fines de semana y festivos; `nextBusinessDay()` tiene tope de 366 días y luego usa `WeekendBusinessCalendar`.
-- **Pruebas:** `CachedHolidaySourceTest` contiene 4 pruebas y 11 aserciones por inspección estática; `BusinessCalendarTest` fue actualizado para construir la cadena completa. No se reejecutó la suite tras el commit `a4307bc`.
-- **Documentos:** `docs/Patrones estructurales/Proxy.md` es el documento canónico; `docs/PROXY-FESTIVOS.md` conserva el detalle y la comparación con Adapter.
+- `SpaceComponent` define la hoja y el compuesto; `SpaceLeaf` representa un espacio sin hijos y `SpaceComposite` agrupa hijos.
+- El árbol se persiste con `Space.parent_id`; no se guarda una estructura serializada.
+- `SpaceTreeBuilder::forUser()` carga el catálogo una vez y arma el árbol en memoria.
+- Las operaciones de recorrido, búsqueda y nombres únicos se resuelven sobre el componente.
+- El Composite no reemplaza el catálogo de espacios: lo organiza para la interfaz y para el inventario.
 
----
+### 4.9. Decorator
 
-## 4. Adapter: dos aplicaciones verificadas
+- `IpcBasisStrategy` es el componente; `PactadoCapDecorator` es el decorador concreto.
+- El decorador envuelve una estrategia y aplica `min(pactado, legal)`, por lo que solo puede bajar el porcentaje.
+- `legalSnapshot()` conserva el IPC legal sin aplicar el pacto; `resolve()` entrega el porcentaje aplicado.
+- `RentAdjustmentService` construye la cadena y conserva separadas las cifras legal y aplicada.
 
-El patrón Adapter no se limita a los días hábiles. Hay una segunda aplicación para el IPC del DANE.
+### 4.10. Facade
 
-| Rol | Días hábiles | IPC |
-| --- | --- | --- |
-| Target | `BusinessCalendar` | `IpcProvider` |
-| Adapter | `NagerDateHolidaySource` (Nager.Date → `HolidaySource`) y `NagerDateBusinessCalendar` (`HolidaySource` → `BusinessCalendar`) | `DaneCdaIpcProvider` y `LocalSeriesIpcProvider` |
-| Adaptee | API Nager.Date | Servicio CDA del DANE / copia local en `ipc_series` |
-| Cliente | Generadores de cobro, `RentalPeriod`, facturas y reajustes | `IpcSynchronizer`, comandos de sincronización |
-| Proxy (no Adapter) | `CachedHolidaySource` | No aplica |
+- `RentalFacade` concentra las operaciones de alquileres, pagos, reajustes y documentos.
+- Depende de `PaymentPlanService`, `PaymentRecordingService`, `RentAdjustmentService`, `DocumentService`, `AdjustmentChainCalculator`, `AdjustmentChainRecalculator` y `AdjustmentDateProposer`.
+- No agrega reglas de negocio: delega en los servicios y conserva el punto de entrada único.
+- No absorbe accesos auxiliares del formulario ni notificaciones.
 
-Decisión tomada: las dos aplicaciones se documentan en un solo archivo `docs/Patrones estructurales/Adapter.md`, con secciones y diagramas separados para días hábiles e IPC. La caché y la degradación de festivos se explican en `docs/Patrones estructurales/Proxy.md`, no como parte del Adapter.
+### 4.11. Flyweight
+
+- `InventoryItemFlyweight` expone `id()`, `name()` y `ownerId()`; `MasterInventoryItem` es la implementación compartida.
+- `InventoryItemFactory` se registra como `scoped` y mantiene un pool por arrendador.
+- `resolve()` busca en el pool, consulta la base y crea el elemento si no existe; normaliza el nombre para evitar duplicados por mayúsculas.
+- `ActItem` conserva `master_inventory_item_id` como referencia extrínseca y `name` como snapshot.
+- `DeliveryActDraft` recupera la referencia al editar actas existentes.
+
+### 4.12. Proxy
+
+Hay dos aplicaciones verificadas del mismo patrón:
+
+- **Festivos:** Subject `HolidaySource`, Proxy `CachedHolidaySource`, RealSubject `NagerDateHolidaySource`, Client `NagerDateBusinessCalendar`. La política es caché, degradación a lista vacía y reintento tras fallo.
+- **Documentos:** Subject `Document`, Proxy `DocumentProxy`, RealSubject el documento concreto de la familia, Client `DocumentService` y las pantallas. La política es auditoría, construcción diferida y bloqueo del contenido si falla el registro.
+- `DocumentProxy` audita solo `content()`, no la metadata; memoriza el documento real y no registra dos veces el mismo contenido.
+- `DocumentService` valida el comprobante antes de crear el Proxy, recibe modelos ya acotados por las relaciones y toma `auth()->id()` para el descriptor. La autorización no vive en el Proxy.
 
 ---
 
 ## 5. Documento principal del parcial
 
 - PDF original: `Parcial 2- Implementación de Patrones de Diseño Estructurales.pdf` (9 páginas).
-- **Versión Markdown creada:** `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`.
-- Contenido del PDF original: portada, índice, introducción con marcadores `XXXXX`, descripción de PROMETHEUS y requerimientos `RF-01` a `RF-11`.
-- Contenido de la versión Markdown: portada, índice, introducción, requerimientos `RF-01` a `RF-18`, casos de uso, diseño conceptual, C4, UML, tablas de control de cambios, frontend, backend, base de datos y mapa de patrones.
-- Las secciones de patrones (`2.1.x`, `2.2.x`) del PDF estaban en gran parte como plantilla o vacías; la versión Markdown ya las desarrolla.
-- Problemas detectados:
-  - `RF-06` (alquileres) no menciona la cadencia de facturación.
-  - `RF-07` (pagos) sigue describiendo el modelo antiguo de booleanos y estados, reemplazado por facturas y pagos parciales.
-  - Faltan módulos y funciones actuales: ajustes de empresa, espacios, actas de entrega, facturas, planes de cobro, documentos PDF/texto/JSON, reajustes con IPC, series IPC, multiempresa, cambio de idioma y perfil.
-  - No había diagrama de casos de uso ni versión Markdown editable.
-- Decisión tomada: crear una versión Markdown desde el PDF, actualizarla contra el código y conservar el PDF como referencia histórica.
+- **Versión Markdown:** `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`.
+- El documento principal está en versión 1.4 y enumera los 12 patrones.
+- Incluye portada, índice, introducción, requerimientos `RF-01` a `RF-18`, casos de uso, diseño conceptual, C4, UML, control de cambios, frontend, backend, base de datos, mapa de patrones y anexos.
+- Las secciones de patrones del PDF original estaban en gran parte como plantilla; la versión Markdown ya las desarrolla.
+- El PDF queda como referencia histórica y no debe incluirse en el commit documental.
 
 ---
 
-## 6. Inventario documental y estado
+## 6. Inventario documental
 
 | Archivo | Tipo | Estado |
 | --- | --- | --- |
-| `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md` | Documento principal | Actualizado; versión Markdown editable del PDF, con RF-01 a RF-18 y las ocho secciones de patrones |
-| `docs/Patrones creacionales/*.md` | Patrones creacionales | Documentados: Singleton, Prototype, Builder, Abstract Factory y Factory Method |
-| `docs/Patrones estructurales/Adapter.md` | Patrón estructural | Documentado con las aplicaciones de días hábiles e IPC; actualizado a la cadena Client → Proxy → Adapter |
-| `docs/Patrones estructurales/Bridge.md` | Patrón estructural | Documentado en cinco apartados; cubre documentos, formatos y la familia JSON |
-| `docs/Patrones estructurales/Proxy.md` | Patrón estructural | Documentado en cinco apartados; cubre Subject, Proxy, RealSubject y Client |
-| `docs/PROXY-FESTIVOS.md` | Documento de apoyo | Detallado y vigente; fuente secundaria del Proxy de festivos |
-| `docs/DOCUMENTACION-PATRONES.md` | Documento integrador | Desactualizado; cubre cinco patrones sin Prototype y con Factory Method mal enfocado |
-| `docs/ADAPTER-DIAS-HABILES.md` | Adapter | Útil y mayormente vigente; fragmentos y alcance desactualizados |
-| `docs/DOCUMENTACION-FLUJOS.md` | Flujos | Desactualizado en catálogo, firmas y campos de `AppSettings` |
-| `docs/GUIA-SUSTENTACION-BUILDER-SINGLETON.md` | Guía oral | Desactualizado; afirma cosas que el código ya corrigió |
-| `docs/PLAN-PATRONES.md` | Planificación | Histórico; no describe el estado final |
-| `docs/PLAN-UML-PATRONES.md` | Planificación UML | Desactualizado en `AppSettings` y Builder |
-| `docs/UML-PLANTUML-PATRONES.md` | Diagramas | Desactualizado en campos, dependencias y constructores |
-| `docs/PATRONES-IPC-REAJUSTES.md` | Patrones del IPC | Extenso; fuera del alcance actual salvo la parte de Adapter |
-| `docs/MODULO-IPC.md` | Módulo IPC | Extenso; fuente secundaria para la segunda aplicación del Adapter |
-| `docs/AUDITORIA_SOLID.md` | Auditoría | No es documentación de patrones; puede servir como contexto |
-| `docs/PLAN-MEJORAS.md` | Planificación | No es entrega de patrones |
-| `docs/guia-api-ipc-dane-laravel.md` | Guía técnica | Contexto del Adapter del IPC |
-| `PROTOTYPE-PLANTUML.md` | Prototype | Útil; revisar cardinalidad y nombres |
-| `PLAN-UML-PROTOTYPE.md` | Prototype | Planificación; revisar antes de reutilizar |
+| `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md` | Documento principal | Versión 1.4, 12 patrones; revisar enlaces y conteos |
+| `docs/Patrones creacionales/Singleton.md` | Patrón | Documentado; revisión final pendiente |
+| `docs/Patrones creacionales/Prototype.md` | Patrón | Corregido: IDs conservados y resolución legacy por nombre |
+| `docs/Patrones creacionales/Builder.md` | Patrón | Corregido: resolución por ID y snapshot en `withInventory()` |
+| `docs/Patrones creacionales/Abstract Factory.md` | Patrón | Corregido: `DocumentService` devuelve `DocumentProxy` |
+| `docs/Patrones creacionales/Factory Method.md` | Patrón | Corregido: entrada vía `RentalFacade` |
+| `docs/Patrones estructurales/Adapter.md` | Patrón | Documentado; revisión final pendiente |
+| `docs/Patrones estructurales/Bridge.md` | Patrón | Documentado; revisión final pendiente |
+| `docs/Patrones estructurales/Composite.md` | Patrón | Documentado; revisión final pendiente |
+| `docs/Patrones estructurales/Decorator.md` | Patrón | Documentado; revisión final pendiente |
+| `docs/Patrones estructurales/Facade.md` | Patrón | Documentado; revisión final pendiente |
+| `docs/Patrones estructurales/Flyweight.md` | Patrón | Corregido: `DeliveryActDraft::formState()` |
+| `docs/Patrones estructurales/Proxy.md` | Patrón | Corregido: prueba de metadata sin `deliveryLabel()` |
+| `docs/PROXY-FESTIVOS.md` | Apoyo | Detalle del Proxy de festivos; fuente secundaria |
+| `docs/ADAPTER-DIAS-HABILES.md` | Apoyo | Útil; fragmentos y alcance desactualizados |
+| `docs/DOCUMENTACION-PATRONES.md` | Integrador | Desactualizado; no cubre Prototype ni los patrones nuevos |
+| `docs/DOCUMENTACION-FLUJOS.md` | Flujos | Desactualizado en catálogo, firmas y `AppSettings` |
+| `docs/GUIA-SUSTENTACION-BUILDER-SINGLETON.md` | Guía oral | Desactualizada; afirma cosas que el código ya corrigió |
+| `docs/PLAN-PATRONES.md`, `docs/PLAN-UML-PATRONES.md`, `docs/UML-PLANTUML-PATRONES.md` | Planificación | Históricos; no describen el estado final |
+| `docs/PATRONES-IPC-REAJUSTES.md`, `docs/MODULO-IPC.md` | Apoyo IPC | Fuente secundaria para Adapter y Decorator |
+| `docs/AUDITORIA_SOLID.md`, `docs/PLAN-MEJORAS.md` | Contexto | No son entrega de patrones |
 
 ---
 
-## 7. Discrepancias detectadas
+## 7. Correcciones aplicadas y pendientes
 
-1. **`DOCUMENTACION-PATRONES.md`**
-   - Dice que documenta los cinco patrones principales, pero deja fuera Prototype.
-   - El apartado de Factory Method describe los métodos estáticos `forInvoice()` de los documentos, no el Factory Method GoF de los planes de cobro.
-   - El Builder aparece usando el catálogo de `AppSettings`, que ya no existe.
-   - El Adapter se limita a días hábiles y no menciona la aplicación del IPC.
+### 7.1. Correcciones aplicadas
 
-2. **`PLAN-PATRONES.md`**
-   - Es un plan histórico de cuatro patrones; no refleja Prototype ni la implementación final.
-   - Habla de "más de quince secciones" y del catálogo en `AppSettings`.
+1. **Prototype:** la copia conserva `space_id` y `master_inventory_item_id`; ya no dice que el Builder resuelve siempre el espacio por nombre.
+2. **Builder:** `withInventory()` resuelve espacio y elemento contra el catálogo; `build()` solo persiste las filas ya resueltas.
+3. **Abstract Factory:** `DocumentService` devuelve `Document` mediante `DocumentProxy`; se eliminó la etiqueta “fachada”.
+4. **Factory Method:** `CreateRental` llama `RentalFacade::generatePaymentPlan()`, que delega en `PaymentPlanService`.
+5. **Proxy:** la prueba de metadata ya no atribuye `deliveryLabel()` al test.
+6. **Flyweight:** el diagrama usa `DeliveryActDraft::formState()` y no el inexistente `fromAct()`.
 
-3. **`GUIA-SUSTENTACION-BUILDER-SINGLETON.md`**
-   - Usa referencias de línea antiguas.
-   - Dice que el Builder crea espacios y que cuatro pruebas fallan por `user_id`; el código actual ya no crea espacios y resuelve el dueño del catálogo.
-   - Sigue ubicando el catálogo en `AppSettings`.
-   - Nombra métodos y dependencias que cambiaron.
+### 7.2. Pendientes de revisión
 
-4. **`PLAN-UML-PATRONES.md` y `UML-PLANTUML-PATRONES.md`**
-   - `AppSettings` conserva campos eliminados: `spaceCatalog`, `primaryColor`, `fontFamily`.
-   - El Builder sigue dependiendo de `AppSettings`.
-   - Los constructores de los generadores no incluyen el `BusinessCalendar`.
-   - Hay diagramas de estados/planificación que no corresponden al código final.
+- Verificar de nuevo Singleton, Adapter, Bridge, Composite, Decorator y Facade contra el código y el documento principal.
+- Revisar que las rutas, métodos y conteos de pruebas citados en los 12 documentos sigan vigentes.
+- Decidir si los documentos de apoyo desactualizados se corrigen, se reemplazan o se dejan como históricos.
 
-5. **`DOCUMENTACION-FLUJOS.md`**
-   - Repite el catálogo en `AppSettings`.
-   - Los flujos de Factory Method y Abstract Factory usan firmas y pasos anteriores.
-   - La descripción de facturas y pagos no coincide con el modelo actual.
+### 7.3. Discrepancias históricas que siguen en documentos de apoyo
 
-6. **`ADAPTER-DIAS-HABILES.md`**
-   - El fragmento de `nextBusinessDay()` no coincide con la implementación actual (el código usa un `for` con tope y respaldo).
-   - No incluye el Adapter del IPC.
-   - El alcance enumerado omite `AdjustmentDateProposer`, que también consume el Target.
-   - Las referencias de línea pueden haber cambiado.
-
-7. **`PROTOTYPE-PLANTUML.md`**
-   - La cardinalidad del inventario debe revisarse: los elementos son opcionales, no obligatorios.
-   - Conviene alinear nombres y relaciones con `DeliveryActDraft` y el flujo `?from=`.
-
-8. **Documento principal (PDF)**
-   - Requerimientos desactualizados y módulos nuevos sin incluir.
-   - Se corrigió con la versión Markdown `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`; el PDF queda como referencia histórica.
+- `DOCUMENTACION-PATRONES.md` deja fuera Prototype y describe mal el Factory Method.
+- `GUIA-SUSTENTACION-BUILDER-SINGLETON.md` usa referencias antiguas y afirma que el Builder crea espacios.
+- `PLAN-UML-PATRONES.md` y `UML-PLANTUML-PATRONES.md` conservan campos eliminados de `AppSettings` y dependencias antiguas.
+- `DOCUMENTACION-FLUJOS.md` repite el catálogo en `AppSettings` y usa firmas anteriores.
 
 ---
 
 ## 8. Fuentes de verdad
 
 - Código de `app/` para clases, métodos, dependencias y flujos.
-- `tests/Feature/` para confirmar comportamientos: `AppSettingsSingletonTest`, `DeliveryActBuilderTest`, `DeliveryActPrototypeTest`, `DocumentFactoryTest`, `JsonDocumentBridgeTest`, `PaymentPlanGeneratorTest`, `BusinessCalendarTest`, `CachedHolidaySourceTest`.
 - `app/Providers/AppServiceProvider.php` para bindings y alcance de las instancias.
+- `tests/Feature/` y `tests/Unit/` para comportamientos verificables.
+- Pruebas relevantes: `AppSettingsSingletonTest`, `DeliveryActBuilderTest`, `DeliveryActPrototypeTest`, `DocumentFactoryTest`, `JsonDocumentBridgeTest`, `PaymentPlanGeneratorTest`, `BusinessCalendarTest`, `CachedHolidaySourceTest`, `DocumentProxyTest`, `SpaceHierarchyCompositeTest`, `InventoryItemFlyweightTest`, `RentalFacadeTest` y `PactadoCapDecoratorTest`.
 - CodeGraph solo como apoyo de navegación; no reemplaza la lectura del código.
 - La documentación existente se usa como referencia, no como verdad.
 
@@ -271,9 +246,11 @@ Nota de entorno: el comando `codegraph` directo está bloqueado por la política
 & "C:\nvm4w\nodejs\codegraph.cmd" explore "..."
 ```
 
+Las búsquedas deben hacerse con `findstr` o `Get-ChildItem`; `rg` no está disponible y las herramientas `glob`/`grep` fallan en este entorno.
+
 ---
 
-## 9. Entregables y estructura prevista
+## 9. Entregables
 
 ```text
 docs/
@@ -287,86 +264,48 @@ docs/
   Patrones estructurales/
     Adapter.md
     Bridge.md
+    Composite.md
+    Decorator.md
+    Facade.md
+    Flyweight.md
     Proxy.md
 CONTEXTO_DOCUMENTACION_PATRONES.md
 ```
 
-Contenido de cada documento de patrón:
-
-1. Nombre y propósito.
-2. Problema que resuelve en Prometheus.
-3. Solución y roles del patrón.
-4. Diagrama de clases en PlantUML compatible con Draw.io, con el rol GoF junto al nombre real de cada clase.
-5. Clases participantes y valoración: tabla con rutas reales, ventajas y desventajas.
+Cada documento de patrón contiene los cinco apartados comunes. Los documentos de Composite, Decorator, Facade, Flyweight y Proxy agregan flujo, pruebas y decisión de alcance cuando aportan evidencia específica.
 
 ---
 
 ## 10. Convenciones de diagramas
 
 - PlantUML compatible con Draw.io.
-- Cada clase muestra su rol GoF junto al nombre real, por ejemplo `AppSettings (Singleton)`.
+- Cada clase muestra su rol GoF junto al nombre real.
 - Las clases que no cumplen un rol GoF se marcan `(no GoF)`.
 - Los roles se asignan por responsabilidad verificada, no por semejanza de nombres.
-- Nombres reales de clases conservados en el diagrama mediante alias o etiquetas.
+- Nombres reales de clases conservados mediante alias o etiquetas.
 - Rutas completas en la tabla de clases, no en el diagrama.
 - Sin clases hipotéticas ni relaciones no verificadas.
 - Cardinalidades solo cuando estén comprobadas en modelos o migraciones.
-- La estructura prioriza el diagrama de clases; no se agregan diagramas de secuencia salvo que sean imprescindibles.
+- Sin diagramas de secuencia salvo que sean imprescindibles.
 
 ---
 
-## 11. Flujo de trabajo acordado
+## 11. Estado actual
 
-1. Análisis y diagnóstico inicial. **Completado.**
-2. Aprobación del orden y del primer patrón.
-3. Documentar un patrón:
-   - releer el código implicado;
-   - verificar roles y flujos;
-   - redactar el documento;
-   - revisar contra el código;
-   - actualizar este contexto.
-4. Revisión y aprobación antes de pasar al siguiente.
-5. Al terminar los ocho patrones, actualizar el documento principal y consolidar enlaces.
-
-Orden recomendado, de menor a mayor complejidad:
-
-1. Singleton.
-2. Prototype.
-3. Builder.
-4. Abstract Factory.
-5. Factory Method.
-6. Adapter.
-7. Bridge.
-8. Proxy.
-
-El orden puede cambiar si se prefiere empezar por el patrón más reciente o por el que se va a sustentar primero.
+- **Análisis de código:** completo para los 12 patrones.
+- **Documentos de patrón:** 12 creados y enlazados desde el documento principal.
+- **Correcciones de esta revisión:** Prototype, Builder, Abstract Factory, Factory Method, Flyweight y Proxy.
+- **Documento principal:** versión 1.4, con 12 patrones; revisión final de enlaces y conteos pendiente.
+- **Commits relevantes:** `fdce28e` incorporó Composite, Flyweight, Facade y el Proxy de documentos; `01f9d43` documentó el Proxy de festivos.
+- **Cambios actuales:** solo documentación; sin commit mientras no se solicite.
+- **Pruebas:** no se reejecutó la suite. La verificación de esta revisión es estática contra código y pruebas.
+- **PDF:** `Parcial 2- Implementación de Patrones de Diseño Estructurales.pdf` está sin seguimiento y se excluye del commit.
 
 ---
 
-## 12. Estado actual
+## 12. Decisiones pendientes
 
-- Análisis de código: completo para los ocho patrones del alcance.
-- Verificación de pruebas: completa antes del Proxy; el commit `a4307bc` no se reejecutó por la política de pruebas bajo demanda.
-- Inventario documental: completo.
-- Discrepancias: identificadas.
-- Documentos de patrón creados: `docs/Patrones creacionales/Singleton.md`, `docs/Patrones creacionales/Prototype.md`, `docs/Patrones creacionales/Builder.md`, `docs/Patrones creacionales/Abstract Factory.md`, `docs/Patrones creacionales/Factory Method.md`, `docs/Patrones estructurales/Adapter.md`, `docs/Patrones estructurales/Bridge.md` y `docs/Patrones estructurales/Proxy.md`.
-- Bridge quedó en `docs/Patrones estructurales/Bridge.md`, junto a Adapter y Proxy; ya no existe la variante con minúscula.
-- Contrato de documentos: `Document::isEmpty()` está implementado, `MonthlyStatement` lo sobrescribe y `DocumentsPage` dejó de depender de `invoices()`. Es preparación para un eventual Proxy de documentos, no implementado; el Proxy de esta entrega es el de festivos.
-- Proxy de festivos: implementado en `a4307bc`; `HolidaySource` es el Subject, `CachedHolidaySource` el Proxy, `NagerDateHolidaySource` el RealSubject/Adapter y `NagerDateBusinessCalendar` el Client. Adapter fue actualizado para no atribuirle caché ni degradación.
-- Estructura aplicada: cinco apartados, sin contenido redundante.
-- Diagramas actualizados: roles GoF junto al nombre real de cada clase; clases ajenas al patrón marcadas `(no GoF)`.
-- Documento principal actualizado: sí, en `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`; incluye RF-01 a RF-18, casos de uso, C4, UML, control de cambios, frontend, backend, base de datos, mapa de ocho patrones y Anexo A con los ocho documentos.
-- Este archivo de contexto: creado y actualizado.
-- Orden elegido: Singleton, Prototype, Builder, Abstract Factory, Factory Method, Adapter, Bridge y Proxy documentados; documento principal actualizado; pendiente revisión final y commit documental del Proxy.
-- Pruebas ejecutadas antes del Proxy: `DeliveryActPrototypeTest` (5 pruebas, 66 aserciones), `CreateDeliveryActFromTest` (8 pruebas, 50 aserciones), `DeliveryActBuilderTest` y `CreateDeliveryActTest` (19 pruebas, 82 aserciones), `DocumentFactoryTest` (14 pruebas, 96 aserciones), `DocumentContentTest` (14 pruebas, 48 aserciones), `JsonDocumentBridgeTest` (6 pruebas, 68 aserciones), `PaymentPlanGeneratorTest` (7 pruebas, 18 aserciones), `BusinessCalendarTest` (versión anterior) y `DaneCdaIpcProviderTest` (25 pruebas, 47 aserciones), todas en verde. Suite completa: 325 pruebas, 1.594 aserciones.
-- Pruebas del Proxy: `CachedHolidaySourceTest` tiene 4 pruebas y 11 aserciones por inspección estática; `BusinessCalendarTest` fue actualizado para construir Proxy → RealSubject. No se ejecutaron tras el commit `a4307bc`.
-
----
-
-## 13. Decisiones pendientes
-
-1. **Resuelta:** se creó la versión Markdown del documento principal en `docs/DOCUMENTO-PRINCIPAL-PARCIAL-2.md`.
-2. Decidir si los documentos antiguos se corrigen, se reemplazan o se dejan como histórico.
-3. **Resuelta:** el documento principal ya incluye enlaces a los ocho documentos de patrón.
-4. **Resuelta:** el Proxy se implementó con la Ruta C (festivos), no con los proxies de documentos A/B. La caché y la degradación salieron del Adapter hacia `CachedHolidaySource`.
-5. **Pendiente:** autorizar y crear el commit documental del Proxy; no incluir el PDF, los planes ajenos ni cambios de código.
+1. Terminar la revisión de Singleton, Adapter, Bridge, Composite, Decorator y Facade.
+2. Confirmar enlaces, conteos de patrones y referencias del documento principal.
+3. Decidir el destino de los documentos de apoyo desactualizados.
+4. Autorizar un commit documental solo después de la revisión final; no incluir el PDF.
