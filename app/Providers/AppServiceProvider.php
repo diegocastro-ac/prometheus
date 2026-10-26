@@ -199,18 +199,24 @@ class AppServiceProvider extends ServiceProvider
         | CSS propio del panel de Filament
         |----------------------------------------------------------------------
         |
-        | El panel NO carga resources/css/app.css (ese se usa en welcome). Las
-        | reglas .ajuste-* de resources/css/filament.css —la tabla del cálculo,
-        | los motivos y las comprobaciones legales— no llegaban a la pantalla y
-        | se veían sin estilo.
+        | Filament v3 usa Tailwind v3, pero su hoja compilada por defecto solo
+        | trae las clases de SUS componentes. Las utilidades Tailwind escritas
+        | en nuestras vistas (grid, xl:grid-cols-3, space-y-6, etc.) no existen
+        | en esa hoja. Por eso se compila una hoja adicional con Tailwind v3 y
+        | se carga DESPUES del CSS de Filament.
         |
-        | Se inyectan en el <head> de cada página del panel con un render hook.
-        | Es la vía que documenta Filament para añadir assets propios sin tocar
-        | el theme por defecto. @vite apunta al manifest de Vite, así que en
-        | desarrollo usa el servidor de Vite y en producción el build.
+        | El hook STYLES_AFTER es importante: si se inyecta en HEAD_START, el
+        | CSS de Filament se carga despues y puede tapar nuestras reglas.
+        | resources/css/filament.css conserva los estilos .ajuste-* y tambien
+        | debe ir despues del CSS base.
         */
         FilamentView::registerRenderHook(
-            PanelsRenderHook::HEAD_START,
+            PanelsRenderHook::STYLES_AFTER,
+            fn (): string => '<link rel="stylesheet" href="'.e(asset('css/filament/app-utilities.css')).'" data-navigate-track />',
+        );
+
+        FilamentView::registerRenderHook(
+            PanelsRenderHook::STYLES_AFTER,
             fn (): string => Blade::render('@vite([\'resources/css/filament.css\'])'),
         );
     }

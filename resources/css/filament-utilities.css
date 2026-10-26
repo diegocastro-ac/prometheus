@@ -1,0 +1,11 @@
+/*
+ * Utilidades propias para las vistas del panel.
+ *
+ * Filament v3 compila su CSS con Tailwind v3 y no incluye clases que solo
+ * aparecen en nuestras vistas. Este archivo genera esas utilidades con el CLI
+ * de Tailwind v3 y se carga despues del CSS de Filament.
+ *
+ * No importa preflight ni el tema completo para no pisar los estilos base del
+ * panel.
+ */
+@tailwind utilities;

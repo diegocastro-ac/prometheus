@@ -136,7 +136,6 @@ class CreateDeliveryAct extends CreateRecord
         if ($items !== []) {
             $builder = $builder->withInventory(array_map(fn (array $item): array => [
                 'space_id' => $item['space_id'] ?? null,
-                // Compatibilidad con formularios o llamadas antiguas.
                 'space' => $item['space'] ?? null,
                 'master_inventory_item_id' => $item['master_inventory_item_id'] ?? null,
                 'name' => $item['name'] ?? '',

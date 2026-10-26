@@ -3,8 +3,10 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "build": "vite build",
-        "dev": "vite"
+        "build": "node -e \"require('fs').rmSync('public/hot', { force: true })\" && vite build && npm run build:filament",
+        "build:filament": "node -e \"require('fs').mkdirSync('public/css/filament', { recursive: true })\" && node node_modules/tailwindcss3/lib/cli.js -i resources/css/filament-utilities.css -o public/css/filament/app-utilities.css --config tailwind.filament.config.js --minify",
+        "dev": "npm run build:filament && concurrently -k \"vite\" \"npm:dev:filament\"",
+        "dev:filament": "node node_modules/tailwindcss3/lib/cli.js -i resources/css/filament-utilities.css -o public/css/filament/app-utilities.css --config tailwind.filament.config.js --watch"
     },
     "devDependencies": {
         "@tailwindcss/vite": "^4.0.0",
@@ -12,6 +14,11 @@
         "concurrently": "^9.0.1",
         "laravel-vite-plugin": "^1.2.0",
         "tailwindcss": "^4.0.0",
+        "tailwindcss3": "npm:tailwindcss@^3.4.17",
         "vite": "^6.2.4"
+    },
+    "dependencies": {
+        "d3": "^7.9.0",
+        "d3-org-chart": "^3.1.1"
     }
 }

@@ -81,6 +81,19 @@ class SpaceHierarchyCompositeTest extends TestCase
     }
 
     #[Test]
+    public function las_opciones_del_selector_muestran_la_jerarquia_con_guias(): void
+    {
+        $options = app(SpaceTreeBuilder::class)->treeOptions($this->user->id);
+
+        $this->assertSame([
+            $this->casa->id => 'Casa',
+            $this->cocina->id => '— Casa / Cocina',
+            $this->alacena->id => '— — Casa / Cocina / Alacena',
+            $this->oficina->id => 'Oficina',
+        ], $options);
+    }
+
+    #[Test]
     public function una_raiz_no_puede_repetir_nombre_pero_una_rama_si(): void
     {
         $this->expectException(RuntimeException::class);

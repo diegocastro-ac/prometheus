@@ -22,11 +22,12 @@ final class SpaceCatalogField
     {
         return $field
             ->label(__('act.form.space'))
-            ->options(fn (): array => self::options())
+            ->options(fn (): array => self::treeOptions())
             ->searchable()
             ->native(false)
             ->required()
             ->placeholder(__('act.form.space_placeholder'))
+            ->createOptionModalHeading(__('act.form.space_new'))
             ->createOptionForm([
                 Forms\Components\TextInput::make('name')
                     ->label(__('act.form.space_new'))
@@ -36,10 +37,10 @@ final class SpaceCatalogField
 
                 Forms\Components\Select::make('parent_id')
                     ->label(__('act.form.space_parent'))
-                    ->options(fn (): array => self::options())
+                    ->options(fn (): array => self::treeOptions())
                     ->placeholder(__('act.form.space_parent_none'))
-                    ->searchable()
-                    ->native(false),
+                    ->native()
+                    ->helperText(__('act.form.space_parent_helper')),
             ])
             ->createOptionUsing(function (array $data): string {
                 $parentId = self::parentId($data['parent_id'] ?? null);
@@ -66,10 +67,10 @@ final class SpaceCatalogField
 
                 Forms\Components\Select::make('parent_id')
                     ->label(__('act.form.space_parent'))
-                    ->options(fn (): array => self::options())
+                    ->options(fn (): array => self::treeOptions())
                     ->placeholder(__('act.form.space_parent_none'))
-                    ->searchable()
-                    ->native(false),
+                    ->native()
+                    ->helperText(__('act.form.space_parent_helper')),
             ])
             ->fillEditOptionActionFormUsing(function (string $state): array {
                 $space = self::find((int) $state);
@@ -119,11 +120,34 @@ final class SpaceCatalogField
         return app(SpaceTreeBuilder::class)->options(self::userId());
     }
 
+    /**
+     * @return array<int, string>
+     */
+    public static function treeOptions(): array
+    {
+        return app(SpaceTreeBuilder::class)->treeOptions(self::userId());
+    }
+
     private static function find(int $id): ?Space
     {
         return Space::query()
             ->where('user_id', self::userId())
             ->find($id);
+    }
+
+    private static function parentPreview(mixed $value): string
+    {
+        $parentId = self::parentId($value);
+
+        if ($parentId === null) {
+            return __('act.form.space_parent_help_root');
+        }
+
+        $path = self::options()[$parentId] ?? null;
+
+        return $path === null
+            ? __('act.form.space_parent_help_unknown')
+            : __('act.form.space_parent_help', ['path' => $path]);
     }
 
     private static function parentId(mixed $value): ?int

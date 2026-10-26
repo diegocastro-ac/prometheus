@@ -100,6 +100,36 @@ class SpaceTreeBuilder
     }
 
     /**
+     * Opciones id => ruta con guias de nivel para los selectores del panel.
+     *
+     * A diferencia de options(), conserva el recorrido en preorden y antepone
+     * una raya por nivel. Asi el usuario ve "Casa", luego "— Casa / Cocina" y
+     * entiende de inmediato donde va a crear el siguiente subespacio.
+     *
+     * @return array<int, string>
+     */
+    public function treeOptions(int|string $userId): array
+    {
+        $options = [];
+
+        $walk = function (array $components, int $depth) use (&$walk, &$options): void {
+            foreach ($components as $component) {
+                $label = $depth === 0
+                    ? $component->name()
+                    : str_repeat('— ', $depth).$component->path();
+
+                $options[(int) $component->space()->getKey()] = $label;
+
+                $walk($component->children(), $depth + 1);
+            }
+        };
+
+        $walk($this->forUser($userId), 0);
+
+        return $options;
+    }
+
+    /**
      * @param  list<SpaceComponent>  $components
      * @return list<SpaceComponent>
      */

@@ -243,22 +243,13 @@ class DeliveryActResource extends Resource
                     ->badge(),
             ])
             ->actions([
-                Tables\Actions\ViewAction::make(),
+                Tables\Actions\ViewAction::make()
+                    ->url(fn (DeliveryAct $record): string => Pages\ViewDeliveryAct::getUrl(['record' => $record])),
 
                 Tables\Actions\Action::make('inventory_tree')
                     ->label(__('act.actions.inventory_tree'))
                     ->icon('heroicon-o-folder')
-                    ->modalHeading(__('act.sections.inventory'))
-                    ->modalSubmitAction(false)
-                    ->modalCancelActionLabel(__('act.buttons.close'))
-                    ->modalWidth('2xl')
-                    ->modalContent(fn (DeliveryAct $record) => view(
-                        'filament.acts.inventory-tree',
-                        [
-                            'nodes' => $record->inventoryTree(),
-                            'depth' => 0,
-                        ],
-                    )),
+                    ->url(fn (DeliveryAct $record): string => Pages\ViewDeliveryAct::getUrl(['record' => $record])),
 
                 // Entrada del Prototype: no guarda nada, solo abre el
                 // formulario de creacion con ?from= para que la copia se haga
@@ -295,6 +286,7 @@ class DeliveryActResource extends Resource
         return [
             'index' => Pages\ListDeliveryActs::route('/'),
             'create' => Pages\CreateDeliveryAct::route('/create'),
+            'view' => Pages\ViewDeliveryAct::route('/{record}'),
         ];
     }
 
