@@ -4,8 +4,8 @@
 Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Prometheus, siguiendo **una única opción (la mejor)** por patrón. Se prioriza **reorganizar o adaptar código existente** antes que agregar funcionalidad nueva; toda funcionalidad nueva debe aportar **valor real**. Todo lo que funciona hoy debe **seguir funcionando** (sin regresiones).
 
 ## Estado base (ya documentados)
-- **Comportamiento claros (hechos):** `Strategy`, `Observer`, `Template Method`, `Chain of Responsibility` — `docs/Patrones de comportamiento/Strategy.md`, `Observer.md`, `Template Method.md`, `Chain of Responsibility.md`; mapa actualizado en `docs/MAPA-PATRONES.md`.
-- **Alcance de este plan (pendientes):** State, Memento, Command, Iterator, Mediator, Visitor, Interpreter.
+- **Comportamiento claros (hechos):** `Strategy`, `Observer`, `Template Method`, `Chain of Responsibility`, `State` — `docs/Patrones de comportamiento/Strategy.md`, `Observer.md`, `Template Method.md`, `Chain of Responsibility.md`, `State.md`; mapa actualizado en `docs/MAPA-PATRONES.md`.
+- **Alcance de este plan (pendientes):** Memento, Command, Iterator, Mediator, Visitor, Interpreter.
 
 ## Forma de trabajo (acordada)
 1. Trabajaremos **patrón por patrón**, en el orden del checklist.
@@ -125,7 +125,7 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 ### Patrones
 - [x] 1. Template Method — ajuste + doc + mapa
 - [x] 2. Chain of Responsibility — ajuste + doc + mapa
-- [ ] 3. State — ajuste + doc + mapa
+- [x] 3. State — ajuste + doc + mapa
 - [ ] 4. Memento — implementación + doc + mapa
 - [ ] 5. Command — implementación + doc + mapa
 - [ ] 6. Iterator — implementación + doc + mapa
@@ -224,3 +224,37 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - Suite completa: **373 pruebas, 1758 aserciones, OK**. Se corrió en dos procesos (`362 + 11`) porque `ListIpcSeries` ejecuta `set_time_limit(300)`, que persiste en el proceso de PHPUnit; no es un fallo de código.
 
 **Siguiente:** #3 State (estado derivado de `RentAdjustment`). Antes de implementar, entregar explicación sencilla y esperar aprobación explícita.
+
+### 2026-11-06 — #3 State (HECHO)
+
+**Estado:** implementado, probado y documentado.
+
+**Cambios de código**
+- Nuevo `app/States/Adjustment/AdjustmentStateBehavior.php` (State) con `canNotify()`, `canApply()`, `canEdit()` y `countsTowardsChain()`.
+- Nuevos `RecordedState`, `NotifiedState` y `AppliedState` con la matriz de capacidades vigente.
+- `app/Enums/AdjustmentState.php`: sigue siendo el token estable; `behavior()` devuelve el estado concreto y los métodos de capacidad delegan. `label()`, `options()`, `colors()` y `color()` se conservan.
+- `app/Models/RentAdjustment.php`: `canNotify()`, `canApply()` y `canEdit()` delegan en `state()`; `countsTowardsChain()` se mantiene.
+- `app/Filament/Resources/RentAdjustmentResource.php`: las acciones visibles usan `$record->canApply()` y `$record->canNotify()`.
+- **No se tocaron** `RentAdjustmentService` ni `RentalFacade`; no se agregaron guardas, columnas ni transiciones nuevas.
+
+**Decisiones a recordar**
+- El estado sigue **derivándose de las fechas** (`applied_on` manda sobre `notified_on`); no hay columna de estado.
+- **`Notified` no cuenta para la cadena:** solo `Applied` cambió el canon del alquiler.
+- **`Applied` no se edita:** corregirlo exige el recálculo explícito de la cadena.
+- La matriz no cambió: Recorded (notificar/editar), Notified (aplicar/editar), Applied (solo cadena).
+- El enum conserva `label()`/`color()` por ser presentación del token; las reglas de capacidad viven en `app/States/Adjustment`.
+- Los estados no guardan datos: se instancian por consulta y no se cachean.
+
+**Docs/mapa**
+- Nuevo `docs/Patrones de comportamiento/State.md` (§§1–9; §9 con evidencia UML antes/después).
+- Nuevo `docs/Planes/State.md` (plan/memoria específica del patrón).
+- `docs/MAPA-PATRONES.md`: fila nueva y total 16 → 17.
+
+**Verificación**
+- Nuevas: `tests/Unit/AdjustmentStateBehaviorTest.php` (5) + `tests/Feature/AdjustmentStateTest.php` (3) = **8 pruebas OK**.
+- Relacionadas: `AdjustmentChainTest`, `RentAdjustmentServiceTest`, `ReajusteCalculationTest`, `ReajusteScreensRenderTest`, `RentAdjustmentFormTest`, `RentalFacadeTest` → **83 pruebas OK**.
+- Total relacionado: **91 pruebas OK**.
+- `vendor/bin/pint` sobre los archivos tocados → OK.
+- Suite completa: **381 pruebas, 1837 aserciones, OK**. Se corrió en dos procesos (`370 + 11`) por el `set_time_limit(300)` de `ListIpcSeries`; no es un fallo de código.
+
+**Siguiente:** #4 Memento (cadena/historial de reajustes). Antes de implementar, entregar explicación sencilla y esperar aprobación explícita.

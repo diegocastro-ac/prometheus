@@ -1,6 +1,6 @@
 # Mapa de Patrones de Diseño
 
-Los 16 patrones documentados fueron verificados en el código y tienen documento individual.
+Los 17 patrones documentados fueron verificados en el código y tienen documento individual.
 
 ## Creacionales
 
@@ -32,3 +32,4 @@ Los 16 patrones documentados fueron verificados en el código y tienen documento
 | **Observer** | Evento `IpcSeriesSynchronized` suscrito a `RebuildAnnualRates` y `RebuildAdjustmentChains` en `AppServiceProvider`; publicado por `SyncIpcDane` y acción de sync en `ListIpcSeries` | `app/Events/IpcSeriesSynchronized.php`, `app/Listeners/RebuildAnnualRates.php`, `app/Listeners/RebuildAdjustmentChains.php`, `app/Providers/AppServiceProvider.php`, `app/Console/Commands/SyncIpcDane.php`, `app/Filament/Resources/IpcSeriesResource/Pages/ListIpcSeries.php` | `docs/Patrones de comportamiento/Observer.md` |
 | **Template Method** | `PaymentPlanGenerator::generate()` final fija crear → refrescar; `createInvoices()` es la primitiva y `findInvoice()` el hook de idempotencia | `app/Services/PaymentPlans/PaymentPlanGenerator.php`, `MonthlyPlanGenerator.php`, `QuincenalPlanGenerator.php`, `AdvancePlanGenerator.php` | `docs/Patrones de comportamiento/Template Method.md` |
 | **Chain of Responsibility** | `ReajusteRule` como handler con `next`/`setNext`; `handle()` corta en la primera regla bloqueante y `runAll()` recorre todo para la UI; cadena armada solo en `AppServiceProvider` | `app/Services/Adjustment/Validation/ReajusteRule.php`, `ReajusteValidationChain.php`, `app/Services/Adjustment/Validation/*.php`, `app/Providers/AppServiceProvider.php` | `docs/Patrones de comportamiento/Chain of Responsibility.md` |
+| **State** | `AdjustmentState` como token con `behavior()`; `RecordedState`/`NotifiedState`/`AppliedState` encapsulan `canNotify/canApply/canEdit/countsTowardsChain`; `RentAdjustment` delega y Filament consulta el modelo | `app/Enums/AdjustmentState.php`, `app/States/Adjustment/*`, `app/Models/RentAdjustment.php`, `app/Filament/Resources/RentAdjustmentResource.php` | `docs/Patrones de comportamiento/State.md` |

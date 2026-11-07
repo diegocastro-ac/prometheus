@@ -117,6 +117,28 @@ class RentAdjustment extends Model
     }
 
     /**
+     * Capacidades del estado actual, delegadas al patron State.
+     *
+     * La pantalla pregunta al reajuste que puede hacer, no al enum. Asi el
+     * recurso no repite la matriz de estados y un estado nuevo se resuelve en
+     * una sola clase.
+     */
+    public function canNotify(): bool
+    {
+        return $this->state()->canNotify();
+    }
+
+    public function canApply(): bool
+    {
+        return $this->state()->canApply();
+    }
+
+    public function canEdit(): bool
+    {
+        return $this->state()->canEdit();
+    }
+
+    /**
      * Un reajuste solo entra en la cadena cuando su canon quedo vigente.
      *
      * Un ajuste registrado pero no aplicado no cambio el canon, y encadenar el

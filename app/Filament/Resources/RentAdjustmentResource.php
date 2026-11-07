@@ -1339,7 +1339,7 @@ class RentAdjustmentResource extends Resource
             ->icon('heroicon-o-check-circle')
             ->color('primary')
             ->requiresConfirmation()
-            ->visible(fn (RentAdjustment $record): bool => $record->state()->canApply())
+            ->visible(fn (RentAdjustment $record): bool => $record->canApply())
             ->action(function (RentAdjustment $record): void {
                 try {
                     app(RentalFacade::class)->applyAdjustment($record);
@@ -1371,7 +1371,7 @@ class RentAdjustmentResource extends Resource
             ->label(__('rent_adjustment.buttons.mark_notified'))
             ->icon('heroicon-o-paper-airplane')
             ->color('gray')
-            ->visible(fn (RentAdjustment $record): bool => $record->state()->canNotify())
+            ->visible(fn (RentAdjustment $record): bool => $record->canNotify())
             ->requiresConfirmation()
             ->form([
                 Forms\Components\DatePicker::make('notified_on')

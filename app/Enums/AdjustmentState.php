@@ -2,6 +2,11 @@
 
 namespace App\Enums;
 
+use App\States\Adjustment\AdjustmentStateBehavior;
+use App\States\Adjustment\AppliedState;
+use App\States\Adjustment\NotifiedState;
+use App\States\Adjustment\RecordedState;
+
 /**
  * Estado del reajuste dentro de su ciclo de vida (patron State).
  *
@@ -46,6 +51,22 @@ enum AdjustmentState: string
     }
 
     /**
+     * El comportamiento que corresponde a este estado.
+     *
+     * El enum sigue siendo el identificador estable (el que se guarda en el
+     * formulario y se muestra en la tabla). Las reglas de que se puede hacer en
+     * cada momento viven en el estado concreto.
+     */
+    public function behavior(): AdjustmentStateBehavior
+    {
+        return match ($this) {
+            self::Recorded => new RecordedState,
+            self::Notified => new NotifiedState,
+            self::Applied => new AppliedState,
+        };
+    }
+
+    /**
      * Un reajuste solo cuenta para la cadena de calculo cuando ya esta aplicado.
      *
      * Si un ajuste quedo registrado pero sin aplicar, el canon del alquiler no
@@ -54,22 +75,22 @@ enum AdjustmentState: string
      */
     public function countsTowardsChain(): bool
     {
-        return $this === self::Applied;
+        return $this->behavior()->countsTowardsChain();
     }
 
     public function canNotify(): bool
     {
-        return $this === self::Recorded;
+        return $this->behavior()->canNotify();
     }
 
     public function canApply(): bool
     {
-        return $this === self::Notified;
+        return $this->behavior()->canApply();
     }
 
     public function canEdit(): bool
     {
-        return $this !== self::Applied;
+        return $this->behavior()->canEdit();
     }
 
     /**
