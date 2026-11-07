@@ -45,7 +45,7 @@ El sistema necesita que el servicio no sepa de fechas ni de cantidades, que cada
 
 **Correspondencia con GoF.** `PaymentPlanGenerator` es el creador abstracto y `MonthlyPlanGenerator`, `QuincenalPlanGenerator` y `AdvancePlanGenerator` son los creadores concretos. El método de fábrica es `createInvoices()`, que devuelve un arreglo de facturas.
 
-`generate()` es el método plantilla que ejecuta la creación: llama a `createInvoices()` y devuelve las facturas creadas o existentes. La base también concentra `dueDateFrom()`, que suma los días de plazo y pide al `BusinessCalendar` el siguiente día hábil.
+`generate()` es el método plantilla que ejecuta la creación: llama a `createInvoices()` y devuelve las facturas creadas o existentes. La base también concentra `dueDateFrom()`, que suma los días de plazo y pide al `BusinessCalendar` el siguiente día hábil. La lectura de secuencia de esta misma jerarquía está documentada en `docs/Patrones de comportamiento/Template Method.md`.
 
 **Particularidad del dominio.** Las tres subclases producen la misma clase de producto, `Invoice`; lo que cambia es la política de creación (cantidad, fechas y montos), no el tipo de producto. Por eso el patrón se acerca también a Template Method. Se documenta como Factory Method porque el punto de variación es el método de creación y el cliente no conoce las subclases.
 

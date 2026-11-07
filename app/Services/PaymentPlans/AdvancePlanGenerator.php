@@ -2,12 +2,7 @@
 
 namespace App\Services\PaymentPlans;
 
-use App\Contracts\BusinessCalendar;
-use App\Enums\InvoiceStatus;
 use App\Models\Invoice;
-use App\Models\Rental;
-use App\Services\InvoiceNumberService;
-use App\Settings\AppSettings;
 use Illuminate\Support\Carbon;
 
 /**
@@ -19,50 +14,14 @@ use Illuminate\Support\Carbon;
  */
 class AdvancePlanGenerator extends PaymentPlanGenerator
 {
-    public function __construct(
-        Rental $rental,
-        private readonly InvoiceNumberService $numbers,
-        private readonly AppSettings $settings,
-        BusinessCalendar $calendar,
-    ) {
-        parent::__construct($rental, $calendar);
-    }
-
     /**
      * @return array<Invoice>
      */
     protected function createInvoices(): array
     {
         $start = Carbon::parse($this->rental->start_date);
-        $dueDays = $this->settings->invoiceDueDays();
         $total = $this->rental->monthly_amount * $this->rental->total_months;
 
-        $date = $start->copy();
-        $periodKey = Invoice::periodFor($date);
-
-        $invoice = Invoice::query()
-            ->where('rental_id', $this->rental->id)
-            ->where('user_id', $this->rental->user_id)
-            ->where('period', $periodKey)
-            ->where('issued_at', $date->toDateString())
-            ->first();
-
-        if ($invoice === null) {
-            $invoice = Invoice::create([
-                'number' => $this->numbers->next((int) $this->rental->user_id, (int) $date->format('Y')),
-                'concept' => 'rent',
-                'amount' => $total,
-                'period' => $periodKey,
-                'issued_at' => $date->toDateString(),
-                'due_at' => $this->dueDateFrom($date, $dueDays),
-                'status' => InvoiceStatus::EMITIDA,
-                'rental_id' => $this->rental->id,
-                'user_id' => $this->rental->user_id,
-            ]);
-        }
-
-        $invoice->refreshStatus();
-
-        return [$invoice];
+        return [$this->ensureInvoice($start, $total)];
     }
 }

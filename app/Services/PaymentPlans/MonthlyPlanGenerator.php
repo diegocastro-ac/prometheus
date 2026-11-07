@@ -2,12 +2,7 @@
 
 namespace App\Services\PaymentPlans;
 
-use App\Contracts\BusinessCalendar;
-use App\Enums\InvoiceStatus;
 use App\Models\Invoice;
-use App\Models\Rental;
-use App\Services\InvoiceNumberService;
-use App\Settings\AppSettings;
 use Illuminate\Support\Carbon;
 
 /**
@@ -15,27 +10,17 @@ use Illuminate\Support\Carbon;
  * periodo mensual que corresponde.
  *
  * El generador crea facturas, no pagos. El estado de cada factura se recalcula
- * despues de crearla, porque meses ya transcurridos deben marcarse como
- * vencidos si corresponde.
+ * en generate(), despues de crear todos los cortes: meses ya transcurridos
+ * deben marcarse como vencidos si corresponde.
  */
 class MonthlyPlanGenerator extends PaymentPlanGenerator
 {
-    public function __construct(
-        Rental $rental,
-        private readonly InvoiceNumberService $numbers,
-        private readonly AppSettings $settings,
-        BusinessCalendar $calendar,
-    ) {
-        parent::__construct($rental, $calendar);
-    }
-
     /**
      * @return array<Invoice>
      */
     protected function createInvoices(): array
     {
         $start = Carbon::parse($this->rental->start_date);
-        $dueDays = $this->settings->invoiceDueDays();
         $invoices = [];
 
         for ($month = 1; $month <= $this->rental->total_months; $month++) {
@@ -43,34 +28,27 @@ class MonthlyPlanGenerator extends PaymentPlanGenerator
             // no el 3 de marzo. Con addMonths() los periodos se saltarian y dos
             // meses distintos caerian en el mismo YYYY-MM.
             $period = $start->copy()->addMonthsNoOverflow($month);
-            $periodKey = Invoice::periodFor($period);
 
-            // Idempotente: no duplicar periodos que ya existen para este alquiler.
-            // Esto evita que regenerar el plan cree facturas de mas.
-            $invoice = Invoice::query()
-                ->where('rental_id', $this->rental->id)
-                ->where('user_id', $this->rental->user_id)
-                ->where('period', $periodKey)
-                ->first();
-
-            if ($invoice === null) {
-                $invoice = Invoice::create([
-                    'number' => $this->numbers->next((int) $this->rental->user_id, (int) $period->format('Y')),
-                    'concept' => 'rent',
-                    'amount' => $this->rental->monthly_amount,
-                    'period' => $periodKey,
-                    'issued_at' => $period->toDateString(),
-                    'due_at' => $this->dueDateFrom($period, $dueDays),
-                    'status' => InvoiceStatus::EMITIDA,
-                    'rental_id' => $this->rental->id,
-                    'user_id' => $this->rental->user_id,
-                ]);
-            }
-
-            $invoice->refreshStatus();
-            $invoices[] = $invoice;
+            $invoices[] = $this->ensureInvoice($period, $this->rental->monthly_amount);
         }
 
         return $invoices;
+    }
+
+    /**
+     * La cadencia mensual identifica el corte por periodo, no por fecha exacta.
+     *
+     * Si un mes ya esta facturado para el alquiler, regenerar el plan no debe
+     * crear otra factura aunque la fecha de inicio haya cambiado. Es la unica
+     * cadencia que necesita este criterio; las otras dos comparten periodo y
+     * por eso el hook por defecto usa tambien la fecha de emision.
+     */
+    protected function findInvoice(Carbon $date): ?Invoice
+    {
+        return Invoice::query()
+            ->where('rental_id', $this->rental->id)
+            ->where('user_id', $this->rental->user_id)
+            ->where('period', Invoice::periodFor($date))
+            ->first();
     }
 }
