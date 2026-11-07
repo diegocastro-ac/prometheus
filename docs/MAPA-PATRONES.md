@@ -1,6 +1,6 @@
 # Mapa de Patrones de Diseño
 
-Los 17 patrones documentados fueron verificados en el código y tienen documento individual.
+Los 18 patrones documentados fueron verificados en el código y tienen documento individual.
 
 ## Creacionales
 
@@ -33,3 +33,4 @@ Los 17 patrones documentados fueron verificados en el código y tienen documento
 | **Template Method** | `PaymentPlanGenerator::generate()` final fija crear → refrescar; `createInvoices()` es la primitiva y `findInvoice()` el hook de idempotencia | `app/Services/PaymentPlans/PaymentPlanGenerator.php`, `MonthlyPlanGenerator.php`, `QuincenalPlanGenerator.php`, `AdvancePlanGenerator.php` | `docs/Patrones de comportamiento/Template Method.md` |
 | **Chain of Responsibility** | `ReajusteRule` como handler con `next`/`setNext`; `handle()` corta en la primera regla bloqueante y `runAll()` recorre todo para la UI; cadena armada solo en `AppServiceProvider` | `app/Services/Adjustment/Validation/ReajusteRule.php`, `ReajusteValidationChain.php`, `app/Services/Adjustment/Validation/*.php`, `app/Providers/AppServiceProvider.php` | `docs/Patrones de comportamiento/Chain of Responsibility.md` |
 | **State** | `AdjustmentState` como token con `behavior()`; `RecordedState`/`NotifiedState`/`AppliedState` encapsulan `canNotify/canApply/canEdit/countsTowardsChain`; `RentAdjustment` delega y Filament consulta el modelo | `app/Enums/AdjustmentState.php`, `app/States/Adjustment/*`, `app/Models/RentAdjustment.php`, `app/Filament/Resources/RentAdjustmentResource.php` | `docs/Patrones de comportamiento/State.md` |
+| **Memento** | `Rental`/`RentAdjustment` capturan y restauran la cadena con `AdjustmentChainMemento`/`AdjustmentMemento`; `AdjustmentChainRecalculator` es el cuidador y `--dry-run` compara el memento con el cálculo sin escribir | `app/ValueObjects/AdjustmentMemento.php`, `AdjustmentChainMemento.php`, `app/Models/Rental.php`, `app/Models/RentAdjustment.php`, `app/Services/Adjustment/AdjustmentChainRecalculator.php`, `app/Console/Commands/RecalculateAdjustmentChains.php` | `docs/Patrones de comportamiento/Memento.md` |

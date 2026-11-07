@@ -4,11 +4,13 @@ namespace App\Models;
 
 use App\Enums\RentalType;
 use App\Services\AgreementStorageService;
+use App\ValueObjects\AdjustmentChainMemento;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\Storage;
+use InvalidArgumentException;
 
 class Rental extends Model
 {
@@ -212,6 +214,53 @@ class Rental extends Model
             ->orderBy('sequence')
             ->orderBy('id')
             ->get();
+    }
+
+    /**
+     * Fotografia de la cadena completa (Memento).
+     *
+     * Captura el canon vigente del alquiler y el estado derivado de cada
+     * reajuste. Es lo que el recalculador guarda antes de escribir para poder
+     * deshacer el reproceso sin una tabla de historial.
+     */
+    public function createAdjustmentChainMemento(): AdjustmentChainMemento
+    {
+        $adjustments = $this->adjustmentChain()
+            ->mapWithKeys(fn (RentAdjustment $adjustment): array => [
+                (int) $adjustment->id => $adjustment->createMemento(),
+            ])
+            ->all();
+
+        return new AdjustmentChainMemento(
+            rentalId: (int) $this->id,
+            monthlyAmount: (float) $this->monthly_amount,
+            adjustments: $adjustments,
+        );
+    }
+
+    /**
+     * Devuelve la cadena al estado que guarda el memento.
+     *
+     * Los reajustes que ya no existen se omiten: no tiene sentido resucitar
+     * filas borradas. Los que se crearon despues del memento no se tocan.
+     */
+    public function restoreAdjustmentChain(AdjustmentChainMemento $memento): void
+    {
+        if ($memento->rentalId !== (int) $this->id) {
+            throw new InvalidArgumentException(sprintf(
+                'El memento pertenece al alquiler %d, no al %d.',
+                $memento->rentalId,
+                (int) $this->id,
+            ));
+        }
+
+        $this->forceFill(['monthly_amount' => $memento->monthlyAmount])->saveQuietly();
+
+        $current = $this->rentAdjustments()->get()->keyBy('id');
+
+        foreach ($memento->adjustments as $snapshot) {
+            $current->get($snapshot->adjustmentId)?->restore($snapshot);
+        }
     }
 
     /**

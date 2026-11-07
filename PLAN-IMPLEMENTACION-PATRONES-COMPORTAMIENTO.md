@@ -4,8 +4,8 @@
 Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Prometheus, siguiendo **una única opción (la mejor)** por patrón. Se prioriza **reorganizar o adaptar código existente** antes que agregar funcionalidad nueva; toda funcionalidad nueva debe aportar **valor real**. Todo lo que funciona hoy debe **seguir funcionando** (sin regresiones).
 
 ## Estado base (ya documentados)
-- **Comportamiento claros (hechos):** `Strategy`, `Observer`, `Template Method`, `Chain of Responsibility`, `State` — `docs/Patrones de comportamiento/Strategy.md`, `Observer.md`, `Template Method.md`, `Chain of Responsibility.md`, `State.md`; mapa actualizado en `docs/MAPA-PATRONES.md`.
-- **Alcance de este plan (pendientes):** Memento, Command, Iterator, Mediator, Visitor, Interpreter.
+- **Comportamiento claros (hechos):** `Strategy`, `Observer`, `Template Method`, `Chain of Responsibility`, `State`, `Memento` — `docs/Patrones de comportamiento/Strategy.md`, `Observer.md`, `Template Method.md`, `Chain of Responsibility.md`, `State.md`, `Memento.md`; mapa actualizado en `docs/MAPA-PATRONES.md`.
+- **Alcance de este plan (pendientes):** Command, Iterator, Mediator, Visitor, Interpreter.
 
 ## Forma de trabajo (acordada)
 1. Trabajaremos **patrón por patrón**, en el orden del checklist.
@@ -66,12 +66,12 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - **Valor:** centraliza guardas por estado, facilita cambios normativos/UX y mejora testabilidad; evita condicionales duplicados.
 - **Pruebas:** `tests/Unit/RentAdjustmentTest.php`, features de reajuste/cadena.
 
-### 4) Memento — *no implementado* (formalización con valor)
-- **Qué se hará:** hacer explícito el snapshot de cadena ya implícito: `RentAdjustmentMemento` (inmutable) con estado relevante de encadenamiento; `RentAdjustment` como `Originator` (`createMemento()`/aplicación interna); `AdjustmentChainCalculator`/`AdjustmentChainRecalculator` como `Caretaker`. Sin UI de “deshacer” ni tablas nuevas.
-- **Cómo funcionará (GoF):** `Originator` captura/restaura estado lógico; `Memento` encapsula; `Caretaker` gestiona la secuencia al recalcular. Se apoya en historial/filas existentes.
-- **Archivos/componentes:** `app/Models/RentAdjustment.php`, `app/Services/Adjustment/AdjustmentChainCalculator.php`, `AdjustmentChainRecalculator.php`, `app/Services/RentAdjustmentService.php`.
-- **Valor:** recalculo de cadenas más seguro/auditable (p. ej., correcciones DANE/resync), menor riesgo al modificar encadenamiento.
-- **Pruebas:** `tests/Feature/AdjustmentChainTest.php` y casos de recálculo.
+### 4) Memento — *implementado* (formalización con valor)
+- **Qué se hará:** hacer explícito el snapshot de cadena ya implícito: `AdjustmentMemento`/`AdjustmentChainMemento` (inmutables) con los campos derivados que el recálculo puede pisar; `RentAdjustment`/`Rental` como `Originator` (`createMemento()`/`restore()`); `AdjustmentChainRecalculator` como `Caretaker` (captura antes de escribir, `preview()`/`previewAll()` y `restore()`). Sin UI de “deshacer” ni tablas nuevas.
+- **Cómo funcionará (GoF):** `Originator` captura/restaura estado lógico; `Memento` encapsula; `Caretaker` gestiona la secuencia al recalcular. Se apoya en las filas existentes.
+- **Archivos/componentes:** `app/ValueObjects/AdjustmentMemento.php`, `AdjustmentChainMemento.php`, `app/Models/Rental.php`, `app/Models/RentAdjustment.php`, `app/Services/Adjustment/AdjustmentChainCalculator.php`, `AdjustmentChainRecalculator.php`, `app/Console/Commands/RecalculateAdjustmentChains.php`.
+- **Valor:** recalculo de cadenas reversible y `--dry-run` real (incluido el global, que antes escribía), menor riesgo al modificar encadenamiento.
+- **Pruebas:** `tests/Unit/AdjustmentMementoTest.php`, `tests/Feature/AdjustmentChainMementoTest.php`, `tests/Feature/RecalculateAdjustmentChainsCommandTest.php` y `tests/Feature/AdjustmentChainTest.php`.
 
 ### 5) Command — *no implementado* (valor en acciones discretas)
 - **Qué se hará:** encapsular operaciones de reajuste como comandos de aplicación con `execute()` (p. ej. `Record/Apply/NotifyRentAdjustment`, `RecalculateAdjustmentChain`), reutilizados por `RentalFacade`/Filament; **wrappers** sobre Artisan existente cuando aporte, sin reemplazar `SyncIpcDane` ni romper CLI.
@@ -126,7 +126,7 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - [x] 1. Template Method — ajuste + doc + mapa
 - [x] 2. Chain of Responsibility — ajuste + doc + mapa
 - [x] 3. State — ajuste + doc + mapa
-- [ ] 4. Memento — implementación + doc + mapa
+- [x] 4. Memento — implementación + doc + mapa
 - [ ] 5. Command — implementación + doc + mapa
 - [ ] 6. Iterator — implementación + doc + mapa
 - [ ] 7. Visitor — implementación + doc + mapa
@@ -258,3 +258,38 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - Suite completa: **381 pruebas, 1837 aserciones, OK**. Se corrió en dos procesos (`370 + 11`) por el `set_time_limit(300)` de `ListIpcSeries`; no es un fallo de código.
 
 **Siguiente:** #4 Memento (cadena/historial de reajustes). Antes de implementar, entregar explicación sencilla y esperar aprobación explícita.
+
+### 2026-11-07 — #4 Memento (HECHO)
+
+**Estado:** implementado, probado y documentado.
+
+**Cambios de código**
+- Nuevos `app/ValueObjects/AdjustmentMemento.php` y `AdjustmentChainMemento.php`: `readonly`, sin acceso a BD. Guardan solo los campos que el recálculo puede reescribir (`sequence`, `anchor_rent`, `previous_rent`, `legal_cap_rent`, `excess_over_cap`) y el `monthly_amount` del alquiler.
+- `app/Models/RentAdjustment.php`: `createMemento()` y `restore(AdjustmentMemento)`; rechaza un memento de otro reajuste.
+- `app/Models/Rental.php`: `createAdjustmentChainMemento()` y `restoreAdjustmentChain()`; restaura el canon y delega en cada ajuste. Los ajustes borrados se omiten; los creados después no se tocan.
+- `app/Services/Adjustment/AdjustmentChainCalculator.php`: calcula `excess_over_cap` (antes lo hacía el recalculador al escribir) y devuelve `anchor_rent` como el canon base del alquiler (`$anchor`, no `$running`).
+- `app/Services/Adjustment/AdjustmentChainRecalculator.php`: es el cuidador; captura el memento antes de escribir, lo devuelve en `memento`, y agrega `preview()`, `previewAll()` y `restore()` transaccional.
+- `app/Console/Commands/RecalculateAdjustmentChains.php`: `--dry-run` real. En modo por alquiler muestra el detalle `antes → después`; en modo global resume alquileres/reajustes sin escribir (antes ignoraba la bandera y reprocesaba).
+- **No se tocaron** `RentAdjustmentService`, `RentalFacade`, Filament ni las reglas legales; `recalculate()` solo agrega la clave `memento` al array que ya devolvía.
+
+**Decisiones a recordar**
+- **El memento captura solo lo que el recálculo escribe.** `new_rent`, fechas, estado y relaciones quedan fuera: deshace el reproceso, no cualquier operación del reajuste.
+- **`anchor_rent` es el canon base del alquiler en toda la cadena.** `previous_rent` es el que cambia por tramo. El error estaba latente porque el recalculador no comparaba `anchor_rent`; al empezar a hacerlo, `AdjustmentChainTest` lo expuso.
+- **`excess_over_cap` se calcula en el calculator** para que la simulación sea fiel sin repetir la fórmula.
+- **Restauración transaccional:** alquiler y ajustes se restauran juntos o no se restaura nada.
+- **Sin tablas ni UI de deshacer.** El memento vive en memoria; no sustituye una copia de seguridad ni un historial de auditoría.
+- **`--dry-run` global ya no escribe:** usa `previewAll()` y solo resume.
+
+**Docs/mapa**
+- Nuevo `docs/Patrones de comportamiento/Memento.md` (§§1–9; §9 con evidencia UML antes/después).
+- Nuevo `docs/Planes/Memento.md` (plan/memoria específica del patrón).
+- `docs/MAPA-PATRONES.md`: fila nueva y total 17 → 18.
+
+**Verificación**
+- Nuevas: `tests/Unit/AdjustmentMementoTest.php` (1) + `tests/Feature/AdjustmentChainMementoTest.php` (4) + `tests/Feature/RecalculateAdjustmentChainsCommandTest.php` (3) = **8 pruebas OK**.
+- Relacionadas: `AdjustmentChainTest`, `RentAdjustmentServiceTest`, `ReajusteCalculationTest`, `ReajusteScreensRenderTest`, `RentAdjustmentFormTest`, `RentalFacadeTest` → **83 pruebas OK**.
+- Total relacionado: **91 pruebas OK**.
+- `vendor/bin/pint` sobre los archivos tocados → OK.
+- Suite completa: **389 pruebas, 1859 aserciones, OK**. Se corrió en dos procesos (`378 + 11`) por el `set_time_limit(300)` de `ListIpcSeries`; no es un fallo de código.
+
+**Siguiente:** #5 Command (acciones de reajuste encapsuladas). Antes de implementar, entregar explicación sencilla y esperar aprobación explícita.

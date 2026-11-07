@@ -54,8 +54,8 @@ class AdjustmentChainCalculator
      * Reprocesa la cadena completa y devuelve como quedo cada ajuste.
      *
      * @return \Illuminate\Support\Collection<int, array<string, mixed>>
-     *                                                                   Los cambios por ajuste: previous_rent, legal_cap_rent, anchor_rent y
-     *                                                                   sequence. La columna key es el id del ajuste.
+     *                                                                   Los cambios por ajuste: previous_rent, legal_cap_rent, anchor_rent,
+     *                                                                   sequence y excess_over_cap. La columna key es el id del ajuste.
      */
     public function recalculate(Rental $rental): \Illuminate\Support\Collection
     {
@@ -76,12 +76,19 @@ class AdjustmentChainCalculator
 
         foreach ($adjustments as $adjustment) {
             $sequence++;
+            $legalCap = $this->legalCapFor($adjustment, $running);
 
             $changes->put($adjustment->id, [
                 'sequence' => $sequence,
-                'anchor_rent' => round($running, 2),
+
+                // anchor_rent es el canon base DEL ALQUILER, no el canon de
+                // entrada de este ajuste: por eso es el mismo para toda la
+                // cadena. previous_rent es el que cambia de un ajuste al
+                // siguiente.
+                'anchor_rent' => round($anchor, 2),
                 'previous_rent' => round($running, 2),
-                'legal_cap_rent' => $this->legalCapFor($adjustment, $running),
+                'legal_cap_rent' => $legalCap,
+                'excess_over_cap' => $this->excessFor((float) $adjustment->new_rent, $legalCap),
             ]);
 
             // El canon que entra al siguiente es el ACORDADO, no el tope. Si las
@@ -106,6 +113,22 @@ class AdjustmentChainCalculator
         $legalPercentage = $adjustment->legalPercentage();
 
         return round($previousRent * (1 + ($legalPercentage / 100)));
+    }
+
+    /**
+     * Que parte del canon pedido se sale del tope legal.
+     *
+     * Se calcula junto con el resto de la cadena porque depende del canon de
+     * entrada. Antes lo hacia el recalculador al escribir, y la simulacion no
+     * podia mostrar este campo sin repetir la formula.
+     */
+    private function excessFor(float $newRent, float $legalCap): float
+    {
+        if ($newRent <= $legalCap) {
+            return 0.0;
+        }
+
+        return round($newRent - $legalCap, 0);
     }
 
     /**

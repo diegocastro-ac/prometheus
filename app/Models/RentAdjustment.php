@@ -5,10 +5,12 @@ namespace App\Models;
 use App\Enums\AdjustmentState;
 use App\Enums\IpcBasis;
 use App\Enums\NotificationMethod;
+use App\ValueObjects\AdjustmentMemento;
 use App\ValueObjects\RentAdjustment as RentAdjustmentValue;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use InvalidArgumentException;
 
 /**
  * Propuesta de reajuste del canon de un alquiler.
@@ -147,6 +149,50 @@ class RentAdjustment extends Model
     public function countsTowardsChain(): bool
     {
         return $this->state()->countsTowardsChain();
+    }
+
+    /**
+     * Fotografia de los campos que el recalculo puede reescribir (Memento).
+     *
+     * Solo se guardan los valores derivados. new_rent, las fechas y el estado
+     * no entran porque el recalculo no los toca: devolverlos al pasado
+     * convertiria el memento en un historial completo, que no es su papel.
+     */
+    public function createMemento(): AdjustmentMemento
+    {
+        return new AdjustmentMemento(
+            adjustmentId: (int) $this->id,
+            sequence: (int) ($this->sequence ?? 0),
+            anchorRent: (float) ($this->anchor_rent ?? 0),
+            previousRent: (float) ($this->previous_rent ?? 0),
+            legalCapRent: (float) ($this->legal_cap_rent ?? 0),
+            excessOverCap: (float) ($this->excess_over_cap ?? 0),
+        );
+    }
+
+    /**
+     * Devuelve el reajuste a los valores guardados en el memento.
+     *
+     * El memento es del reajuste concreto: aceptar uno de otra fila restauraria
+     * la cadena equivocada sin que nadie lo notara.
+     */
+    public function restore(AdjustmentMemento $memento): void
+    {
+        if ($memento->adjustmentId !== (int) $this->id) {
+            throw new InvalidArgumentException(sprintf(
+                'El memento pertenece al reajuste %d, no al %d.',
+                $memento->adjustmentId,
+                (int) $this->id,
+            ));
+        }
+
+        $this->forceFill([
+            'sequence' => $memento->sequence,
+            'anchor_rent' => $memento->anchorRent,
+            'previous_rent' => $memento->previousRent,
+            'legal_cap_rent' => $memento->legalCapRent,
+            'excess_over_cap' => $memento->excessOverCap,
+        ])->saveQuietly();
     }
 
     /**
