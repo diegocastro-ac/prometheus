@@ -2,6 +2,9 @@
 
 namespace App\Services;
 
+use App\Commands\Adjustment\ApplyRentAdjustment;
+use App\Commands\Adjustment\NotifyRentAdjustment;
+use App\Commands\Adjustment\RecalculateRentAdjustmentChain;
 use App\Dto\IpcSnapshot;
 use App\Enums\IpcBasis;
 use App\Enums\NotificationMethod;
@@ -213,20 +216,7 @@ class RentAdjustmentService
         \DateTimeInterface $notifiedOn,
         ?NotificationMethod $method = null,
     ): RentAdjustment {
-        if ($method === null) {
-            throw new RuntimeException(
-                'Debe indicar el medio por el que se comunico el reajuste. El articulo 20 '
-                .'exige que la comunicacion se haga por el servicio postal autorizado o por el '
-                .'mecanismo pactado en el contrato; sin el medio, la fecha sola no acredita nada.'
-            );
-        }
-
-        $adjustment->update([
-            'notified_on' => $notifiedOn,
-            'notification_method' => $method,
-        ]);
-
-        return $adjustment->refresh();
+        return (new NotifyRentAdjustment($adjustment, $notifiedOn, $method))->execute();
     }
 
     /**
@@ -244,19 +234,7 @@ class RentAdjustmentService
      */
     public function applyToRental(RentAdjustment $adjustment): Rental
     {
-        $rental = $adjustment->rental;
-
-        if ($adjustment->effective_from === null) {
-            throw new RuntimeException(
-                'El reajuste no tiene fecha de vigencia. Sin ella no se puede aplicar al canon.'
-            );
-        }
-
-        $adjustment->update(['applied_on' => now()->toDateString()]);
-
-        $this->recalculator->recalculate($rental);
-
-        return $rental->refresh();
+        return (new ApplyRentAdjustment($this->recalculator, $adjustment))->execute();
     }
 
     /**
@@ -266,7 +244,7 @@ class RentAdjustmentService
      */
     public function recalculateChain(Rental $rental): array
     {
-        return $this->recalculator->recalculate($rental);
+        return (new RecalculateRentAdjustmentChain($this->recalculator, $rental))->execute();
     }
 
     /**

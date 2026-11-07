@@ -2,6 +2,9 @@
 
 namespace App\Services;
 
+use App\Commands\Adjustment\ApplyRentAdjustment;
+use App\Commands\Adjustment\NotifyRentAdjustment;
+use App\Commands\Adjustment\RecalculateRentAdjustmentChain;
 use App\Documents\Contracts\Document;
 use App\Documents\DocumentService;
 use App\Dto\IpcSnapshot;
@@ -97,20 +100,25 @@ class RentalFacade
         \DateTimeInterface $notifiedOn,
         ?NotificationMethod $method = null,
     ): RentAdjustment {
-        return $this->adjustments->markNotified($adjustment, $notifiedOn, $method);
+        return (new NotifyRentAdjustment($adjustment, $notifiedOn, $method))->execute();
     }
 
     public function applyAdjustment(RentAdjustment $adjustment): Rental
     {
-        return $this->adjustments->applyToRental($adjustment);
+        return (new ApplyRentAdjustment($this->recalculator, $adjustment))->execute();
     }
 
     /**
-     * @return array{touched: int, current_rent: float, changed_ids: list<int>}
+     * @return array{
+     *     touched: int,
+     *     current_rent: float,
+     *     changed_ids: list<int>,
+     *     memento: \App\ValueObjects\AdjustmentChainMemento,
+     * }
      */
     public function recalculateAdjustmentChain(Rental $rental): array
     {
-        return $this->recalculator->recalculate($rental);
+        return (new RecalculateRentAdjustmentChain($this->recalculator, $rental))->execute();
     }
 
     public function currentRentFor(Rental $rental): float

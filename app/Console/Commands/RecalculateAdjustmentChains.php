@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Commands\Adjustment\RecalculateRentAdjustmentChain;
 use App\Models\Rental;
 use App\Services\Adjustment\AdjustmentChainRecalculator;
 use Illuminate\Console\Command;
@@ -57,7 +58,7 @@ class RecalculateAdjustmentChains extends Command
         $this->rentalsWithAdjustments()
             ->chunkById(50, function ($chunk) use (&$touched, &$changed, $recalculator): void {
                 foreach ($chunk as $rental) {
-                    $result = $recalculator->recalculate($rental);
+                    $result = (new RecalculateRentAdjustmentChain($recalculator, $rental))->execute();
 
                     $touched += $result['touched'];
                     $changed++;
@@ -109,7 +110,7 @@ class RecalculateAdjustmentChains extends Command
             return $this->previewOne($rental, $recalculator);
         }
 
-        $result = $recalculator->recalculate($rental);
+        $result = (new RecalculateRentAdjustmentChain($recalculator, $rental))->execute();
 
         $this->line(sprintf(
             '%d reajustes actualizados. Canon vigente del alquiler: %s',

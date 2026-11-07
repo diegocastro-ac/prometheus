@@ -4,8 +4,8 @@
 Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Prometheus, siguiendo **una única opción (la mejor)** por patrón. Se prioriza **reorganizar o adaptar código existente** antes que agregar funcionalidad nueva; toda funcionalidad nueva debe aportar **valor real**. Todo lo que funciona hoy debe **seguir funcionando** (sin regresiones).
 
 ## Estado base (ya documentados)
-- **Comportamiento claros (hechos):** `Strategy`, `Observer`, `Template Method`, `Chain of Responsibility`, `State`, `Memento` — `docs/Patrones de comportamiento/Strategy.md`, `Observer.md`, `Template Method.md`, `Chain of Responsibility.md`, `State.md`, `Memento.md`; mapa actualizado en `docs/MAPA-PATRONES.md`.
-- **Alcance de este plan (pendientes):** Command, Iterator, Mediator, Visitor, Interpreter.
+- **Comportamiento claros (hechos):** `Strategy`, `Observer`, `Template Method`, `Chain of Responsibility`, `State`, `Memento`, `Command` — `docs/Patrones de comportamiento/Strategy.md`, `Observer.md`, `Template Method.md`, `Chain of Responsibility.md`, `State.md`, `Memento.md`, `Command.md`; mapa actualizado en `docs/MAPA-PATRONES.md`.
+- **Alcance de este plan (pendientes):** Iterator, Mediator, Visitor. **Interpreter queda fuera** por decisión del usuario (no se implementará).
 
 ## Forma de trabajo (acordada)
 1. Trabajaremos **patrón por patrón**, en el orden del checklist.
@@ -37,7 +37,7 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 6. Iterator (recorrido de espacios/acta, apoya Composite)
 7. Visitor (operaciones sobre espacios, tras Iterator)
 8. Mediator (coordinación del subsistema de reajustes)
-9. Interpreter (reglas/expresiones acotadas de elegibilidad; solo variante con valor real)
+9. Interpreter (reglas/expresiones acotadas de elegibilidad; **descartado por decisión del usuario**)
 
 > El orden puede ajustarse si lo pides, pero conviene mantener Iterator antes de Visitor y estabilizar validación/estado/cadena antes de Mediator/Command.
 
@@ -73,12 +73,12 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - **Valor:** recalculo de cadenas reversible y `--dry-run` real (incluido el global, que antes escribía), menor riesgo al modificar encadenamiento.
 - **Pruebas:** `tests/Unit/AdjustmentMementoTest.php`, `tests/Feature/AdjustmentChainMementoTest.php`, `tests/Feature/RecalculateAdjustmentChainsCommandTest.php` y `tests/Feature/AdjustmentChainTest.php`.
 
-### 5) Command — *no implementado* (valor en acciones discretas)
-- **Qué se hará:** encapsular operaciones de reajuste como comandos de aplicación con `execute()` (p. ej. `Record/Apply/NotifyRentAdjustment`, `RecalculateAdjustmentChain`), reutilizados por `RentalFacade`/Filament; **wrappers** sobre Artisan existente cuando aporte, sin reemplazar `SyncIpcDane` ni romper CLI.
-- **Cómo funcionará (GoF):** `Command` = contrato `execute()`; `ConcreteCommand` = acciones; `Receiver` = servicios/modelos (`RentAdjustmentService`, recalculador, etc.); `Invoker` = fachada/handler de acción; `Client` = UI/CLI arma el comando.
-- **Archivos/componentes:** nuevo `app/Commands/Adjustment/*` o `app/Actions/Adjustment/*`, `app/Services/RentAdjustmentService.php`, `app/Services/RentalFacade.php`, `app/Services/Adjustment/AdjustmentChainRecalculator.php`, recursos Filament de reajustes, `app/Console/Commands/*` relacionados.
-- **Valor:** trazabilidad, punto único para colas/reintentos futuros y pruebas por acción; desacopla UI de secuencias largas.
-- **Pruebas:** tests feature/unit de acciones de reajuste + smoke de pantallas/commands existentes.
+### 5) Command — *implementado* (valor en acciones discretas)
+- **Qué se hará:** encapsular las operaciones de reajuste como comandos con `execute()` (`NotifyRentAdjustment`, `ApplyRentAdjustment`, `RecalculateRentAdjustmentChain`), reutilizados por `RentalFacade`/`RentAdjustmentService` y por el comando Artisan existente; **wrappers** sobre Artisan, sin reemplazar `SyncIpcDane` ni romper CLI. El alta (`record`) queda fuera por ser un flujo de formulario.
+- **Cómo funcionará (GoF):** `Command` = `AdjustmentCommand::execute()`; `ConcreteCommand` = acciones; `Receiver` = `RentAdjustment` y `AdjustmentChainRecalculator`; `Invoker` = fachada/servicio/comando Artisan; `Client` = UI/CLI.
+- **Archivos/componentes:** `app/Commands/Adjustment/*`, `app/Services/RentAdjustmentService.php`, `app/Services/RentalFacade.php`, `app/Console/Commands/RecalculateAdjustmentChains.php`.
+- **Valor:** operaciones explícitas y un único camino de ejecución entre UI y CLI; el servicio se delimita y quedan preparados cola/reintentos/auditoría sin tocar clientes.
+- **Pruebas:** `tests/Feature/AdjustmentCommandsTest.php` + regresión de reajuste/cadena/fachada/commands.
 
 ### 6) Iterator — *no implementado* (valor sobre Composite existente)
 - **Qué se hará:** agregar iterador de dominio sobre el árbol de espacios (`SpaceComponent`/`SpaceComposite`/`SpaceLeaf`) construido por `SpaceTreeBuilder` (p. ej. DFS, opcional hojas), para que `DeliveryActBuilder`/`DeliveryActDraft` recorran una abstracción uniforme.
@@ -101,12 +101,9 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - **Valor:** menor acoplamiento y riesgo de regresión en el flujo más sensible (canon/topes/cadena).
 - **Pruebas:** `tests/Feature/AdjustmentChainTest.php`, `RentAdjustmentServiceTest.php`, `RentalFacadeTest.php` y flujos Filament relacionados.
 
-### 9) Interpreter — *no implementado* (acotado, valor real)
-- **Qué se hará:** mini-intérprete **acotado** para componer reglas de elegibilidad de reajuste sobre `AdjustmentContext`: `Expression::interpret()` con terminales (predicados ya existentes: IPC disponible, ámbito residencial, plazo/cap/geografía, etc.) y no-terminales `And/Or/Not`. **AST en código/config** (sin parser de texto libre) para seguridad/mantenibilidad/YAGNI, salvo que se justifique configuración textual.
-- **Cómo funcionará (GoF):** `AbstractExpression` = `Expression`; `Terminal` = predicados; `Nonterminal` = combinadores; `Context` = `AdjustmentContext`; `Client` = validación/servicio.
-- **Archivos/componentes:** nuevo `app/Services/Adjustment/Interpreter/*` (o `Rules/Expressions/*`), `app/Services/Adjustment/Validation/AdjustmentContext.php` y reglas `Validation/*`, `app/Services/RentAdjustmentService.php`, opcional `app/Settings/AppSettings.php`/config si se externaliza.
-- **Valor:** componer políticas normativas sin ramificación creciente, reutilizando chequeos probados. Si no hay necesidad de políticas configurables, se limita a AST interno.
-- **Pruebas:** unit de expresiones + integración con validación de reajustes.
+### 9) Interpreter — *descartado*
+- **Decisión:** no se implementará. El usuario lo excluyó del alcance el 2026-11-07.
+- **Consecuencia:** el plan y el cierre final cubren 8 patrones de comportamiento; no se agregan expresiones, AST ni configuración de reglas.
 
 ---
 
@@ -127,15 +124,16 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - [x] 2. Chain of Responsibility — ajuste + doc + mapa
 - [x] 3. State — ajuste + doc + mapa
 - [x] 4. Memento — implementación + doc + mapa
-- [ ] 5. Command — implementación + doc + mapa
+- [x] 5. Command — implementación + doc + mapa
 - [ ] 6. Iterator — implementación + doc + mapa
 - [ ] 7. Visitor — implementación + doc + mapa
 - [ ] 8. Mediator — implementación + doc + mapa
-- [ ] 9. Interpreter — implementación + doc + mapa
+- [—] 9. Interpreter — descartado por decisión del usuario (no se implementa)
 
 ### Cierre
 - [ ] Verificación final de enlaces/consistencia en `docs/MAPA-PATRONES.md`.
 - [ ] Resumen de cambios, pruebas ejecutadas y riesgos residuales.
+- [ ] Entregar un recorrido de prueba en la app funcionando: por cada patrón, ruta/pantalla o flujo donde se evidencia (incluidos los patrones que viven dentro de funcionalidades existentes).
 
 ## Notas de regresión (a mantener)
 - No cambiar el significado legal/contable de cálculos IPC, topes, pactos ni facturación.
@@ -293,3 +291,39 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - Suite completa: **389 pruebas, 1859 aserciones, OK**. Se corrió en dos procesos (`378 + 11`) por el `set_time_limit(300)` de `ListIpcSeries`; no es un fallo de código.
 
 **Siguiente:** #5 Command (acciones de reajuste encapsuladas). Antes de implementar, entregar explicación sencilla y esperar aprobación explícita.
+
+### 2026-11-07 — #5 Command (HECHO)
+
+**Estado:** implementado, probado y documentado.
+
+**Cambios de código**
+- Nuevo `app/Commands/Adjustment/AdjustmentCommand.php` con `execute(): mixed`.
+- Nuevo `NotifyRentAdjustment`: receptor `RentAdjustment`; exige el medio, guarda `notified_on` y `notification_method`, devuelve el ajuste refrescado.
+- Nuevo `ApplyRentAdjustment`: receptor `AdjustmentChainRecalculator`; comprueba `effective_from`, marca `applied_on`, recalcula la cadena y devuelve el alquiler.
+- Nuevo `RecalculateRentAdjustmentChain`: receptor `AdjustmentChainRecalculator`; devuelve el resultado actual con `memento`.
+- `app/Services/RentAdjustmentService.php`: `markNotified()`, `applyToRental()` y `recalculateChain()` conservan su firma y delegan en los comandos.
+- `app/Services/RentalFacade.php`: conserva sus métodos y construye/ejecuta los comandos; el `@return` del recálculo ahora declara `memento`.
+- `app/Console/Commands/RecalculateAdjustmentChains.php`: usa `RecalculateRentAdjustmentChain` en modo individual y global, en lugar de llamar al recalculador directamente.
+- **No se tocaron** Filament, las reglas legales ni el alta (`record`).
+
+**Decisiones a recordar**
+- **La lógica sale del servicio, no se duplica:** el servicio queda como invocador compatible y las pruebas existentes siguen pasando.
+- **La fachada es el invocador de la UI:** Filament no conoce los comandos.
+- **El alta (`record`) queda fuera:** es un flujo de formulario con muchos parámetros, no una transición discreta.
+- **Sin cola, reintentos ni `undo()`:** el contrato deja el punto de extensión, pero la ejecución sigue siendo síncrona. Memento ya expone `restore()`.
+- **`NotifyRentAdjustment` no comprueba `canNotify()`** ni `ApplyRentAdjustment` comprueba `canApply()`: se conserva la laxitud actual del servicio; la visibilidad sigue en Filament (State). Endurecerlo sería un cambio de comportamiento aparte.
+- **Interpreter queda fuera del alcance** por decisión del usuario (2026-11-07). El cierre cubre 8 patrones de comportamiento.
+
+**Docs/mapa**
+- Nuevo `docs/Patrones de comportamiento/Command.md` (§§1–9; §9 con evidencia UML antes/después).
+- Nuevo `docs/Planes/Command.md` (plan/memoria específica del patrón).
+- `docs/MAPA-PATRONES.md`: fila nueva y total 18 → 19.
+
+**Verificación**
+- Nuevas: `tests/Feature/AdjustmentCommandsTest.php` → **6 pruebas OK**.
+- Relacionadas: `RentAdjustmentServiceTest`, `AdjustmentChainTest`, `RentalFacadeTest`, `RecalculateAdjustmentChainsCommandTest`, `ReajusteScreensRenderTest`, `RentAdjustmentFormTest`, `AdjustmentStateTest`, `AdjustmentChainMementoTest`, `ReajusteCalculationTest`, `AdjustmentStateBehaviorTest`, `AdjustmentMementoTest` → **99 pruebas OK**.
+- Total relacionado: **105 pruebas OK**.
+- `vendor/bin/pint` sobre los archivos tocados → OK.
+- Suite completa: **395 pruebas, 1877 aserciones, OK**. Se corrió en dos procesos (`384 + 11`) por el `set_time_limit(300)` de `ListIpcSeries`; no es un fallo de código.
+
+**Siguiente:** #6 Iterator (recorrido de espacios/acta sobre Composite). Antes de implementar, entregar explicación sencilla y esperar aprobación explícita.
