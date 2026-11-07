@@ -1,6 +1,6 @@
 # Mapa de Patrones de Diseño
 
-Los 19 patrones documentados fueron verificados en el código y tienen documento individual.
+Los 20 patrones documentados fueron verificados en el código y tienen documento individual.
 
 ## Creacionales
 
@@ -35,3 +35,4 @@ Los 19 patrones documentados fueron verificados en el código y tienen documento
 | **State** | `AdjustmentState` como token con `behavior()`; `RecordedState`/`NotifiedState`/`AppliedState` encapsulan `canNotify/canApply/canEdit/countsTowardsChain`; `RentAdjustment` delega y Filament consulta el modelo | `app/Enums/AdjustmentState.php`, `app/States/Adjustment/*`, `app/Models/RentAdjustment.php`, `app/Filament/Resources/RentAdjustmentResource.php` | `docs/Patrones de comportamiento/State.md` |
 | **Memento** | `Rental`/`RentAdjustment` capturan y restauran la cadena con `AdjustmentChainMemento`/`AdjustmentMemento`; `AdjustmentChainRecalculator` es el cuidador y `--dry-run` compara el memento con el cálculo sin escribir | `app/ValueObjects/AdjustmentMemento.php`, `AdjustmentChainMemento.php`, `app/Models/Rental.php`, `app/Models/RentAdjustment.php`, `app/Services/Adjustment/AdjustmentChainRecalculator.php`, `app/Console/Commands/RecalculateAdjustmentChains.php` | `docs/Patrones de comportamiento/Memento.md` |
 | **Command** | `AdjustmentCommand` con `execute()`; `NotifyRentAdjustment`, `ApplyRentAdjustment` y `RecalculateRentAdjustmentChain` encapsulan acciones; `RentalFacade`/`RentAdjustmentService` son invocadores y el comando Artisan reutiliza el recálculo | `app/Commands/Adjustment/*`, `app/Services/RentalFacade.php`, `app/Services/RentAdjustmentService.php`, `app/Console/Commands/RecalculateAdjustmentChains.php` | `docs/Patrones de comportamiento/Command.md` |
+| **Iterator** | `SpaceTreeIterator` recorre el Composite de espacios en preorden con `depth()`/`parent()`; `SpaceComponent` es `IteratorAggregate` y el builder/presenter consumen el iterador | `app/Iterators/SpaceTreeIterator.php`, `app/Models/SpaceComponent.php`, `app/Services/Acts/SpaceTreeBuilder.php`, `app/Services/Acts/DeliveryActInventoryPresenter.php` | `docs/Patrones de comportamiento/Iterator.md` |

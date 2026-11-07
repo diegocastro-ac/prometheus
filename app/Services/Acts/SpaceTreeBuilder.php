@@ -2,6 +2,7 @@
 
 namespace App\Services\Acts;
 
+use App\Iterators\SpaceTreeIterator;
 use App\Models\ActItem;
 use App\Models\Space;
 use App\Models\SpaceComponent;
@@ -111,20 +112,17 @@ class SpaceTreeBuilder
     public function treeOptions(int|string $userId): array
     {
         $options = [];
+        $iterator = SpaceTreeIterator::roots($this->forUser($userId));
 
-        $walk = function (array $components, int $depth) use (&$walk, &$options): void {
-            foreach ($components as $component) {
-                $label = $depth === 0
-                    ? $component->name()
-                    : str_repeat('— ', $depth).$component->path();
+        foreach ($iterator as $component) {
+            $depth = $iterator->depth();
 
-                $options[(int) $component->space()->getKey()] = $label;
+            $label = $depth === 0
+                ? $component->name()
+                : str_repeat('— ', $depth).$component->path();
 
-                $walk($component->children(), $depth + 1);
-            }
-        };
-
-        $walk($this->forUser($userId), 0);
+            $options[(int) $component->space()->getKey()] = $label;
+        }
 
         return $options;
     }
@@ -135,12 +133,6 @@ class SpaceTreeBuilder
      */
     public function flatten(array $components): array
     {
-        $flattened = [];
-
-        foreach ($components as $component) {
-            $flattened = array_merge($flattened, $component->flatten());
-        }
-
-        return $flattened;
+        return iterator_to_array(SpaceTreeIterator::roots($components), false);
     }
 }

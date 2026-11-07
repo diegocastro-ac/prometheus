@@ -80,12 +80,12 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - **Valor:** operaciones explícitas y un único camino de ejecución entre UI y CLI; el servicio se delimita y quedan preparados cola/reintentos/auditoría sin tocar clientes.
 - **Pruebas:** `tests/Feature/AdjustmentCommandsTest.php` + regresión de reajuste/cadena/fachada/commands.
 
-### 6) Iterator — *no implementado* (valor sobre Composite existente)
-- **Qué se hará:** agregar iterador de dominio sobre el árbol de espacios (`SpaceComponent`/`SpaceComposite`/`SpaceLeaf`) construido por `SpaceTreeBuilder` (p. ej. DFS, opcional hojas), para que `DeliveryActBuilder`/`DeliveryActDraft` recorran una abstracción uniforme.
-- **Cómo funcionará (GoF):** `Aggregate` = `SpaceComponent`/raíz; `ConcreteAggregate` = `SpaceComposite`; `Iterator/ConcreteIterator` = recorrido; `Client` = builder/draft/acta. Compatible con `IteratorAggregate` de PHP.
-- **Archivos/componentes:** `app/Models/SpaceComponent.php`, `SpaceLeaf.php`, `SpaceComposite.php`, `app/Services/Acts/SpaceTreeBuilder.php`, `DeliveryActBuilder.php`, `DeliveryActDraft.php`.
+### 6) Iterator — *implementado* (valor sobre Composite existente)
+- **Qué se hará:** agregar iterador de dominio sobre el árbol de espacios (`SpaceComponent`/`SpaceComposite`/`SpaceLeaf`) construido por `SpaceTreeBuilder` (DFS preorden con profundidad y padre), para que `SpaceTreeBuilder` y `DeliveryActInventoryPresenter` recorran una abstracción uniforme.
+- **Cómo funcionará (GoF):** `Aggregate` = `SpaceComponent` (`IteratorAggregate`); `ConcreteAggregate` = `SpaceComposite`/`SpaceLeaf`; `Iterator/ConcreteIterator` = `SpaceTreeIterator`; `Client` = builder/presenter/acta. Compatible con `IteratorAggregate` de PHP.
+- **Archivos/componentes:** `app/Iterators/SpaceTreeIterator.php`, `app/Models/SpaceComponent.php`, `app/Services/Acts/SpaceTreeBuilder.php`, `app/Services/Acts/DeliveryActInventoryPresenter.php`.
 - **Valor:** recorrido único y testeable del inventario/espacios (complementa Composite), evita lógica de árbol duplicada.
-- **Pruebas:** tests de actas/builder/espacios existentes; añadir caso de recorrido si falta.
+- **Pruebas:** `tests/Feature/SpaceTreeIteratorTest.php` + regresión de espacios/acta/selectores.
 
 ### 7) Visitor — *no implementado* (valor tras Iterator/Composite)
 - **Qué se hará:** doble despacho sobre espacios para operaciones separadas de la estructura: `SpaceVisitor` + visitantes concretos con valor real (p. ej. resumen/conteo de inventario, aplanado/líneas para render/acta). `accept()` en elementos.
@@ -125,7 +125,7 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - [x] 3. State — ajuste + doc + mapa
 - [x] 4. Memento — implementación + doc + mapa
 - [x] 5. Command — implementación + doc + mapa
-- [ ] 6. Iterator — implementación + doc + mapa
+- [x] 6. Iterator — implementación + doc + mapa
 - [ ] 7. Visitor — implementación + doc + mapa
 - [ ] 8. Mediator — implementación + doc + mapa
 - [—] 9. Interpreter — descartado por decisión del usuario (no se implementa)
@@ -327,3 +327,35 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - Suite completa: **395 pruebas, 1877 aserciones, OK**. Se corrió en dos procesos (`384 + 11`) por el `set_time_limit(300)` de `ListIpcSeries`; no es un fallo de código.
 
 **Siguiente:** #6 Iterator (recorrido de espacios/acta sobre Composite). Antes de implementar, entregar explicación sencilla y esperar aprobación explícita.
+
+### 2026-11-07 — #6 Iterator (HECHO)
+
+**Estado:** implementado, probado y documentado.
+
+**Cambios de código**
+- Nuevo `app/Iterators/SpaceTreeIterator.php`: `Iterator` con DFS preorden, `depth()`, `parent()` y factoría `roots()`.
+- `app/Models/SpaceComponent.php`: implementa `IteratorAggregate`; `iterator()`/`getIterator()` devuelven el subárbol y `flatten()` delega en el iterador.
+- `app/Services/Acts/SpaceTreeBuilder.php`: `treeOptions()` usa `depth()` y `flatten()` usa `SpaceTreeIterator::roots()`.
+- `app/Services/Acts/DeliveryActInventoryPresenter.php`: `rows()` y `chartData()` usan el iterador; se eliminan `appendRows()` y `appendChartNode()`.
+- **No se tocaron** `SpaceLeaf`, `SpaceComposite`, `prune()`, Filament ni las reglas de negocio.
+
+**Decisiones a recordar**
+- **Preorden intacto:** los hijos se empujan con `array_reverse()` porque la pila es LIFO.
+- **`depth()`/`parent()` son del iterador concreto:** PHP no los estandariza; solo los clientes que los necesitan tipan `SpaceTreeIterator`.
+- **`SpaceComponent` es Aggregate:** un nodo se puede recorrer solo, lo que simplifica pruebas y reutilización.
+- **`prune()` sigue recursivo:** reconstruye el árbol filtrado con nodos nuevos; no es un recorrido de lectura.
+- **`Space::descendants()`/`asComponent()` quedan fuera:** trabajan contra Eloquent, no sobre el Composite.
+- **Sin cambios observables:** mismo orden, niveles, `parentId` y arrays de salida.
+
+**Docs/mapa**
+- Nuevo `docs/Patrones de comportamiento/Iterator.md` (§§1–9; §9 con evidencia UML antes/después).
+- Nuevo `docs/Planes/Iterator.md` (plan/memoria específica del patrón).
+- `docs/MAPA-PATRONES.md`: fila nueva y total 19 → 20.
+
+**Verificación**
+- Nuevas: `tests/Feature/SpaceTreeIteratorTest.php` → **4 pruebas, 7 aserciones OK**.
+- Relacionadas: `SpaceHierarchyCompositeTest`, `DeliveryActInventoryViewTest`, `SpaceCatalogFieldTest`, `DeliveryActBuilderTest`, `DeliveryActPrototypeTest`, `CreateDeliveryActTest`, `CreateDeliveryActFromTest`, `InventoryItemFlyweightTest` → **68 pruebas, 325 aserciones OK** en total.
+- `vendor/bin/pint` sobre los archivos tocados → OK.
+- Suite completa: **399 pruebas, 1863 aserciones, OK**. Se corrió en dos procesos (`388 + 11`) por el `set_time_limit(300)` de `ListIpcSeries`; no es un fallo de código.
+
+**Siguiente:** #7 Visitor (operaciones sobre espacios tras estabilizar Iterator/Composite). Antes de implementar, entregar explicación sencilla y esperar aprobación explícita.
