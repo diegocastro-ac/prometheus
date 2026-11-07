@@ -210,3 +210,123 @@ Si en el futuro se agrega una cadencia nueva:
 3. sobrescribir `findInvoice()` solo si su clave de deduplicación es distinta de `period + issued_at`;
 4. registrar la cadencia en `BillingCadence` y en `PaymentPlanGeneratorResolver`;
 5. ejecutar las pruebas de planes, periodos, vencimientos e idempotencia.
+
+## 9. Evidencia de implementación: antes y después
+
+Este patrón no creó una funcionalidad nueva: reorganizó la generación de planes que ya existía. El contraste se muestra con UML; el código queda solo para el mecanismo que el diagrama no expresa por sí solo. Los diagramas «antes» corresponden a `dda5732` (commit anterior a este patrón); los «después», al estado actual tras `e32dd90`.
+
+**Por qué era necesario.** En el diseño anterior `generate()` solo delegaba y cada subclase repetía la búsqueda, la creación y el `refreshStatus()`. Una cadencia nueva podía olvidar el refresco o crear la factura con campos distintos, y el orden crear → refrescar dependía de la disciplina de cada subclase, no de la base.
+
+**Antes — cada subclase resolvía la secuencia completa**
+
+```plantuml
+@startuml
+abstract class "PaymentPlanGenerator" as PaymentPlanGenerator {
+  + generate() : Invoice[]
+  # createInvoices() : Invoice[] {abstract}
+  # dueDateFrom(issued, dueDays) : string
+}
+
+class "MonthlyPlanGenerator" as MonthlyPlanGenerator {
+  - numbers : InvoiceNumberService
+  - settings : AppSettings
+  + createInvoices() : Invoice[]
+}
+
+class "QuincenalPlanGenerator" as QuincenalPlanGenerator {
+  - numbers : InvoiceNumberService
+  - settings : AppSettings
+  + createInvoices() : Invoice[]
+  - createOrEnsure(...) : void
+}
+
+class "AdvancePlanGenerator" as AdvancePlanGenerator {
+  - numbers : InvoiceNumberService
+  - settings : AppSettings
+  + createInvoices() : Invoice[]
+}
+
+PaymentPlanGenerator <|-- MonthlyPlanGenerator
+PaymentPlanGenerator <|-- QuincenalPlanGenerator
+PaymentPlanGenerator <|-- AdvancePlanGenerator
+
+note right of MonthlyPlanGenerator
+  createInvoices() busca, crea,
+  refresca y arma los atributos.
+end note
+
+note right of QuincenalPlanGenerator
+  createOrEnsure() repite la misma
+  búsqueda, creación y refresco.
+end note
+
+note bottom of PaymentPlanGenerator
+  generate() solo delega en createInvoices().
+  La secuencia "crear -> refrescar" no está
+  garantizada por la base: cada subclase
+  debe recordarla.
+end note
+@enduml
+```
+
+**Después — la base fija la secuencia y expone el hook**
+
+```plantuml
+@startuml
+abstract class "PaymentPlanGenerator" as PaymentPlanGenerator {
+  + generate() : Invoice[] {final}
+  # createInvoices() : Invoice[] {abstract}
+  # ensureInvoice(date, amount) : Invoice
+  # findInvoice(date) : Invoice?
+  # invoiceAttributes(date, amount) : array
+  # dueDateFrom(issued, dueDays) : string
+}
+
+class "MonthlyPlanGenerator" as MonthlyPlanGenerator {
+  + createInvoices() : Invoice[]
+  # findInvoice(date) : Invoice?
+}
+
+class "QuincenalPlanGenerator" as QuincenalPlanGenerator {
+  + createInvoices() : Invoice[]
+}
+
+class "AdvancePlanGenerator" as AdvancePlanGenerator {
+  + createInvoices() : Invoice[]
+}
+
+PaymentPlanGenerator <|-- MonthlyPlanGenerator
+PaymentPlanGenerator <|-- QuincenalPlanGenerator
+PaymentPlanGenerator <|-- AdvancePlanGenerator
+
+note right of PaymentPlanGenerator
+  generate() fija la secuencia:
+  createInvoices() -> refreshStatus() -> devolver.
+  ensureInvoice() concentra búsqueda/creación.
+  findInvoice() es el hook de idempotencia.
+end note
+@enduml
+```
+
+El único código que hace falta retener es el método plantilla, porque es lo que el UML marca como `final`:
+
+```php
+final public function generate(): array
+{
+    $invoices = $this->createInvoices();
+
+    foreach ($invoices as $invoice) {
+        $invoice->refreshStatus();
+    }
+
+    return $invoices;
+}
+```
+
+**Qué evidencia**
+
+- `generate()` pasó a ser `final`: el orden crear → refrescar → devolver ya no depende de cada subclase (**Template Method**).
+- `createInvoices()` sigue siendo la operación primitiva: cada cadencia decide sus cortes.
+- `ensureInvoice()` e `invoiceAttributes()` son operaciones concretas compartidas; la búsqueda y los atributos dejaron de estar duplicados.
+- `findInvoice()` es el **hook**: el comportamiento por defecto (periodo + emisión) y la excepción mensual (solo periodo) quedan explícitos en un solo punto.
+- El diff elimina de `MonthlyPlanGenerator` y `QuincenalPlanGenerator` la creación de facturas y el `refreshStatus()` repetidos; no cambia montos, fechas, periodos ni estados.

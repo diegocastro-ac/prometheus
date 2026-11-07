@@ -18,7 +18,7 @@ namespace App\Services\Adjustment\Validation;
  * tiene respaldo catastral, la carta que cites ese limite va a ser dificil de
  * sostener.
  */
-class CommercialValueWithinCatastralCeiling implements ReajusteRule
+class CommercialValueWithinCatastralCeiling extends ReajusteRule
 {
     public function name(): string
     {

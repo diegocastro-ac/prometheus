@@ -18,7 +18,7 @@ namespace App\Services\Adjustment\Validation;
  * llega marcado como no legal justamente para que la carta no pueda
  * confundirlos.
  */
-class CityIpcRequiresAcknowledgement implements ReajusteRule
+class CityIpcRequiresAcknowledgement extends ReajusteRule
 {
     public function name(): string
     {

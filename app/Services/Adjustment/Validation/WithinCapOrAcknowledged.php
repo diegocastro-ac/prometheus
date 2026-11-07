@@ -23,7 +23,7 @@ namespace App\Services\Adjustment\Validation;
  * es el escenario de riesgo real. De ahi que la regla avise y que la carta lo
  * destaque.
  */
-class WithinCapOrAcknowledged implements ReajusteRule
+class WithinCapOrAcknowledged extends ReajusteRule
 {
     public function name(): string
     {

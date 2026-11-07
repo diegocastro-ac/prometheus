@@ -18,7 +18,7 @@ namespace App\Services\Adjustment\Validation;
  * asumir un limite. Aplicar el IPC sin conocer el valor comercial es lo normal,
  * y frenar todos los reajustes que no tengan ese dato volveria inutil el sistema.
  */
-class WithinOnePercentOfCommercialValue implements ReajusteRule
+class WithinOnePercentOfCommercialValue extends ReajusteRule
 {
     public function name(): string
     {

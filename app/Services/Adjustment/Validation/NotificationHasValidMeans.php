@@ -20,7 +20,7 @@ namespace App\Services\Adjustment\Validation;
  * reintegrro aunque nunca se le haya avisado, y por eso la carta deja constancia
  * del medio usado en lugar de dar el incremento por comunicado.
  */
-class NotificationHasValidMeans implements ReajusteRule
+class NotificationHasValidMeans extends ReajusteRule
 {
     public function name(): string
     {

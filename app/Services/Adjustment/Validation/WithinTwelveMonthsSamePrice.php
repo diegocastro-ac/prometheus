@@ -17,7 +17,7 @@ namespace App\Services\Adjustment\Validation;
  * sistema lo permita sin que quede escrito, porque dos reajustes en doce meses
  * con el IPC del año son una de las practicas que la ley busca contener.
  */
-class WithinTwelveMonthsSamePrice implements ReajusteRule
+class WithinTwelveMonthsSamePrice extends ReajusteRule
 {
     public function name(): string
     {

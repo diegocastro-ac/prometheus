@@ -159,19 +159,26 @@ class AppServiceProvider extends ServiceProvider
         | exactamente como dos pantallas empiezan a discrepar sobre lo que dice
         | la ley.
         |
+        | El orden y los enlaces viven aqui, en un solo lugar: setNext() arma la
+        | cadena y ReajusteValidationChain solo conoce la cabeza. Agregar una
+        | regla nueva es crear la clase y encadenarla en esta secuencia.
+        |
         */
 
-        $this->app->singleton(ReajusteValidationChain::class, fn ($app) => new ReajusteValidationChain([
-            new HasIpcData($app->make(IpcSeriesRepository::class)),
-            new IsResidentialScope,
-            new WithinTwelveMonthsSamePrice,
-            new StatutoryCalendarYear,
-            new CityIpcRequiresAcknowledgement,
-            new CommercialValueWithinCatastralCeiling,
-            new WithinOnePercentOfCommercialValue,
-            new WithinCapOrAcknowledged,
-            new NotificationHasValidMeans,
-        ]));
+        $this->app->singleton(ReajusteValidationChain::class, function ($app): ReajusteValidationChain {
+            $head = new HasIpcData($app->make(IpcSeriesRepository::class));
+
+            $head->setNext(new IsResidentialScope)
+                ->setNext(new WithinTwelveMonthsSamePrice)
+                ->setNext(new StatutoryCalendarYear)
+                ->setNext(new CityIpcRequiresAcknowledgement)
+                ->setNext(new CommercialValueWithinCatastralCeiling)
+                ->setNext(new WithinOnePercentOfCommercialValue)
+                ->setNext(new WithinCapOrAcknowledged)
+                ->setNext(new NotificationHasValidMeans);
+
+            return new ReajusteValidationChain($head);
+        });
 
         $this->app->singleton(IpcBasisStrategyResolver::class);
         $this->app->singleton(AdjustmentChainCalculator::class);
