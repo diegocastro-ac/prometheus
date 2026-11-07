@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Visitors\Space\SpaceVisitor;
 use Illuminate\Support\Collection;
 
 class SpaceLeaf extends SpaceComponent
@@ -22,5 +23,10 @@ class SpaceLeaf extends SpaceComponent
     public function isComposite(): bool
     {
         return false;
+    }
+
+    public function accept(SpaceVisitor $visitor): mixed
+    {
+        return $visitor->visitLeaf($this);
     }
 }

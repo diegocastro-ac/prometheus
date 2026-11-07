@@ -3,6 +3,9 @@
 namespace App\Models;
 
 use App\Iterators\SpaceTreeIterator;
+use App\Visitors\Space\InventoryReportVisitor;
+use App\Visitors\Space\SpaceInventoryReport;
+use App\Visitors\Space\SpaceVisitor;
 use Illuminate\Support\Collection;
 use IteratorAggregate;
 use Traversable;
@@ -14,6 +17,9 @@ use Traversable;
  *
  * Tambien es el Aggregate de Iterator: el componente entrega un recorrido en
  * preorden de su subarbol sin exponer la forma de los hijos.
+ *
+ * Y es el Element de Visitor: accept() redirige la operacion al metodo de la
+ * hoja o del compuesto, sin que el cliente pregunte por el tipo.
  *
  * @implements IteratorAggregate<int, SpaceComponent>
  */
@@ -33,6 +39,11 @@ abstract class SpaceComponent implements IteratorAggregate
     abstract public function children(): array;
 
     abstract public function isComposite(): bool;
+
+    /**
+     * Double dispatch de Visitor: el nodo concreto elige el metodo del visitante.
+     */
+    abstract public function accept(SpaceVisitor $visitor): mixed;
 
     public function space(): Space
     {
@@ -75,11 +86,10 @@ abstract class SpaceComponent implements IteratorAggregate
 
     public function totalItems(): int
     {
-        return $this->items->count()
-            + array_sum(array_map(
-                static fn (SpaceComponent $child): int => $child->totalItems(),
-                $this->children(),
-            ));
+        /** @var SpaceInventoryReport $report */
+        $report = $this->accept(new InventoryReportVisitor);
+
+        return $report->totalItems;
     }
 
     /**

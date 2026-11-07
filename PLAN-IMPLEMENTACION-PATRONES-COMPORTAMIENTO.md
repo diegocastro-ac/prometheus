@@ -87,12 +87,12 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - **Valor:** recorrido único y testeable del inventario/espacios (complementa Composite), evita lógica de árbol duplicada.
 - **Pruebas:** `tests/Feature/SpaceTreeIteratorTest.php` + regresión de espacios/acta/selectores.
 
-### 7) Visitor — *no implementado* (valor tras Iterator/Composite)
-- **Qué se hará:** doble despacho sobre espacios para operaciones separadas de la estructura: `SpaceVisitor` + visitantes concretos con valor real (p. ej. resumen/conteo de inventario, aplanado/líneas para render/acta). `accept()` en elementos.
-- **Cómo funcionará (GoF):** `Visitor/ConcreteVisitor`; `Element` = `SpaceComponent`; `ConcreteElement` = `SpaceLeaf/SpaceComposite`; `ObjectStructure` = árbol.
-- **Archivos/componentes:** modelos `Space*`, `SpaceTreeBuilder`, `DeliveryActBuilder`/`DeliveryActDraft`, y puntos de documentos/render de acta si consumen el resultado (`app/Documents/*` según corresponda).
+### 7) Visitor — *implementado* (valor tras Iterator/Composite)
+- **Qué se hará:** doble despacho sobre espacios para operaciones separadas de la estructura: `SpaceVisitor` + `InventoryReportVisitor` que resume tipo, elementos directos y total acumulado; `accept()` en elementos; `prune()` sigue recursivo por ser reconstrucción del árbol.
+- **Cómo funcionará (GoF):** `Visitor/ConcreteVisitor`; `Element` = `SpaceComponent`; `ConcreteElement` = `SpaceLeaf/SpaceComposite`; `ObjectStructure` = árbol; `Client` = `DeliveryActInventoryPresenter`.
+- **Archivos/componentes:** `app/Visitors/Space/*`, `app/Models/SpaceComponent.php`, `SpaceLeaf.php`, `SpaceComposite.php`, `app/Services/Acts/DeliveryActInventoryPresenter.php`.
 - **Valor:** nuevas operaciones sobre actas sin engordar nodos ni condicionales por tipo.
-- **Pruebas:** unit del visitante + integración en generación de acta/documento.
+- **Pruebas:** `tests/Feature/SpaceVisitorTest.php` + regresión de actas/espacios/iterador.
 
 ### 8) Mediator — *no implementado* (valor en subsistema sensible)
 - **Qué se hará:** centralizar la coordinación del flujo de reajuste (validar → registrar/aplicar → recalcular cadena → efectos colaterales permitidos) en `AdjustmentWorkflowMediator` (nombre tentativo), reduciendo llamadas en cascada entre colegas. `RentalFacade` puede delegar operaciones de ajuste al mediador.
@@ -126,7 +126,7 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - [x] 4. Memento — implementación + doc + mapa
 - [x] 5. Command — implementación + doc + mapa
 - [x] 6. Iterator — implementación + doc + mapa
-- [ ] 7. Visitor — implementación + doc + mapa
+- [x] 7. Visitor — implementación + doc + mapa
 - [ ] 8. Mediator — implementación + doc + mapa
 - [—] 9. Interpreter — descartado por decisión del usuario (no se implementa)
 
@@ -359,3 +359,37 @@ Implementar/ajustar los **patrones de comportamiento GoF faltantes** en Promethe
 - Suite completa: **399 pruebas, 1863 aserciones, OK**. Se corrió en dos procesos (`388 + 11`) por el `set_time_limit(300)` de `ListIpcSeries`; no es un fallo de código.
 
 **Siguiente:** #7 Visitor (operaciones sobre espacios tras estabilizar Iterator/Composite). Antes de implementar, entregar explicación sencilla y esperar aprobación explícita.
+
+### 2026-11-07 — #7 Visitor (HECHO)
+
+**Estado:** implementado, probado y documentado.
+
+**Cambios de código**
+- Nuevo `app/Visitors/Space/SpaceVisitor.php`: contrato `visitLeaf()`/`visitComposite()`.
+- Nuevo `app/Visitors/Space/SpaceInventoryReport.php`: DTO inmutable con `kind`, `directItems`, `totalItems` e `items`.
+- Nuevo `app/Visitors/Space/InventoryReportVisitor.php`: reporte por tipo; el compuesto suma los totales de sus hijos con doble despacho.
+- `app/Models/SpaceComponent.php`: `accept()` abstracto; `totalItems()` delega en el visitante.
+- `app/Models/SpaceLeaf.php` y `SpaceComposite.php`: `accept()` redirige a `visitLeaf()`/`visitComposite()`.
+- `app/Services/Acts/DeliveryActInventoryPresenter.php`: `rows()`, `chartData()` y `totalItems()` consumen el reporte; se elimina `isComposite()` de las filas y del organigrama.
+- **No se tocaron** `prune()`, `allItems()`, el esquema, Filament ni las reglas de negocio.
+
+**Decisiones a recordar**
+- **Doble despacho real:** el nodo concreto elige el método del visitante; el cliente no pregunta por el tipo.
+- **El reporte conserva los elementos directos:** la pantalla muestra solo los directos; el total acumulado es un número aparte.
+- **`totalItems()` delega pero conserva su firma:** la vista Blade y las pruebas existentes siguen funcionando.
+- **`prune()` sigue recursivo:** produce un árbol nuevo; es construcción, no operación de lectura.
+- **`isComposite()` se conserva:** lo usa la vista Blade para el ícono.
+- **Sin cambios observables:** mismos arrays, textos, íconos y niveles.
+
+**Docs/mapa**
+- Nuevo `docs/Patrones de comportamiento/Visitor.md` (§§1–9; §9 con evidencia UML antes/después).
+- Nuevo `docs/Planes/Visitor.md` (plan/memoria específica del patrón).
+- `docs/MAPA-PATRONES.md`: fila nueva y total 20 → 21.
+
+**Verificación**
+- Nuevas: `tests/Feature/SpaceVisitorTest.php` → **4 pruebas, 13 aserciones OK**.
+- Relacionadas: `SpaceTreeIteratorTest`, `SpaceHierarchyCompositeTest`, `DeliveryActInventoryViewTest`, `SpaceCatalogFieldTest`, `DeliveryActBuilderTest`, `DeliveryActPrototypeTest`, `CreateDeliveryActTest`, `CreateDeliveryActFromTest`, `InventoryItemFlyweightTest` → **72 pruebas, 338 aserciones OK** en total.
+- `vendor/bin/pint` sobre los archivos tocados → OK.
+- Suite completa: **403 pruebas, 1916 aserciones, OK**. Se corrió en dos procesos (`392 + 11`) por el `set_time_limit(300)` de `ListIpcSeries`; no es un fallo de código.
+
+**Siguiente:** #8 Mediator (coordinación del flujo de reajuste). Antes de implementar, entregar explicación sencilla y esperar aprobación explícita.

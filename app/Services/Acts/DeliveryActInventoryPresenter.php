@@ -8,6 +8,8 @@ use App\Models\DeliveryAct;
 use App\Models\SpaceComponent;
 use App\Models\SpaceComposite;
 use App\Models\SpaceLeaf;
+use App\Visitors\Space\InventoryReportVisitor;
+use App\Visitors\Space\SpaceInventoryReport;
 use Illuminate\Support\Collection;
 
 /**
@@ -63,20 +65,22 @@ final class DeliveryActInventoryPresenter
 
         $rows = [];
         $iterator = SpaceTreeIterator::roots($this->tree());
+        $visitor = new InventoryReportVisitor;
 
         foreach ($iterator as $node) {
-            $items = $node->items();
+            /** @var SpaceInventoryReport $report */
+            $report = $node->accept($visitor);
 
             $rows[] = [
                 'id' => 'space-'.$node->space()->getKey(),
                 'name' => $node->name(),
                 'path' => $node->path(),
                 'depth' => $iterator->depth(),
-                'composite' => $node->isComposite(),
-                'directItems' => $items->count(),
-                'totalItems' => $node->totalItems(),
-                'items' => $this->serializeItems($items),
-                'stateCounts' => $this->stateCounts($items),
+                'composite' => $report->kind === 'composite',
+                'directItems' => $report->directItems,
+                'totalItems' => $report->totalItems,
+                'items' => $this->serializeItems($report->items),
+                'stateCounts' => $this->stateCounts($report->items),
             ];
         }
 
@@ -107,9 +111,11 @@ final class DeliveryActInventoryPresenter
         ]];
 
         $iterator = SpaceTreeIterator::roots($this->tree());
+        $visitor = new InventoryReportVisitor;
 
         foreach ($iterator as $node) {
-            $items = $node->items();
+            /** @var SpaceInventoryReport $report */
+            $report = $node->accept($visitor);
             $parent = $iterator->parent();
 
             $data[] = [
@@ -119,12 +125,12 @@ final class DeliveryActInventoryPresenter
                     : 'space-'.$parent->space()->getKey(),
                 'name' => $node->name(),
                 'path' => $node->path(),
-                'kind' => $node->isComposite() ? 'composite' : 'leaf',
-                'directItems' => $items->count(),
-                'totalItems' => $node->totalItems(),
-                'items' => $this->serializeItems($items->take(3)),
-                'moreItems' => max(0, $items->count() - 3),
-                'stateCounts' => $this->stateCounts($items),
+                'kind' => $report->kind,
+                'directItems' => $report->directItems,
+                'totalItems' => $report->totalItems,
+                'items' => $this->serializeItems($report->items->take(3)),
+                'moreItems' => max(0, $report->directItems - 3),
+                'stateCounts' => $this->stateCounts($report->items),
             ];
         }
 
@@ -218,8 +224,15 @@ final class DeliveryActInventoryPresenter
 
     private function totalItems(): int
     {
+        $visitor = new InventoryReportVisitor;
+
         return array_sum(array_map(
-            fn (SpaceComponent $node): int => $node->totalItems(),
+            function (SpaceComponent $node) use ($visitor): int {
+                /** @var SpaceInventoryReport $report */
+                $report = $node->accept($visitor);
+
+                return $report->totalItems;
+            },
             $this->tree(),
         ));
     }
