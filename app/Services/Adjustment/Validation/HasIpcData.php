@@ -17,7 +17,7 @@ use App\Services\Ipc\IpcSeriesRepository;
  * anual es distinto: el indice existe y podria servir para un calculo por
  * indices, asi que el aviso dice eso en vez de Declare que no hay IPC.
  */
-class HasIpcData implements ReajusteRule
+class HasIpcData extends ReajusteRule
 {
     public function __construct(
         private readonly IpcSeriesRepository $series,

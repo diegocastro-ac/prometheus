@@ -2,14 +2,28 @@
 
 namespace App\Models;
 
+use App\Iterators\SpaceTreeIterator;
+use App\Visitors\Space\InventoryReportVisitor;
+use App\Visitors\Space\SpaceInventoryReport;
+use App\Visitors\Space\SpaceVisitor;
 use Illuminate\Support\Collection;
+use IteratorAggregate;
+use Traversable;
 
 /**
  * Component (GoF): el inventario trata igual un espacio hoja y un espacio con
  * subespacios. La pantalla y los calculos no preguntan si un nodo tiene hijos;
  * piden sus elementos, su ruta y su total, y el nodo sabe responder.
+ *
+ * Tambien es el Aggregate de Iterator: el componente entrega un recorrido en
+ * preorden de su subarbol sin exponer la forma de los hijos.
+ *
+ * Y es el Element de Visitor: accept() redirige la operacion al metodo de la
+ * hoja o del compuesto, sin que el cliente pregunte por el tipo.
+ *
+ * @implements IteratorAggregate<int, SpaceComponent>
  */
-abstract class SpaceComponent
+abstract class SpaceComponent implements IteratorAggregate
 {
     /**
      * @param  Collection<int, ActItem>  $items
@@ -25,6 +39,11 @@ abstract class SpaceComponent
     abstract public function children(): array;
 
     abstract public function isComposite(): bool;
+
+    /**
+     * Double dispatch de Visitor: el nodo concreto elige el metodo del visitante.
+     */
+    abstract public function accept(SpaceVisitor $visitor): mixed;
 
     public function space(): Space
     {
@@ -67,11 +86,10 @@ abstract class SpaceComponent
 
     public function totalItems(): int
     {
-        return $this->items->count()
-            + array_sum(array_map(
-                static fn (SpaceComponent $child): int => $child->totalItems(),
-                $this->children(),
-            ));
+        /** @var SpaceInventoryReport $report */
+        $report = $this->accept(new InventoryReportVisitor);
+
+        return $report->totalItems;
     }
 
     /**
@@ -81,12 +99,19 @@ abstract class SpaceComponent
      */
     public function flatten(): array
     {
-        $nodes = [$this];
+        return iterator_to_array($this->iterator(), false);
+    }
 
-        foreach ($this->children() as $child) {
-            $nodes = array_merge($nodes, $child->flatten());
-        }
+    /**
+     * Iterador del subarbol que empieza en este componente (patron Iterator).
+     */
+    public function iterator(): SpaceTreeIterator
+    {
+        return new SpaceTreeIterator([$this]);
+    }
 
-        return $nodes;
+    public function getIterator(): Traversable
+    {
+        return $this->iterator();
     }
 }

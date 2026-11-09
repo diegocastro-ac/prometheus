@@ -11,8 +11,6 @@ use App\Enums\NotificationMethod;
 use App\Models\Invoice;
 use App\Models\RentAdjustment;
 use App\Models\Rental;
-use App\Services\Adjustment\AdjustmentChainCalculator;
-use App\Services\Adjustment\AdjustmentChainRecalculator;
 use App\Services\Adjustment\AdjustmentDateProposer;
 use Illuminate\Support\Carbon;
 
@@ -23,6 +21,9 @@ use Illuminate\Support\Carbon;
  * hablan con esta clase en lugar de resolver cada servicio por su cuenta. La
  * fachada no decide nada: conserva la regla donde estaba y solo coordina las
  * dependencias para que el consumidor vea una sola puerta.
+ *
+ * La coordinacion interna del flujo de reajuste vive en AdjustmentMediator; la
+ * fachada se limita a delegar en RentAdjustmentService.
  *
  * En particular, no absorbe los accesos auxiliares del formulario de reajustes
  * (IpcSeriesRepository, AppSettings) ni mueve las notificaciones: esas siguen en
@@ -35,8 +36,6 @@ class RentalFacade
         private readonly PaymentRecordingService $payments,
         private readonly RentAdjustmentService $adjustments,
         private readonly DocumentService $documents,
-        private readonly AdjustmentChainCalculator $chain,
-        private readonly AdjustmentChainRecalculator $recalculator,
         private readonly AdjustmentDateProposer $dates,
     ) {}
 
@@ -106,16 +105,21 @@ class RentalFacade
     }
 
     /**
-     * @return array{touched: int, current_rent: float, changed_ids: list<int>}
+     * @return array{
+     *     touched: int,
+     *     current_rent: float,
+     *     changed_ids: list<int>,
+     *     memento: \App\ValueObjects\AdjustmentChainMemento,
+     * }
      */
     public function recalculateAdjustmentChain(Rental $rental): array
     {
-        return $this->recalculator->recalculate($rental);
+        return $this->adjustments->recalculateChain($rental);
     }
 
     public function currentRentFor(Rental $rental): float
     {
-        return $this->chain->currentRentFor($rental);
+        return $this->adjustments->currentRentFor($rental);
     }
 
     public function previewAdjustmentIpc(

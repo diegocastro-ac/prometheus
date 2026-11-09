@@ -2,10 +2,11 @@
 
 namespace App\Console\Commands;
 
+use App\Commands\Adjustment\RecalculateRentAdjustmentChain;
 use App\Models\Rental;
-use App\Services\Adjustment\AdjustmentChainCalculator;
 use App\Services\Adjustment\AdjustmentChainRecalculator;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Reprocesa las cadenas de reajuste de los alquileres.
@@ -18,6 +19,10 @@ use Illuminate\Console\Command;
  *
  * Es idempotente. Correrlo dos veces no escribe nada la segunda, asi que se puede
  * dejar programado sin miedo a que mueva datos que ya estaban correctos.
+ *
+ * La simulacion (--dry-run) compara el memento de la cadena con el resultado
+ * del calculo y no escribe: antes solo imprimia el estado actual y, sin
+ * --rental, seguia reprocesando de verdad.
  */
 class RecalculateAdjustmentChains extends Command
 {
@@ -27,16 +32,17 @@ class RecalculateAdjustmentChains extends Command
 
     protected $description = 'Reprocesa la cadena de reajustes de los alquileres desde su canon base';
 
-    public function handle(AdjustmentChainRecalculator $recalculator, AdjustmentChainCalculator $calculator): int
+    public function handle(AdjustmentChainRecalculator $recalculator): int
     {
         if ($this->option('rental')) {
-            return $this->recalculateOne((int) $this->option('rental'), $recalculator, $calculator);
+            return $this->recalculateOne((int) $this->option('rental'), $recalculator);
         }
 
-        $rentals = Rental::query()
-            ->whereNotNull('anchor_monthly_amount')
-            ->whereHas('rentAdjustments')
-            ->count();
+        if ($this->option('dry-run')) {
+            return $this->previewAll($recalculator);
+        }
+
+        $rentals = $this->rentalsWithAdjustments()->count();
 
         if ($rentals === 0) {
             $this->info('No hay alquileres con reajustes registrados.');
@@ -49,12 +55,10 @@ class RecalculateAdjustmentChains extends Command
         $touched = 0;
         $changed = 0;
 
-        Rental::query()
-            ->whereNotNull('anchor_monthly_amount')
-            ->whereHas('rentAdjustments')
+        $this->rentalsWithAdjustments()
             ->chunkById(50, function ($chunk) use (&$touched, &$changed, $recalculator): void {
                 foreach ($chunk as $rental) {
-                    $result = $recalculator->recalculate($rental);
+                    $result = (new RecalculateRentAdjustmentChain($recalculator, $rental))->execute();
 
                     $touched += $result['touched'];
                     $changed++;
@@ -78,11 +82,8 @@ class RecalculateAdjustmentChains extends Command
         return self::SUCCESS;
     }
 
-    private function recalculateOne(
-        int $rentalId,
-        AdjustmentChainRecalculator $recalculator,
-        AdjustmentChainCalculator $calculator,
-    ): int {
+    private function recalculateOne(int $rentalId, AdjustmentChainRecalculator $recalculator): int
+    {
         $rental = Rental::query()->find($rentalId);
 
         if ($rental === null) {
@@ -103,51 +104,108 @@ class RecalculateAdjustmentChains extends Command
         }
 
         $this->line(sprintf('Alquiler: %s', $rental->name));
-        $this->line(sprintf('Canon base: $%s', number_format($anchor, 0, ',', '.')));
+        $this->line(sprintf('Canon base: %s', $this->money($anchor)));
 
         if ($this->option('dry-run')) {
-            $this->preview($rental, $calculator);
-
-            return self::SUCCESS;
+            return $this->previewOne($rental, $recalculator);
         }
 
-        $result = $recalculator->recalculate($rental);
+        $result = (new RecalculateRentAdjustmentChain($recalculator, $rental))->execute();
 
         $this->line(sprintf(
-            '%d reajustes actualizados. Canon vigente del alquiler: $%s',
+            '%d reajustes actualizados. Canon vigente del alquiler: %s',
             $result['touched'],
-            number_format($result['current_rent'], 0, ',', '.'),
+            $this->money($result['current_rent']),
         ));
 
         return self::SUCCESS;
     }
 
-    private function preview(Rental $rental, AdjustmentChainCalculator $calculator): void
+    private function previewAll(AdjustmentChainRecalculator $recalculator): int
     {
+        $rentals = $this->rentalsWithAdjustments()->count();
+
+        if ($rentals === 0) {
+            $this->info('No hay alquileres con reajustes registrados.');
+
+            return self::SUCCESS;
+        }
+
+        $this->info(sprintf('Simulando el reproceso de %d alquileres con reajustes...', $rentals));
+
+        $result = $recalculator->previewAll(function (): void {
+            $this->output->write('.');
+        });
+
         $this->newLine();
-        $this->line('Estado actual de la cadena:');
 
-        $running = $rental->anchorRent();
+        $this->info(sprintf(
+            '%d alquileres revisados, %d reajustes cambiarian en %d alquileres.',
+            $result['rentals'],
+            $result['touched'],
+            $result['changed_rentals'],
+        ));
 
-        foreach ($rental->adjustmentChain() as $adjustment) {
+        if ($result['touched'] === 0) {
+            $this->line('  Nada cambiaria: las cadenas ya estan coherentes con sus anclas.');
+        } else {
+            $this->line('  Simulacion: no se escribio ningun cambio.');
+        }
+
+        return self::SUCCESS;
+    }
+
+    private function previewOne(Rental $rental, AdjustmentChainRecalculator $recalculator): int
+    {
+        $preview = $recalculator->preview($rental);
+
+        $this->newLine();
+        $this->line('Simulacion: no se escribira ningun cambio.');
+
+        if ($preview['touched'] === 0) {
+            $this->line('La cadena ya esta coherente con su ancla: no cambiaria ningun reajuste.');
+
+            return self::SUCCESS;
+        }
+
+        $this->line('Cambios previstos:');
+
+        foreach ($preview['changes'] as $change) {
+            $before = $change['before'];
+            $after = $change['after'];
+
             $this->line(sprintf(
-                '  #%d  %s  IPC %d (%.2f %%)  canon %s -> %s  [estado: %s]',
-                $adjustment->sequence ?? 0,
-                $adjustment->effective_from?->format('Y-m-d') ?? 'sin fecha',
-                $adjustment->ipc_year ?? 0,
-                $adjustment->legalPercentage(),
-                number_format((float) $adjustment->previous_rent, 0, ',', '.'),
-                number_format((float) $adjustment->new_rent, 0, ',', '.'),
-                $adjustment->state()->value,
+                '  #%d -> #%d  canon de entrada %s -> %s  tope %s -> %s  exceso %s -> %s',
+                $before->sequence,
+                (int) $after['sequence'],
+                $this->money($before->previousRent),
+                $this->money((float) $after['previous_rent']),
+                $this->money($before->legalCapRent),
+                $this->money((float) $after['legal_cap_rent']),
+                $this->money($before->excessOverCap),
+                $this->money((float) $after['excess_over_cap']),
             ));
-
-            $running = (float) $adjustment->new_rent;
         }
 
         $this->newLine();
         $this->line(sprintf(
-            'Canon que resulta de la cadena: $%s',
-            number_format($running, 0, ',', '.'),
+            '%d reajustes cambiarian. Canon vigente resultante: %s',
+            $preview['touched'],
+            $this->money($preview['current_rent']),
         ));
+
+        return self::SUCCESS;
+    }
+
+    private function rentalsWithAdjustments(): Builder
+    {
+        return Rental::query()
+            ->whereNotNull('anchor_monthly_amount')
+            ->whereHas('rentAdjustments');
+    }
+
+    private function money(float $amount): string
+    {
+        return '$'.number_format($amount, 0, ',', '.');
     }
 }

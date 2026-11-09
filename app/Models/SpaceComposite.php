@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Visitors\Space\SpaceVisitor;
 use Illuminate\Support\Collection;
 
 class SpaceComposite extends SpaceComponent
@@ -23,5 +24,10 @@ class SpaceComposite extends SpaceComponent
     public function isComposite(): bool
     {
         return true;
+    }
+
+    public function accept(SpaceVisitor $visitor): mixed
+    {
+        return $visitor->visitComposite($this);
     }
 }

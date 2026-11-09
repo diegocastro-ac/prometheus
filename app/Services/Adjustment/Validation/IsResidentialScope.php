@@ -20,7 +20,7 @@ namespace App\Services\Adjustment\Validation;
  * bloquea: se avisa para que el usuario lo corrija, y mientras tanto el calculo
  * sigue igual porque no depende del tipo.
  */
-class IsResidentialScope implements ReajusteRule
+class IsResidentialScope extends ReajusteRule
 {
     public function name(): string
     {

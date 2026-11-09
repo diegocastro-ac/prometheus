@@ -20,7 +20,7 @@ namespace App\Services\Adjustment\Validation;
  * no como un tope, de modo que apartarse es legitimo si el arrendador lo asume
  * por escrito. Lo que no es admisible es apartarse en silencio.
  */
-class StatutoryCalendarYear implements ReajusteRule
+class StatutoryCalendarYear extends ReajusteRule
 {
     public function name(): string
     {

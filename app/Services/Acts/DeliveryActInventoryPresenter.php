@@ -2,11 +2,14 @@
 
 namespace App\Services\Acts;
 
+use App\Iterators\SpaceTreeIterator;
 use App\Models\ActItem;
 use App\Models\DeliveryAct;
 use App\Models\SpaceComponent;
 use App\Models\SpaceComposite;
 use App\Models\SpaceLeaf;
+use App\Visitors\Space\InventoryReportVisitor;
+use App\Visitors\Space\SpaceInventoryReport;
 use Illuminate\Support\Collection;
 
 /**
@@ -61,7 +64,25 @@ final class DeliveryActInventoryPresenter
         }
 
         $rows = [];
-        $this->appendRows($this->tree(), 0, $rows);
+        $iterator = SpaceTreeIterator::roots($this->tree());
+        $visitor = new InventoryReportVisitor;
+
+        foreach ($iterator as $node) {
+            /** @var SpaceInventoryReport $report */
+            $report = $node->accept($visitor);
+
+            $rows[] = [
+                'id' => 'space-'.$node->space()->getKey(),
+                'name' => $node->name(),
+                'path' => $node->path(),
+                'depth' => $iterator->depth(),
+                'composite' => $report->kind === 'composite',
+                'directItems' => $report->directItems,
+                'totalItems' => $report->totalItems,
+                'items' => $this->serializeItems($report->items),
+                'stateCounts' => $this->stateCounts($report->items),
+            ];
+        }
 
         return $this->rows = $rows;
     }
@@ -89,8 +110,28 @@ final class DeliveryActInventoryPresenter
             'stateCounts' => [],
         ]];
 
-        foreach ($this->tree() as $node) {
-            $this->appendChartNode($node, self::ROOT_ID, $data);
+        $iterator = SpaceTreeIterator::roots($this->tree());
+        $visitor = new InventoryReportVisitor;
+
+        foreach ($iterator as $node) {
+            /** @var SpaceInventoryReport $report */
+            $report = $node->accept($visitor);
+            $parent = $iterator->parent();
+
+            $data[] = [
+                'id' => 'space-'.$node->space()->getKey(),
+                'parentId' => $parent === null
+                    ? self::ROOT_ID
+                    : 'space-'.$parent->space()->getKey(),
+                'name' => $node->name(),
+                'path' => $node->path(),
+                'kind' => $report->kind,
+                'directItems' => $report->directItems,
+                'totalItems' => $report->totalItems,
+                'items' => $this->serializeItems($report->items->take(3)),
+                'moreItems' => max(0, $report->directItems - 3),
+                'stateCounts' => $this->stateCounts($report->items),
+            ];
         }
 
         return $data;
@@ -156,55 +197,6 @@ final class DeliveryActInventoryPresenter
     }
 
     /**
-     * @param  list<SpaceComponent>  $nodes
-     * @param  list<array<string, mixed>>  $rows
-     */
-    private function appendRows(array $nodes, int $depth, array &$rows): void
-    {
-        foreach ($nodes as $node) {
-            $rows[] = [
-                'id' => 'space-'.$node->space()->getKey(),
-                'name' => $node->name(),
-                'path' => $node->path(),
-                'depth' => $depth,
-                'composite' => $node->isComposite(),
-                'directItems' => $node->items()->count(),
-                'totalItems' => $node->totalItems(),
-                'items' => $this->serializeItems($node->items()),
-                'stateCounts' => $this->stateCounts($node->items()),
-            ];
-
-            $this->appendRows($node->children(), $depth + 1, $rows);
-        }
-    }
-
-    /**
-     * @param  list<array<string, mixed>>  $data
-     */
-    private function appendChartNode(SpaceComponent $node, string $parentId, array &$data): void
-    {
-        $items = $node->items();
-        $id = 'space-'.$node->space()->getKey();
-
-        $data[] = [
-            'id' => $id,
-            'parentId' => $parentId,
-            'name' => $node->name(),
-            'path' => $node->path(),
-            'kind' => $node->isComposite() ? 'composite' : 'leaf',
-            'directItems' => $items->count(),
-            'totalItems' => $node->totalItems(),
-            'items' => $this->serializeItems($items->take(3)),
-            'moreItems' => max(0, $items->count() - 3),
-            'stateCounts' => $this->stateCounts($items),
-        ];
-
-        foreach ($node->children() as $child) {
-            $this->appendChartNode($child, $id, $data);
-        }
-    }
-
-    /**
      * @param  Collection<int, ActItem>  $items
      * @return list<array<string, mixed>>
      */
@@ -232,8 +224,15 @@ final class DeliveryActInventoryPresenter
 
     private function totalItems(): int
     {
+        $visitor = new InventoryReportVisitor;
+
         return array_sum(array_map(
-            fn (SpaceComponent $node): int => $node->totalItems(),
+            function (SpaceComponent $node) use ($visitor): int {
+                /** @var SpaceInventoryReport $report */
+                $report = $node->accept($visitor);
+
+                return $report->totalItems;
+            },
             $this->tree(),
         ));
     }

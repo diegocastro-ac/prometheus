@@ -100,7 +100,17 @@ class DeliveryActInventoryViewTest extends TestCase
         $this->assertSame([0, 1, 2], array_column($rows, 'depth'));
         $this->assertSame(2, $rows[2]['directItems']);
         $this->assertSame(2, $rows[0]['totalItems']);
-        $this->assertCount(4, $presenter->chartData());
+
+        $chart = $presenter->chartData();
+
+        $this->assertCount(4, $chart);
+        $this->assertSame(
+            ['root', 'composite', 'composite', 'leaf'],
+            array_column($chart, 'kind'),
+        );
+        $this->assertSame(DeliveryActInventoryPresenter::ROOT_ID, $chart[1]['parentId']);
+        $this->assertSame('space-'.$this->terraza->id, $chart[2]['parentId']);
+        $this->assertSame('space-'.$this->puestoComidas->id, $chart[3]['parentId']);
     }
 
     #[Test]
