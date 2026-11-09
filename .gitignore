@@ -26,3 +26,9 @@ Thumbs.db
 
 # CodeGraph
 .codegraph/
+
+# Material de estudio local (fuera de Git)
+/docs/Planes/
+/docs/GUIA-PRUEBA-PATRONES.md
+/docs/GUION-EXPOSICION-MEDIATOR-TEMPLATE-METHOD.md
+/PLAN-IMPLEMENTACION-PATRONES-COMPORTAMIENTO.md
