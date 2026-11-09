@@ -25,6 +25,7 @@ use App\Listeners\RebuildAnnualRates;
 use App\Services\Acts\DeliveryActBuilder;
 use App\Services\Adjustment\AdjustmentChainCalculator;
 use App\Services\Adjustment\AdjustmentChainRecalculator;
+use App\Services\Adjustment\AdjustmentMediator;
 use App\Services\Adjustment\Strategies\IpcBasisStrategyResolver;
 use App\Services\Adjustment\Validation\CityIpcRequiresAcknowledgement;
 use App\Services\Adjustment\Validation\CommercialValueWithinCatastralCeiling;
@@ -183,6 +184,10 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(IpcBasisStrategyResolver::class);
         $this->app->singleton(AdjustmentChainCalculator::class);
         $this->app->singleton(AdjustmentChainRecalculator::class);
+
+        // Mediator: un solo coordinador del flujo de reajustes. No tiene estado;
+        // la cadena de reglas y los calculadores conservan sus ciclos de vida.
+        $this->app->singleton(AdjustmentMediator::class);
     }
 
     /**

@@ -2,9 +2,6 @@
 
 namespace App\Services;
 
-use App\Commands\Adjustment\ApplyRentAdjustment;
-use App\Commands\Adjustment\NotifyRentAdjustment;
-use App\Commands\Adjustment\RecalculateRentAdjustmentChain;
 use App\Documents\Contracts\Document;
 use App\Documents\DocumentService;
 use App\Dto\IpcSnapshot;
@@ -14,8 +11,6 @@ use App\Enums\NotificationMethod;
 use App\Models\Invoice;
 use App\Models\RentAdjustment;
 use App\Models\Rental;
-use App\Services\Adjustment\AdjustmentChainCalculator;
-use App\Services\Adjustment\AdjustmentChainRecalculator;
 use App\Services\Adjustment\AdjustmentDateProposer;
 use Illuminate\Support\Carbon;
 
@@ -26,6 +21,9 @@ use Illuminate\Support\Carbon;
  * hablan con esta clase en lugar de resolver cada servicio por su cuenta. La
  * fachada no decide nada: conserva la regla donde estaba y solo coordina las
  * dependencias para que el consumidor vea una sola puerta.
+ *
+ * La coordinacion interna del flujo de reajuste vive en AdjustmentMediator; la
+ * fachada se limita a delegar en RentAdjustmentService.
  *
  * En particular, no absorbe los accesos auxiliares del formulario de reajustes
  * (IpcSeriesRepository, AppSettings) ni mueve las notificaciones: esas siguen en
@@ -38,8 +36,6 @@ class RentalFacade
         private readonly PaymentRecordingService $payments,
         private readonly RentAdjustmentService $adjustments,
         private readonly DocumentService $documents,
-        private readonly AdjustmentChainCalculator $chain,
-        private readonly AdjustmentChainRecalculator $recalculator,
         private readonly AdjustmentDateProposer $dates,
     ) {}
 
@@ -100,12 +96,12 @@ class RentalFacade
         \DateTimeInterface $notifiedOn,
         ?NotificationMethod $method = null,
     ): RentAdjustment {
-        return (new NotifyRentAdjustment($adjustment, $notifiedOn, $method))->execute();
+        return $this->adjustments->markNotified($adjustment, $notifiedOn, $method);
     }
 
     public function applyAdjustment(RentAdjustment $adjustment): Rental
     {
-        return (new ApplyRentAdjustment($this->recalculator, $adjustment))->execute();
+        return $this->adjustments->applyToRental($adjustment);
     }
 
     /**
@@ -118,12 +114,12 @@ class RentalFacade
      */
     public function recalculateAdjustmentChain(Rental $rental): array
     {
-        return (new RecalculateRentAdjustmentChain($this->recalculator, $rental))->execute();
+        return $this->adjustments->recalculateChain($rental);
     }
 
     public function currentRentFor(Rental $rental): float
     {
-        return $this->chain->currentRentFor($rental);
+        return $this->adjustments->currentRentFor($rental);
     }
 
     public function previewAdjustmentIpc(

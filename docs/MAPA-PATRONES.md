@@ -1,6 +1,6 @@
 # Mapa de Patrones de Diseño
 
-Los 21 patrones documentados fueron verificados en el código y tienen documento individual.
+Los 22 patrones documentados fueron verificados en el código y tienen documento individual.
 
 ## Creacionales
 
@@ -37,3 +37,4 @@ Los 21 patrones documentados fueron verificados en el código y tienen documento
 | **Command** | `AdjustmentCommand` con `execute()`; `NotifyRentAdjustment`, `ApplyRentAdjustment` y `RecalculateRentAdjustmentChain` encapsulan acciones; `RentalFacade`/`RentAdjustmentService` son invocadores y el comando Artisan reutiliza el recálculo | `app/Commands/Adjustment/*`, `app/Services/RentalFacade.php`, `app/Services/RentAdjustmentService.php`, `app/Console/Commands/RecalculateAdjustmentChains.php` | `docs/Patrones de comportamiento/Command.md` |
 | **Iterator** | `SpaceTreeIterator` recorre el Composite de espacios en preorden con `depth()`/`parent()`; `SpaceComponent` es `IteratorAggregate` y el builder/presenter consumen el iterador | `app/Iterators/SpaceTreeIterator.php`, `app/Models/SpaceComponent.php`, `app/Services/Acts/SpaceTreeBuilder.php`, `app/Services/Acts/DeliveryActInventoryPresenter.php` | `docs/Patrones de comportamiento/Iterator.md` |
 | **Visitor** | `SpaceVisitor` con `accept()` en las hojas y compuestos; `InventoryReportVisitor` resume `kind`, elementos directos y total acumulado, y el presenter consume el reporte | `app/Visitors/Space/*`, `app/Models/SpaceComponent.php`, `SpaceLeaf.php`, `SpaceComposite.php`, `app/Services/Acts/DeliveryActInventoryPresenter.php` | `docs/Patrones de comportamiento/Visitor.md` |
+| **Mediator** | `AdjustmentMediator` coordina validación, registro, preview de IPC, notificación, aplicación y recálculo de la cadena; `RentAdjustmentService` y `RentalFacade` delegan sin cambiar sus contratos | `app/Services/Adjustment/AdjustmentMediator.php`, `app/Services/RentAdjustmentService.php`, `app/Services/RentalFacade.php`, `app/Providers/AppServiceProvider.php` | `docs/Patrones de comportamiento/Mediator.md` |
