@@ -56,7 +56,7 @@ interface "AdjustmentCommand" as Command {
   + execute() : mixed
 }
 
-class "AdjustmentMediator" as Mediator {
+class "AdjustmentMediator (Mediator / ConcreteMediator)" as Mediator {
   - series : IpcSeriesRepository
   - calculator : AdjustmentChainCalculator
   - recalculator : AdjustmentChainRecalculator
@@ -71,7 +71,7 @@ class "AdjustmentMediator" as Mediator {
   + recalculateChain(...) : array
 }
 
-class "RentAdjustmentService" as Service {
+class "RentAdjustmentService (Client)" as Service {
   + record(...)
   + validate(...)
   + previewIpc(...)
@@ -80,7 +80,7 @@ class "RentAdjustmentService" as Service {
   + recalculateChain(...)
 }
 
-class "RentalFacade" as Facade {
+class "RentalFacade (Client)" as Facade {
   + recordAdjustment(...)
   + validateAdjustment(...)
   + previewAdjustmentIpc(...)
@@ -89,13 +89,13 @@ class "RentalFacade" as Facade {
   + recalculateAdjustmentChain(...)
 }
 
-class "ReajusteValidationChain" as Validation
-class "AdjustmentChainCalculator" as Calculator
-class "AdjustmentChainRecalculator" as Recalculator
-class "IpcBasisStrategyResolver" as Resolver
-class "NotifyRentAdjustment" as Notify
-class "ApplyRentAdjustment" as Apply
-class "RecalculateRentAdjustmentChain" as Recalculate
+class "ReajusteValidationChain (Colleague)" as Validation
+class "AdjustmentChainCalculator (Colleague)" as Calculator
+class "AdjustmentChainRecalculator (Colleague)" as Recalculator
+class "IpcBasisStrategyResolver (Colleague)" as Resolver
+class "NotifyRentAdjustment (Colleague)" as Notify
+class "ApplyRentAdjustment (Colleague)" as Apply
+class "RecalculateRentAdjustmentChain (Colleague)" as Recalculate
 
 Facade --> Service : delega
 Service --> Mediator : delega
@@ -261,7 +261,7 @@ end note
 
 ```plantuml
 @startuml
-class "AdjustmentMediator" as Mediator {
+class "AdjustmentMediator (Mediator / ConcreteMediator)" as Mediator {
   + record()
   + validate()
   + previewIpc()
@@ -271,7 +271,7 @@ class "AdjustmentMediator" as Mediator {
   + recalculateChain()
 }
 
-class "RentAdjustmentService" as Service {
+class "RentAdjustmentService (Client)" as Service {
   + record()
   + validate()
   + previewIpc()
@@ -280,18 +280,18 @@ class "RentAdjustmentService" as Service {
   + recalculateChain()
 }
 
-class "RentalFacade" as Facade {
+class "RentalFacade (Client)" as Facade {
   + recordAdjustment()
   + markAdjustmentNotified()
   + applyAdjustment()
   + recalculateAdjustmentChain()
 }
 
-class "ReajusteValidationChain" as Validation
-class "AdjustmentChainCalculator" as Calculator
-class "AdjustmentChainRecalculator" as Recalculator
-class "IpcBasisStrategyResolver" as Resolver
-class "Comandos" as Commands
+class "ReajusteValidationChain (Colleague)" as Validation
+class "AdjustmentChainCalculator (Colleague)" as Calculator
+class "AdjustmentChainRecalculator (Colleague)" as Recalculator
+class "IpcBasisStrategyResolver (Colleague)" as Resolver
+class "Comandos (Colleague)" as Commands
 
 Facade --> Service : delega
 Service --> Mediator : delega
