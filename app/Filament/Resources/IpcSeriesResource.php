@@ -32,7 +32,7 @@ class IpcSeriesResource extends Resource
 
     protected static ?string $slug = 'administration/ipc-series';
 
-    protected static ?int $navigationSort = 3;
+    protected static ?int $navigationSort = 0;
 
     protected static ?string $navigationIcon = 'heroicon-o-chart-bar';
 

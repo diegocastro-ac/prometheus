@@ -5,7 +5,7 @@ return [
     'navigation_label' => 'Facturas',
 
     'navigation' => [
-        'group' => 'Administración',
+        'group' => 'Finanzas',
         'labels' => [
             'singular' => 'factura',
             'plural' => 'facturas',

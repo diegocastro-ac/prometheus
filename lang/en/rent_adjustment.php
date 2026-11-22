@@ -5,7 +5,7 @@ return [
     'navigation_label' => 'Adjustments',
 
     'navigation' => [
-        'group' => 'Administration',
+        'group' => 'Finance',
         'labels' => [
             'singular' => 'adjustment',
             'plural' => 'adjustments',

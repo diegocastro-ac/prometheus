@@ -32,7 +32,7 @@ class DocumentsPage extends Page
 {
     protected static ?string $navigationIcon = 'heroicon-o-document-duplicate';
 
-    protected static ?int $navigationSort = 5;
+    protected static ?int $navigationSort = 3;
 
     protected static ?string $slug = 'administration/documents';
 

@@ -128,14 +128,17 @@ class FinancialAnalysisService
             ->with('rental:id,name')
             ->get();
 
-        if ($overdue->isNotEmpty()) {
+        // Una alerta por arriendo: la tabla del chat muestra la columna
+        // "Arriendo" y un consolidado dejaria ese campo vacio.
+        $overdue->groupBy('rental_id')->each(function ($group) use (&$alerts): void {
+            $first = $group->first();
             $alerts[] = [
                 'type' => 'overdue',
-                'rental_id' => 0,
-                'rental' => '',
-                'detail' => __('assistant.alerts.overdue', ['count' => $overdue->count()]),
+                'rental_id' => (int) $first->rental_id,
+                'rental' => $first->rental?->name ?? '—',
+                'detail' => __('assistant.alerts.overdue', ['count' => $group->count()]),
             ];
-        }
+        });
 
         $rentals = Rental::query()
             ->where('user_id', $userId)
@@ -238,7 +241,7 @@ class FinancialAnalysisService
     public function topDebtors(int $userId, int $limit = 5): array
     {
         return $this->openInvoiceQuery($userId)
-            ->with('rental:id,name', 'rental.tenant:id,name')
+            ->with('rental:id,name,tenant_id', 'rental.tenant:id,name')
             ->get()
             ->groupBy('rental_id')
             ->map(function ($group): array {
@@ -291,7 +294,7 @@ class FinancialAnalysisService
     {
         return Payment::query()
             ->where('user_id', $userId)
-            ->with('rental:id,name', 'rental.tenant:id,name', 'invoice:id,number')
+            ->with('rental:id,name,tenant_id', 'rental.tenant:id,name', 'invoice:id,number')
             ->orderByDesc('date')
             ->orderByDesc('id')
             ->limit($limit)

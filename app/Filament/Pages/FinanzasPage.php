@@ -3,7 +3,6 @@
 namespace App\Filament\Pages;
 
 use App\Contracts\CurrentUserContextInterface;
-use App\Filament\Widgets\FinanceStatsWidget;
 use App\Services\FinancialAnalysisService;
 use Filament\Pages\Page;
 
@@ -11,14 +10,14 @@ class FinanzasPage extends Page
 {
     protected static ?string $navigationIcon = 'heroicon-o-chart-pie';
 
-    protected static ?int $navigationSort = 3;
+    protected static ?int $navigationSort = 0;
 
     protected static ?string $slug = 'administration/finances';
 
     protected static string $view = 'filament.pages.finances';
 
     /** Ventanas de periodo ofrecidas por el filtro de la pagina. */
-    private const PERIODS = [3, 6, 12, 24];
+    private const PERIODS = [1, 3, 6, 12, 24];
 
     public static function getNavigationGroup(): ?string
     {
@@ -45,11 +44,6 @@ class FinanzasPage extends Page
         $months = (int) request()->query('months', 12);
 
         return in_array($months, self::PERIODS, true) ? $months : 12;
-    }
-
-    protected function getHeaderWidgets(): array
-    {
-        return [FinanceStatsWidget::class];
     }
 
     /**

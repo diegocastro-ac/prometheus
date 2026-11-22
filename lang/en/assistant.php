@@ -25,6 +25,8 @@ return [
     'input_hint' => 'Enter to send · Shift + Enter for a new line',
     'resize' => 'Drag to resize',
     'scroll_down' => 'Scroll to the latest message',
+    'today' => 'Today',
+    'yesterday' => 'Yesterday',
     'copy' => 'Copy',
     'placeholder' => 'Ask me about your rentals, payments or portfolio…',
     'send' => 'Send',
@@ -92,6 +94,7 @@ return [
         'by_rental' => 'Collection by rental',
         'candidates' => 'Candidate invoices',
         'profile' => 'Your account details',
+        'alerts' => 'Alerts',
     ],
 
     'help' => [
@@ -144,6 +147,9 @@ return [
                     'Create a property',
                     'Schedule a rental',
                     'Generate this month\'s invoices',
+                    'Record a payment step by step',
+                    'Update my profile details',
+                    'Draft a legal payment notice',
                 ],
             ],
             'navigation' => [
@@ -212,6 +218,8 @@ return [
         'date' => 'Date',
         'invoice' => 'Invoice',
         'type' => 'Type',
+        'rental_id' => 'Rental ID',
+        'detail' => 'Detail',
         'occurred_at' => 'Date',
         'signed' => 'Signed',
         'items' => 'Items',
@@ -224,6 +232,12 @@ return [
         'overdue' => ':count overdue invoice(s)',
         'adjustment_due' => 'Overdue adjustment for :tenant (due :date)',
         'contract_expiring' => ':tenant contract ends on :date',
+    ],
+
+    'alert_types' => [
+        'overdue' => 'Overdue',
+        'adjustment_due' => 'Adjustment due',
+        'contract_expiring' => 'Contract expiring',
     ],
 
     'replies' => [
@@ -239,6 +253,9 @@ return [
         'no_expiring' => 'No contracts expire in the next 90 days.',
         'expiring_contracts' => 'These contracts expire soon:',
         'navigate' => 'Taking you to :section.',
+        'theme_dark' => 'Done, switched the panel to dark mode.',
+        'theme_light' => 'Done, switched the panel to light mode.',
+        'theme_system' => 'Done, switched back to the system theme.',
         'navigate_filtered' => 'Taking you to :section filtered by :filter.',
         'navigate_no_filter' => "I can't open :section pre-filtered by :filter from here, but here is the data:",
         'navigate_no_data' => "I can't open :section with that filter and I have no data to show you here either.",
@@ -352,7 +369,7 @@ return [
         ],
         [
             'name' => 'Gemini 3.6 Flash',
-            'tag' => 'Standard',
+            'tag' => 'Balanced',
             'use' => 'Everyday tasks, chat and well-balanced general answers.',
         ],
         [

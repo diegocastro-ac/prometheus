@@ -2,7 +2,7 @@
 
 return [
     'navigation' => [
-        'group' => 'Administration',
+        'group' => 'Management',
         'labels' => [
             'singular' => 'property',
             'plural' => 'Properties',

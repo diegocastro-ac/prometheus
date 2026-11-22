@@ -5,7 +5,7 @@ return [
     'navigation_label' => 'Finances',
 
     'navigation' => [
-        'group' => 'Administration',
+        'group' => 'Finance',
     ],
 
     'stats' => [

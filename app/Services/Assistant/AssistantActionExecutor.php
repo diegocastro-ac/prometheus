@@ -189,7 +189,7 @@ class AssistantActionExecutor
         $invoice = Invoice::query()
             ->where('user_id', $userId)
             ->whereKey((int) ($params['invoice_id'] ?? 0))
-            ->with('rental:id,name', 'rental.tenant:id,name')
+            ->with('rental:id,name,tenant_id', 'rental.tenant:id,name')
             ->first();
 
         if ($invoice === null) {

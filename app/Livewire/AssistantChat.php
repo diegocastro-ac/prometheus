@@ -240,6 +240,21 @@ class AssistantChat extends Component
         $this->ensureChat();
         $this->pushMessage('user', $question);
 
+        // Comandos locales del panel (tema claro/oscuro): no pasan por la
+        // IA, la respuesta es inmediata y el cambio lo hace el navegador.
+        $theme = $this->detectThemeCommand($question);
+        if ($theme !== null) {
+            $this->dispatch('assistant-theme', theme: $theme);
+            $this->pushReply(AssistantReply::say(match ($theme) {
+                'dark' => __('assistant.replies.theme_dark'),
+                'light' => __('assistant.replies.theme_light'),
+                default => __('assistant.replies.theme_system'),
+            }));
+            $this->dispatch('assistant-scroll');
+
+            return;
+        }
+
         try {
             // Todo pasa por la IA: el historial viaja en apiHistory() para
             // que resuelva follow-ups y referencias con contexto real.
@@ -337,7 +352,18 @@ class AssistantChat extends Component
      */
     public function previewData(int $messageIndex, string $key): void
     {
+        // La tabla puede vivir en `data` (respuesta simple) o dentro de una
+        // seccion de una respuesta batch.
         $rows = $this->messages[$messageIndex]['data'][$key] ?? null;
+
+        if ($rows === null) {
+            foreach ($this->messages[$messageIndex]['sections'] ?? [] as $section) {
+                $rows = $section['data'][$key] ?? null;
+                if ($rows !== null) {
+                    break;
+                }
+            }
+        }
 
         if (! is_array($rows) || $rows === [] || ! isset($rows[0]) || ! is_array($rows[0])) {
             return;
@@ -369,29 +395,33 @@ class AssistantChat extends Component
      */
     public function previewAllData(int $messageIndex): void
     {
-        $data = $this->messages[$messageIndex]['data'] ?? null;
-
-        if (! is_array($data) || $data === []) {
-            return;
-        }
+        // Con batch cada seccion trae su propia data (las claves del mapa
+        // `data` fusionado pueden ir renombradas con sufijo); sin batch se
+        // usa el mapa plano. Iterar ambos duplicaria las tablas.
+        $sections = $this->messages[$messageIndex]['sections'] ?? [];
+        $sources = $sections !== []
+            ? array_map(fn (array $section): array => $section['data'] ?? [], $sections)
+            : [$this->messages[$messageIndex]['data'] ?? []];
 
         $tables = [];
 
-        foreach ($data as $key => $rows) {
-            if (! is_array($rows) || $rows === [] || ! isset($rows[0]) || ! is_array($rows[0])) {
-                continue;
-            }
+        foreach ($sources as $data) {
+            foreach ($data as $key => $rows) {
+                if (! is_array($rows) || $rows === [] || ! isset($rows[0]) || ! is_array($rows[0])) {
+                    continue;
+                }
 
-            $tables[] = [
-                'title' => $this->dataTitle($key),
-                'columns' => array_map(
-                    fn (string $column): string => __("assistant.columns.{$column}") !== "assistant.columns.{$column}"
-                        ? __("assistant.columns.{$column}")
-                        : ucfirst(str_replace('_', ' ', $column)),
-                    array_keys($rows[0]),
-                ),
-                'rows' => array_values(array_slice($rows, 0, 200)),
-            ];
+                $tables[] = [
+                    'title' => $this->dataTitle($key),
+                    'columns' => array_map(
+                        fn (string $column): string => __("assistant.columns.{$column}") !== "assistant.columns.{$column}"
+                            ? __("assistant.columns.{$column}")
+                            : ucfirst(str_replace('_', ' ', $column)),
+                        array_keys($rows[0]),
+                    ),
+                    'rows' => array_values(array_slice($rows, 0, 200)),
+                ];
+            }
         }
 
         if ($tables === []) {
@@ -578,7 +608,7 @@ class AssistantChat extends Component
         $invoice = isset($params['invoice_id'])
             ? \App\Models\Invoice::query()
                 ->where('user_id', $this->userId())
-                ->with('rental:id,name', 'rental.tenant:id,name')
+                ->with('rental:id,name,tenant_id', 'rental.tenant:id,name')
                 ->find((int) $params['invoice_id'])
             : null;
 
@@ -654,6 +684,46 @@ class AssistantChat extends Component
         return collect($data)->filter(
             fn ($rows): bool => is_array($rows) && $rows !== [] && isset($rows[0]) && is_array($rows[0]),
         )->count();
+    }
+
+    /**
+     * Detecta pedidos de cambio de tema ("modo oscuro", "dark mode"...).
+     * Devuelve 'dark' | 'light' | null. La lista de frases es explicita
+     * para no confundir preguntas que solo mencionan la palabra.
+     */
+    private function detectThemeCommand(string $question): ?string
+    {
+        $text = \Illuminate\Support\Str::ascii(\Illuminate\Support\Str::lower($question));
+
+        $dark = ['modo oscuro', 'tema oscuro', 'dark mode', 'modo dark', 'tema dark',
+            'cambiar a modo oscuro', 'cambia a modo oscuro', 'pon modo oscuro',
+            'activa modo oscuro', 'modo noche', 'dark theme'];
+        $light = ['modo claro', 'tema claro', 'light mode', 'modo light', 'tema light',
+            'cambiar a modo claro', 'cambia a modo claro', 'pon modo claro',
+            'activa modo claro', 'light theme'];
+        $system = ['modo sistema', 'modo de sistema', 'tema sistema', 'system mode',
+            'system theme', 'modo automatico', 'tema automatico', 'auto theme',
+            'modo auto'];
+
+        foreach ($dark as $phrase) {
+            if (str_contains($text, $phrase)) {
+                return 'dark';
+            }
+        }
+
+        foreach ($light as $phrase) {
+            if (str_contains($text, $phrase)) {
+                return 'light';
+            }
+        }
+
+        foreach ($system as $phrase) {
+            if (str_contains($text, $phrase)) {
+                return 'system';
+            }
+        }
+
+        return null;
     }
 
     private function formatPeriod(string $period): string

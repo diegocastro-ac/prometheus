@@ -5,7 +5,7 @@ return [
     'navigation_label' => 'Delivery Acts',
 
     'navigation' => [
-        'group' => 'Administration',
+        'group' => 'Management',
         'labels' => [
             'singular' => 'delivery act',
             'plural' => 'delivery acts',

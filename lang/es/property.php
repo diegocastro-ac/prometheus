@@ -2,7 +2,7 @@
 
 return [
     'navigation' => [
-        'group' => 'Administración',
+        'group' => 'Gestión',
         'labels' => [
             'singular' => 'propiedad',
             'plural' => 'Propiedades',

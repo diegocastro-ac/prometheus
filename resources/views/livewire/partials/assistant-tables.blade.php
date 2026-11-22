@@ -44,22 +44,7 @@
                                 <tr>
                                     @foreach ($row as $column => $cell)
                                         <td class="px-2.5 py-1.5">
-                                            @if (is_array($cell) && $cell === [])
-                                                <span class="text-gray-400 dark:text-gray-500">—</span>
-                                            @elseif (is_array($cell) && isset($cell[0]) && is_array($cell[0]))
-                                                <button
-                                                    type="button"
-                                                    x-on:click="open = ! open"
-                                                    class="inline-flex items-center gap-1 rounded-full bg-primary-50 px-2 py-0.5 text-[10px] font-semibold text-primary-700 ring-1 ring-primary-600/20 transition hover:bg-primary-100 dark:bg-primary-500/10 dark:text-primary-300 dark:ring-primary-400/30"
-                                                >
-                                                    <span x-text="open ? '▾' : '▸'"></span>
-                                                    {{ __('assistant.nested.count', ['count' => count($cell)]) }}
-                                                </button>
-                                            @elseif (is_array($cell))
-                                                {{ json_encode($cell, JSON_UNESCAPED_UNICODE) }}
-                                            @else
-                                                {{ $cell }}
-                                            @endif
+                                            @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => is_string($column) ? $column : null])
                                         </td>
                                     @endforeach
                                 </tr>
@@ -81,8 +66,8 @@
                                                         <tbody>
                                                             @foreach ($nestedRows as $nestedRow)
                                                                 <tr class="border-t border-gray-950/5 dark:border-white/5">
-                                                                    @foreach ($nestedRow as $nestedCell)
-                                                                        <td class="px-2 py-1">{{ is_array($nestedCell) ? json_encode($nestedCell, JSON_UNESCAPED_UNICODE) : $nestedCell }}</td>
+                                                                    @foreach ($nestedRow as $nestedCellColumn => $nestedCell)
+                                                                        <td class="px-2 py-1">@include('livewire.partials.assistant-cell', ['cell' => $nestedCell, 'column' => is_string($nestedCellColumn) ? $nestedCellColumn : null, 'allowExpand' => false])</td>
                                                                     @endforeach
                                                                 </tr>
                                                             @endforeach
@@ -97,19 +82,19 @@
                         @endforeach
                     </table>
                     </div>
-                    @if (count($rows) > 5)
-                        <button
-                            type="button"
-                            wire:click="previewData({{ $messageIndex }}, '{{ $key }}')"
-                            class="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 transition hover:text-primary-500 dark:text-primary-400"
-                        >
-                            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-                            </svg>
-                            {{ __('assistant.preview.view_all', ['count' => count($rows)]) }}
-                        </button>
-                    @endif
+                    {{-- El modal muestra la tabla completa sin el recorte
+                         de 5 filas: disponible para cualquier tamaño. --}}
+                    <button
+                        type="button"
+                        x-on:click="previewBusy = true; $wire.previewData({{ $messageIndex }}, '{{ $key }}').finally(() => previewBusy = false)"
+                        class="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 transition hover:text-primary-500 dark:text-primary-400"
+                    >
+                        <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                        </svg>
+                        {{ __('assistant.preview.view_all', ['count' => count($rows)]) }}
+                    </button>
                 </div>
             @endif
         @endforeach

@@ -5,7 +5,7 @@ return [
     'navigation_label' => 'Actas de entrega',
 
     'navigation' => [
-        'group' => 'Administración',
+        'group' => 'Gestión',
         'labels' => [
             'singular' => 'acta de entrega',
             'plural' => 'actas de entrega',

@@ -57,7 +57,7 @@ class RentAdjustmentResource extends Resource
 
     protected static ?string $slug = 'administration/rent-adjustments';
 
-    protected static ?int $navigationSort = 4;
+    protected static ?int $navigationSort = 2;
 
     protected static ?string $navigationIcon = 'heroicon-o-arrow-trending-up';
 

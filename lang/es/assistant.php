@@ -25,6 +25,8 @@ return [
     'input_hint' => 'Enter envía · Shift + Enter salto de línea',
     'resize' => 'Arrastra para ajustar el ancho',
     'scroll_down' => 'Bajar al final de la conversación',
+    'today' => 'Hoy',
+    'yesterday' => 'Ayer',
     'copy' => 'Copiar',
     'placeholder' => 'Pregúntame sobre tus arriendos, pagos o cartera…',
     'send' => 'Enviar',
@@ -92,6 +94,7 @@ return [
         'by_rental' => 'Recaudo por arriendo',
         'candidates' => 'Facturas candidatas',
         'profile' => 'Datos de tu cuenta',
+        'alerts' => 'Alertas',
     ],
 
     'help' => [
@@ -144,6 +147,9 @@ return [
                     'Crea una propiedad',
                     'Agenda un arriendo',
                     'Genera las facturas del mes',
+                    'Registra un pago paso a paso',
+                    'Actualiza mis datos de perfil',
+                    'Redáctame un aviso legal de pago',
                 ],
             ],
             'navigation' => [
@@ -212,6 +218,8 @@ return [
         'date' => 'Fecha',
         'invoice' => 'Factura',
         'type' => 'Tipo',
+        'rental_id' => 'ID arriendo',
+        'detail' => 'Detalle',
         'occurred_at' => 'Fecha',
         'signed' => 'Firmada',
         'items' => 'Ítems',
@@ -224,6 +232,12 @@ return [
         'overdue' => ':count factura(s) vencida(s)',
         'adjustment_due' => 'Reajuste vencido para :tenant (vence :date)',
         'contract_expiring' => 'Contrato de :tenant termina el :date',
+    ],
+
+    'alert_types' => [
+        'overdue' => 'Vencido',
+        'adjustment_due' => 'Ajuste próximo',
+        'contract_expiring' => 'Contrato por vencer',
     ],
 
     'replies' => [
@@ -239,6 +253,9 @@ return [
         'no_expiring' => 'Ningún contrato vence en los próximos 90 días.',
         'expiring_contracts' => 'Estos contratos terminan pronto:',
         'navigate' => 'Te llevo a :section.',
+        'theme_dark' => 'Listo, cambié el panel a modo oscuro.',
+        'theme_light' => 'Listo, cambié el panel a modo claro.',
+        'theme_system' => 'Listo, volví al tema del sistema.',
         'navigate_filtered' => 'Te llevo a :section filtrado por :filter.',
         'navigate_no_filter' => 'No puedo abrir :section ya filtrado por :filter desde aquí, pero aquí tienes los datos:',
         'navigate_no_data' => 'No puedo abrir :section con ese filtro y tampoco tengo datos para mostrártelo aquí.',
@@ -352,7 +369,7 @@ return [
         ],
         [
             'name' => 'Gemini 3.6 Flash',
-            'tag' => 'Estándar',
+            'tag' => 'Equilibrado',
             'use' => 'Tareas cotidianas, chat y respuestas generales bien balanceadas.',
         ],
         [

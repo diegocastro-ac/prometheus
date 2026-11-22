@@ -5,7 +5,7 @@ return [
     'navigation_label' => 'Invoices',
 
     'navigation' => [
-        'group' => 'Administration',
+        'group' => 'Finance',
         'labels' => [
             'singular' => 'invoice',
             'plural' => 'invoices',

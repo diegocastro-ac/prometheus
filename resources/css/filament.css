@@ -462,20 +462,28 @@
 .assistant-md table {
     width: 100%;
     margin: 0 0 0.5rem;
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
+    overflow: hidden;
+    border-radius: 0.5rem;
+    box-shadow: 0 0 0 1px var(--gray-200);
     font-size: 0.8rem;
 }
 
 .assistant-md th,
 .assistant-md td {
-    padding: 0.25rem 0.5rem;
-    border-bottom: 1px solid var(--gray-200);
+    padding: 0.375rem 0.75rem;
     text-align: left;
 }
 
 .assistant-md th {
+    background-color: var(--gray-50);
     font-weight: 600;
-    color: var(--gray-500);
+    color: var(--gray-600);
+}
+
+.assistant-md td {
+    border-top: 1px solid var(--gray-100);
 }
 
 .dark .assistant-md li::marker {
@@ -503,11 +511,15 @@
     border-color: var(--gray-700);
 }
 
-.dark .assistant-md th,
-.dark .assistant-md td {
-    border-bottom-color: var(--gray-700);
+.dark .assistant-md table {
+    box-shadow: 0 0 0 1px var(--gray-700);
 }
 
 .dark .assistant-md th {
-    color: var(--gray-400);
+    background-color: rgba(255, 255, 255, 0.05);
+    color: var(--gray-300);
+}
+
+.dark .assistant-md td {
+    border-top-color: var(--gray-800);
 }

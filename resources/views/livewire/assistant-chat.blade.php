@@ -16,8 +16,16 @@
         // la respuesta de Livewire, sin esperar el roundtrip para verlos.
         pendingMsgs: [],
         sending: false,
+        // Cambio de chat o de modelo: la UI responde al instante (optimista)
+        // y muestra skeleton/spinner hasta que Livewire confirma.
+        chatBusy: false,
+        // Preview del modal (tablas/accion): skeleton inmediato mientras
+        // Livewire prepara el contenido, igual que chatBusy.
+        previewBusy: false,
+        modelSel: null,
+        modelBusy: false,
         // Ancho del drawer en px (null = default del CSS). Solo se usa en
-        // escritorio (lg+); el maximo es la mitad del viewport.
+        // escritorio (lg+); el maximo es el 75% del viewport.
         drawerWidth: null,
         resizing: false,
         resizeStartX: 0,
@@ -34,7 +42,7 @@
             if (! this.resizing) return;
             const delta = this.resizeStartX - event.clientX;
             this.drawerWidth = Math.round(Math.min(
-                window.innerWidth * 0.5,
+                window.innerWidth * 0.75,
                 Math.max(340, this.resizeStartWidth + delta),
             ));
         },
@@ -60,6 +68,78 @@
         scrollDown() {
             const el = this.$refs.messagesScroll;
             if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+        },
+        // Mientras el drawer este abierto la rueda nunca llega a la pagina:
+        // si el cursor cae fuera del drawer se redirige al contenedor de
+        // scroll activo y se consume el evento, asi el scroll no escapa a
+        // la pagina ni siquiera cuando el chat llega a su tope.
+        forwardWheel(event) {
+            if (! this.drawerOpen || ! (event.target instanceof Element)) return;
+            const drawer = this.$refs.drawer;
+            if (! drawer) return;
+            if (drawer === event.target || drawer.contains(event.target)) return;
+            const el = this.$wire.preview !== null
+                ? this.$refs.previewScroll
+                : (this.chatView === 'chats' ? this.$refs.chatsScroll : this.$refs.messagesScroll);
+            if (! el || el.scrollHeight <= el.clientHeight) return;
+            event.preventDefault();
+            // Scroll suavizado por inercia: se acumula un objetivo y un
+            // rAF lo persigue con amortiguacion, asi el scroll redirigido
+            // se siente igual que el nativo (dentro del drawer).
+            const unit = event.deltaMode === 1 ? 16 : 1;
+            const max = el.scrollHeight - el.clientHeight;
+            if (! el._smoothScrolling) el._scrollTarget = el.scrollTop;
+            el._scrollTarget = Math.min(Math.max(el._scrollTarget + event.deltaY * unit, 0), max);
+            if (el._smoothScrolling) return;
+            el._smoothScrolling = true;
+            el._smoothLast = el.scrollTop;
+            let stillFrames = 0;
+            const step = () => {
+                // Si el scrollTop cambio sin que lo hayamos movido nosotros,
+                // el usuario scrolleo dentro del drawer: se cancela la
+                // inercia para no pelear con el scroll nativo.
+                if (Math.abs(el.scrollTop - el._smoothLast) > 0.6) {
+                    el._scrollTarget = el.scrollTop;
+                    el._smoothScrolling = false;
+                    return;
+                }
+                const diff = el._scrollTarget - el.scrollTop;
+                if (Math.abs(diff) < 0.5) {
+                    el.scrollTop = el._scrollTarget;
+                    el._smoothScrolling = false;
+                    return;
+                }
+                el.scrollTop += diff * 0.22;
+                // Red de seguridad: si el navegador no puede mover el
+                // scrollTop (redondeo sub-pixel) se aborta la animacion.
+                if (el.scrollTop === el._smoothLast) {
+                    if (++stillFrames > 20) {
+                        el._smoothScrolling = false;
+                        return;
+                    }
+                } else {
+                    stillFrames = 0;
+                }
+                el._smoothLast = el.scrollTop;
+                requestAnimationFrame(step);
+            };
+            requestAnimationFrame(step);
+        },
+        // Modelo activo: el elegido localmente (optimista) o el del servidor.
+        activeModelId() {
+            return this.modelSel ?? (this.$wire.assistantModel || @js(config('services.gemini.model')));
+        },
+        // Eleccion optimista: el radio se marca al instante y muestra spinner
+        // hasta que Livewire confirma la preferencia en el servidor.
+        selectModel(id) {
+            if (this.modelBusy) return;
+            const previous = this.modelSel;
+            this.modelSel = id;
+            this.modelBusy = true;
+            this.modelOpen = false;
+            this.$wire.setAssistantModel(id)
+                .catch(() => { this.modelSel = previous; })
+                .finally(() => { this.modelBusy = false; });
         },
         async echoAndSend(text, call, restoreInput = null) {
             if (this.sending || ! text.trim()) return;
@@ -125,10 +205,19 @@
             this.$wire.$watch('view', (value) => {
                 this.chatView = value;
             });
+            // La rueda fuera del drawer sigue moviendo el scroll del chat.
+            window.addEventListener('wheel', (event) => this.forwardWheel(event), { passive: false });
         },
     }"
     x-on:keydown.escape.window="drawerOpen && closeDrawer()"
     x-on:assistant-close.window="closeDrawer()"
+    x-on:assistant-theme.window="
+        window.dispatchEvent(new CustomEvent('theme-changed', { detail: $event.detail.theme }));
+        const switcher = document.querySelector('.fi-theme-switcher');
+        if (switcher && switcher._x_dataStack && switcher._x_dataStack[0]) {
+            switcher._x_dataStack[0].theme = $event.detail.theme;
+        }
+    "
     x-on:mousemove.window="resizeMove($event)"
     x-on:mouseup.window="endResize()"
     x-on:resize.window="window.innerWidth < 1024 && (drawerWidth = null)"
@@ -186,7 +275,7 @@
         aria-label="{{ __('assistant.title') }}"
     >
         {{-- Handle de redimensionado: arrastrar el borde izquierdo del
-             drawer. Solo escritorio (lg+); el ancho maximo es 50vw. --}}
+             drawer. Solo escritorio (lg+); el ancho maximo es 75vw. --}}
         <div
             x-on:mousedown="startResize($event)"
             title="{{ __('assistant.resize') }}"
@@ -236,9 +325,16 @@
                             x-on:click="modelOpen = ! modelOpen"
                             title="{{ __('assistant.model.title') }}"
                             class="rounded-lg p-2 transition"
-                            :class="modelOpen ? 'bg-primary-100 text-primary-600 dark:bg-primary-500/20 dark:text-primary-400' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200'"
+                            :class="modelOpen || modelBusy ? 'bg-primary-100 text-primary-600 dark:bg-primary-500/20 dark:text-primary-400' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200'"
                         >
-                            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                            {{-- Mientras Livewire confirma el cambio el icono
+                                 de chip se reemplaza por un spinner: es la
+                                 señal visible de que el modelo esta cargando. --}}
+                            <svg x-show="modelBusy" x-cloak class="h-5 w-5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z"></path>
+                            </svg>
+                            <svg x-show="! modelBusy" class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 0 0 2.25-2.25V6.75a2.25 2.25 0 0 0-2.25-2.25H6.75A2.25 2.25 0 0 0 4.5 6.75v10.5a2.25 2.25 0 0 0 2.25 2.25Zm.75-12h9v9h-9v-9Z" />
                             </svg>
                         </button>
@@ -254,28 +350,34 @@
                                 {{ __('assistant.model.title') }}
                             </p>
                             <div class="max-h-80 overflow-y-auto p-1.5">
-                                @php $activeModel = $assistantModel ?: config('services.gemini.model'); @endphp
                                 @foreach ($assistantModels as $modelIndex => $modelId)
-                                    @php $isActive = $activeModel === $modelId; @endphp
                                     <button
                                         type="button"
-                                        x-on:click="modelOpen = false; $wire.setAssistantModel('{{ $modelId }}')"
-                                        @class([
-                                            'flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition',
-                                            'bg-primary-50 dark:bg-primary-500/10' => $isActive,
-                                            'hover:bg-gray-50 dark:hover:bg-white/5' => ! $isActive,
-                                        ])
+                                        x-on:click="selectModel('{{ $modelId }}')"
+                                        class="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition"
+                                        :class="activeModelId() === '{{ $modelId }}' ? 'bg-primary-50 dark:bg-primary-500/10' : 'hover:bg-gray-50 dark:hover:bg-white/5'"
                                     >
-                                        <span @class([
-                                            'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition',
-                                            'border-primary-600 bg-primary-600' => $isActive,
-                                            'border-gray-300 dark:border-gray-600' => ! $isActive,
-                                        ])>
-                                            @if ($isActive)
-                                                <svg class="h-2.5 w-2.5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor" aria-hidden="true">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                                                </svg>
-                                            @endif
+                                        <span
+                                            class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition"
+                                            :class="activeModelId() === '{{ $modelId }}' ? 'border-primary-600 bg-primary-600' : 'border-gray-300 dark:border-gray-600'"
+                                        >
+                                            <svg
+                                                x-show="modelBusy && modelSel === '{{ $modelId }}'"
+                                                x-cloak
+                                                class="h-2.5 w-2.5 animate-spin text-white"
+                                                xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                            >
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z"></path>
+                                            </svg>
+                                            <svg
+                                                x-show="!(modelBusy && modelSel === '{{ $modelId }}') && activeModelId() === '{{ $modelId }}'"
+                                                x-cloak
+                                                class="h-2.5 w-2.5 text-white"
+                                                xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor" aria-hidden="true"
+                                            >
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                            </svg>
                                         </span>
                                         <span class="min-w-0 flex-1">
                                             <span class="flex items-center gap-1.5">
@@ -304,8 +406,7 @@
                     </button>
                     <button
                         type="button"
-                        x-on:click="chatView = 'chat'"
-                        wire:click="newChat"
+                        x-on:click="chatView = 'chat'; chatBusy = true; $wire.newChat().finally(() => chatBusy = false)"
                         title="{{ __('assistant.new_chat') }}"
                         class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
                     >
@@ -335,13 +436,13 @@
         <div
             wire:ignore.self
             x-show="chatView === 'chats'"
-            class="flex-1 overflow-y-auto bg-gray-50 px-3 py-3 dark:bg-gray-950/60"
+            x-ref="chatsScroll"
+            class="flex-1 overflow-y-auto bg-gray-50 px-3 py-3 [overscroll-behavior:contain] dark:bg-gray-950/60"
         >
                 {{-- Historial de conversaciones --}}
                 <button
                     type="button"
-                    x-on:click="chatView = 'chat'"
-                    wire:click="newChat"
+                    x-on:click="chatView = 'chat'; chatBusy = true; $wire.newChat().finally(() => chatBusy = false)"
                     class="mb-3 flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-300 px-4 py-3 text-sm font-semibold text-gray-500 transition hover:border-primary-400 hover:text-primary-600 dark:border-white/15 dark:text-gray-400 dark:hover:border-primary-500 dark:hover:text-primary-400"
                 >
                     <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
@@ -377,8 +478,7 @@
                         >
                             <button
                                 type="button"
-                                x-on:click="chatView = 'chat'"
-                                wire:click="selectChat({{ $chat['id'] }})"
+                                x-on:click="chatView = 'chat'; chatBusy = true; $wire.selectChat({{ $chat['id'] }}).finally(() => chatBusy = false)"
                                 class="flex min-w-0 flex-1 items-center gap-3 text-left"
                             >
                                 <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-200 text-gray-500 dark:bg-white/10 dark:text-gray-400">
@@ -423,10 +523,11 @@
                 x-init="$nextTick(() => { $el.scrollTop = $el.scrollHeight })"
                 x-on:assistant-scroll.window="$nextTick(() => { $el.scrollTop = $el.scrollHeight })"
                 x-on:scroll.passive="updateAtBottom()"
-                class="flex-1 space-y-4 overflow-y-auto bg-gray-50 px-4 py-4 dark:bg-gray-950/60"
+                class="flex-1 space-y-4 overflow-y-auto bg-gray-50 px-4 py-4 [overscroll-behavior:contain] dark:bg-gray-950/60"
             >
                 @php
                     $lastAssistantIndex = -1;
+                    $lastMessageDay = null;
                     foreach ($messages as $i => $m) {
                         if ($m['role'] === 'assistant') {
                             $lastAssistantIndex = $i;
@@ -446,6 +547,22 @@
                     </div>
                 @else
                     @forelse ($messages as $index => $message)
+                        @php
+                            // Separador de dia estilo WhatsApp: badge centrado
+                            // cuando cambia la fecha entre mensajes.
+                            $messageDay = ! empty($message['at']) ? \Illuminate\Support\Carbon::parse($message['at']) : null;
+                            $showDaySeparator = $messageDay !== null && $messageDay->toDateString() !== $lastMessageDay;
+                            $lastMessageDay = $messageDay?->toDateString() ?? $lastMessageDay;
+                            $dayLabel = $messageDay?->isToday() ? __('assistant.today')
+                                : ($messageDay?->isYesterday() ? __('assistant.yesterday') : $messageDay?->format('d/m/Y'));
+                        @endphp
+                        @if ($showDaySeparator)
+                            <div class="flex justify-center">
+                                <span class="rounded-full bg-gray-200/70 px-3 py-1 text-[10px] font-semibold text-gray-500 dark:bg-white/10 dark:text-gray-400">
+                                    {{ $dayLabel }}
+                                </span>
+                            </div>
+                        @endif
                         <div
                             wire:key="msg-{{ $message['id'] ?? $index }}"
                             class="assistant-msg flex {{ $message['role'] === 'user' ? 'justify-end' : 'justify-start' }}"
@@ -486,7 +603,7 @@
                                         <div class="mt-2.5">
                                             <button
                                                 type="button"
-                                                wire:click="previewAction({{ $index }})"
+                                                x-on:click="previewBusy = true; $wire.previewAction({{ $index }}).finally(() => previewBusy = false)"
                                                 class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:ring-white/15 dark:hover:bg-gray-700"
                                             >
                                                 <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
@@ -514,7 +631,7 @@
                                         @if (($message['table_count'] ?? 0) > 1)
                                             <button
                                                 type="button"
-                                                wire:click="previewAllData({{ $index }})"
+                                                x-on:click="previewBusy = true; $wire.previewAllData({{ $index }}).finally(() => previewBusy = false)"
                                                 class="inline-flex items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-primary-100 hover:text-primary-700 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-primary-500/20 dark:hover:text-primary-300"
                                             >
                                                 <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
@@ -572,7 +689,7 @@
                                 @endif
 
                                 @if ($message['at'] ?? null)
-                                    <p class="mt-1.5 {{ $message['role'] === 'assistant' ? 'pr-8' : '' }} text-right text-[10px] text-gray-400 dark:text-gray-500">
+                                    <p class="mt-1.5 {{ $message['role'] === 'assistant' ? 'pr-8' : '' }} text-right text-[10px] {{ $message['role'] === 'user' ? 'text-white/70' : 'text-gray-500 dark:text-gray-400' }}">
                                         {{ \Illuminate\Support\Carbon::parse($message['at'])->format('h:i A') }}
                                     </p>
                                 @endif
@@ -630,6 +747,30 @@
                         </div>
                     </div>
                 @endif
+            </div>
+
+            {{-- Skeleton al cambiar de chat: cubre la conversacion hasta que
+                 Livewire responde, asi no se ve el historial anterior. --}}
+            <div
+                x-show="chatBusy"
+                x-cloak
+                class="absolute inset-0 z-20 flex flex-col gap-4 bg-gray-50 px-4 py-4 dark:bg-gray-950/60"
+            >
+                @foreach ([1, 2, 3] as $i)
+                    <div @class(['h-12 w-2/3 animate-pulse rounded-2xl bg-gray-200 dark:bg-white/10', 'self-end' => $i % 2 === 0])></div>
+                @endforeach
+            </div>
+
+            {{-- Skeleton del modal de preview: aparece al instante del click
+                 y cubre el drawer hasta que Livewire devuelve el contenido. --}}
+            <div
+                x-show="previewBusy"
+                x-cloak
+                class="absolute inset-0 z-30 flex flex-col gap-4 bg-gray-50 px-4 py-4 dark:bg-gray-950/60"
+            >
+                <div class="h-4 w-1/3 animate-pulse rounded bg-gray-200 dark:bg-white/10"></div>
+                <div class="h-40 animate-pulse rounded-xl bg-gray-200 dark:bg-white/10"></div>
+                <div class="h-24 animate-pulse rounded-xl bg-gray-200 dark:bg-white/5"></div>
             </div>
 
             {{-- Flecha "bajar al final": solo visible si el usuario subio
@@ -731,7 +872,7 @@
                             x-transition:leave="transition ease-in duration-150"
                             x-transition:leave-start="opacity-100"
                             x-transition:leave-end="opacity-0"
-                            class="mt-2 max-h-72 overflow-y-auto rounded-xl bg-gray-50 p-2.5 ring-1 ring-gray-950/5 [scrollbar-width:thin] dark:bg-white/5 dark:ring-white/10"
+                            class="mt-2 max-h-72 overflow-y-auto rounded-xl bg-gray-50 p-2.5 ring-1 ring-gray-950/5 [overscroll-behavior:contain] [scrollbar-width:thin] dark:bg-white/5 dark:ring-white/10"
                         >
                             <p class="px-1 pb-2 text-xs font-semibold text-gray-700 dark:text-gray-200">{{ __('assistant.help.title') }}</p>
                             <div class="grid gap-3 sm:grid-cols-2">
@@ -814,7 +955,7 @@
                     </button>
                 </header>
 
-                <div class="flex-1 overflow-y-auto px-4 py-4">
+                <div x-ref="previewScroll" class="min-h-0 flex-1 overflow-y-auto px-4 py-4 [overscroll-behavior:contain]">
                     @if ($preview['kind'] === 'action')
                         <p class="mb-3 text-sm font-medium text-gray-700 dark:text-gray-300">{{ $preview['title'] }}</p>
 
@@ -872,24 +1013,10 @@
                                                     class="border-t border-gray-950/5 dark:border-white/5"
                                                 >
                                                     <tr>
-                                                        @foreach ($row as $cell)
+                                                        @foreach ($row as $cellColumn => $cell)
+                                                            @php $badgeColumn = is_string($cellColumn) ? $cellColumn : ($table['columns'][$loop->index] ?? null); @endphp
                                                             <td class="px-2.5 py-1.5">
-                                                                @if (is_array($cell) && $cell === [])
-                                                                    <span class="text-gray-400 dark:text-gray-500">—</span>
-                                                                @elseif (is_array($cell) && isset($cell[0]) && is_array($cell[0]))
-                                                                    <button
-                                                                        type="button"
-                                                                        x-on:click="open = ! open"
-                                                                        class="inline-flex items-center gap-1 rounded-full bg-primary-50 px-2 py-0.5 text-[10px] font-semibold text-primary-700 ring-1 ring-primary-600/20 transition hover:bg-primary-100 dark:bg-primary-500/10 dark:text-primary-300 dark:ring-primary-400/30"
-                                                                    >
-                                                                        <span x-text="open ? '▾' : '▸'"></span>
-                                                                        {{ __('assistant.nested.count', ['count' => count($cell)]) }}
-                                                                    </button>
-                                                                @elseif (is_array($cell))
-                                                                    {{ json_encode($cell, JSON_UNESCAPED_UNICODE) }}
-                                                                @else
-                                                                    {{ $cell }}
-                                                                @endif
+                                                                @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => $badgeColumn])
                                                             </td>
                                                         @endforeach
                                                     </tr>
@@ -911,8 +1038,8 @@
                                                                             <tbody>
                                                                                 @foreach ($nestedRows as $nestedRow)
                                                                                     <tr class="border-t border-gray-950/5 dark:border-white/5">
-                                                                                        @foreach ($nestedRow as $nestedCell)
-                                                                                            <td class="px-2 py-1">{{ is_array($nestedCell) ? json_encode($nestedCell, JSON_UNESCAPED_UNICODE) : $nestedCell }}</td>
+                                                                                        @foreach ($nestedRow as $nestedCellColumn => $nestedCell)
+                                                                                            <td class="px-2 py-1">@include('livewire.partials.assistant-cell', ['cell' => $nestedCell, 'column' => is_string($nestedCellColumn) ? $nestedCellColumn : null, 'allowExpand' => false])</td>
                                                                                         @endforeach
                                                                                     </tr>
                                                                                 @endforeach

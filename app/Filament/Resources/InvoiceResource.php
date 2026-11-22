@@ -31,7 +31,7 @@ class InvoiceResource extends Resource
 
     protected static ?string $slug = 'administration/invoices';
 
-    protected static ?int $navigationSort = 3;
+    protected static ?int $navigationSort = 1;
 
     protected static ?string $navigationIcon = 'heroicon-o-document-text';
 

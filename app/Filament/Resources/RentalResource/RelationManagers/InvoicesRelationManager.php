@@ -16,9 +16,11 @@ class InvoicesRelationManager extends RelationManager
 
     protected static ?string $recordTitleAttribute = 'number';
 
+    protected static bool $isLazy = false;
+
     public static function getTitle(Model $ownerRecord, string $pageClass): string
     {
-        return __('invoice.navigation.labels.plural');
+        return \Illuminate\Support\Str::ucfirst(__('invoice.navigation.labels.plural'));
     }
 
     /**

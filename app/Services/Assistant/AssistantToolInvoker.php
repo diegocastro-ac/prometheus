@@ -668,7 +668,7 @@ class AssistantToolInvoker
     {
         $invoices = Invoice::query()
             ->where('user_id', $userId)
-            ->with('rental:id,name', 'rental.tenant:id,name')
+            ->with('rental:id,name,tenant_id', 'rental.tenant:id,name')
             ->orderByDesc('issued_at')
             ->orderByDesc('id')
             ->limit(10)
@@ -702,7 +702,7 @@ class AssistantToolInvoker
     {
         $payments = Payment::query()
             ->where('user_id', $userId)
-            ->with('rental:id,name', 'rental.tenant:id,name', 'invoice:id,number')
+            ->with('rental:id,name,tenant_id', 'rental.tenant:id,name', 'invoice:id,number')
             ->orderByDesc('date')
             ->orderByDesc('id')
             ->limit(10)
@@ -1044,7 +1044,7 @@ class AssistantToolInvoker
             ->where('user_id', $userId)
             ->where('number', 'like', '%'.$number.'%')
             ->whereIn('status', [InvoiceStatus::EMITIDA, InvoiceStatus::VENCIDA])
-            ->with('rental:id,name', 'rental.tenant:id,name')
+            ->with('rental:id,name,tenant_id', 'rental.tenant:id,name')
             ->limit(5)
             ->get();
 
@@ -1511,7 +1511,7 @@ class AssistantToolInvoker
         return Invoice::query()
             ->where('user_id', $userId)
             ->whereIn('status', [InvoiceStatus::EMITIDA, InvoiceStatus::VENCIDA])
-            ->with('rental:id,name', 'rental.tenant:id,name')
+            ->with('rental:id,name,tenant_id', 'rental.tenant:id,name')
             ->orderBy('due_at')
             ->get();
     }

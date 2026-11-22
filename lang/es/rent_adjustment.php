@@ -5,7 +5,7 @@ return [
     'navigation_label' => 'Reajustes',
 
     'navigation' => [
-        'group' => 'Administración',
+        'group' => 'Finanzas',
         'labels' => [
             'singular' => 'reajuste',
             'plural' => 'reajustes',

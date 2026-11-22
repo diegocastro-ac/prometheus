@@ -24,9 +24,13 @@
         <h3 class="mb-3 text-base font-bold text-gray-900 dark:text-white">{{ __('finance.sections.summary') }}</h3>
         <p class="-mt-2 mb-4 text-sm text-gray-500 dark:text-gray-400">{{ __('finance.sections.summary_hint') }}</p>
 
+        {{-- Stats renderizados aqui y no como header widgets: Filament los
+             pintaria otra vez arriba de la pagina y saldrian duplicados. --}}
         <x-filament-widgets::widgets
-            :widgets="$this->getVisibleHeaderWidgets()"
-            :columns="$this->getHeaderWidgetsColumns()"
+            :widgets="[
+                new \Filament\Widgets\WidgetConfiguration(\App\Filament\Widgets\FinanceStatsWidget::class),
+            ]"
+            :columns="1"
         />
     </div>
 
@@ -75,35 +79,39 @@
                 </div>
             </x-filament::section>
 
-            <x-filament::section class="lg:col-span-2">
-                <x-slot name="heading">{{ __('finance.debtors.title') }}</x-slot>
-
-                <x-filament-tables::table>
-                    <x-slot name="header">
-                        <x-filament-tables::header-cell>{{ __('finance.columns.tenant') }}</x-filament-tables::header-cell>
-                        <x-filament-tables::header-cell>{{ __('finance.columns.rental') }}</x-filament-tables::header-cell>
-                        <x-filament-tables::header-cell>{{ __('finance.columns.invoices') }}</x-filament-tables::header-cell>
-                        <x-filament-tables::header-cell>{{ __('finance.columns.oldest_due') }}</x-filament-tables::header-cell>
-                        <x-filament-tables::header-cell class="text-right">{{ __('finance.columns.balance') }}</x-filament-tables::header-cell>
-                    </x-slot>
-
-                    @forelse ($report['debtors'] as $debtor)
-                        <x-filament-tables::row>
-                            <x-filament-tables::cell>{{ $debtor['tenant'] }}</x-filament-tables::cell>
-                            <x-filament-tables::cell>{{ $debtor['rental'] }}</x-filament-tables::cell>
-                            <x-filament-tables::cell>{{ $debtor['invoices'] }}</x-filament-tables::cell>
-                            <x-filament-tables::cell>{{ $debtor['oldest_due'] ?? '—' }}</x-filament-tables::cell>
-                            <x-filament-tables::cell class="text-right font-medium">{{ '$'.number_format($debtor['balance'], 0, ',', '.') }}</x-filament-tables::cell>
-                        </x-filament-tables::row>
-                    @empty
-                        <x-filament-tables::row>
-                            <x-filament-tables::cell colspan="5" class="py-6 text-center text-gray-500">
-                                {{ __('finance.debtors.empty') }}
-                            </x-filament-tables::cell>
-                        </x-filament-tables::row>
-                    @endforelse
-                </x-filament-tables::table>
-            </x-filament::section>
+            <div class="lg:col-span-2">
+                <h4 class="mb-2 text-sm font-bold text-gray-900 dark:text-white">{{ __('finance.debtors.title') }}</h4>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50 dark:bg-white/5">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.tenant') }}</th>
+                                <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.rental') }}</th>
+                                <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.invoices') }}</th>
+                                <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.oldest_due') }}</th>
+                                <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.balance') }}</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100 dark:divide-white/5">
+                            @forelse ($report['debtors'] as $debtor)
+                                <tr class="transition hover:bg-gray-50 dark:hover:bg-white/5">
+                                    <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">{{ $debtor['tenant'] }}</td>
+                                    <td class="px-4 py-3 text-gray-600 dark:text-gray-300">{{ $debtor['rental'] }}</td>
+                                    <td class="px-4 py-3 text-gray-600 dark:text-gray-300">{{ $debtor['invoices'] }}</td>
+                                    <td class="px-4 py-3 text-gray-600 dark:text-gray-300">{{ $debtor['oldest_due'] ?? '—' }}</td>
+                                    <td class="px-4 py-3 text-right font-semibold text-gray-900 dark:text-white">{{ '$'.number_format($debtor['balance'], 0, ',', '.') }}</td>
+                                </tr>
+                            @empty
+                                <tr>
+                                    <td colspan="5" class="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                                        {{ __('finance.debtors.empty') }}
+                                    </td>
+                                </tr>
+                            @endforelse
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -129,6 +137,7 @@
         />
 
         <x-filament-widgets::widgets
+            class="mt-6"
             :widgets="[
                 new \Filament\Widgets\WidgetConfiguration(\App\Filament\Widgets\PaymentsStatusChart::class),
                 new \Filament\Widgets\WidgetConfiguration(\App\Filament\Widgets\PaymentsByMethodChart::class, ['months' => $report['months']]),
@@ -144,34 +153,37 @@
         <h3 class="mb-3 text-base font-bold text-gray-900 dark:text-white">{{ __('finance.sections.activity') }}</h3>
         <p class="-mt-2 mb-4 text-sm text-gray-500 dark:text-gray-400">{{ __('finance.sections.activity_hint') }}</p>
 
-        <x-filament::section>
-            <x-filament-tables::table>
-                <x-slot name="header">
-                    <x-filament-tables::header-cell>{{ __('finance.columns.date') }}</x-filament-tables::header-cell>
-                    <x-filament-tables::header-cell>{{ __('finance.columns.tenant') }}</x-filament-tables::header-cell>
-                    <x-filament-tables::header-cell>{{ __('finance.columns.rental') }}</x-filament-tables::header-cell>
-                    <x-filament-tables::header-cell>{{ __('finance.columns.invoice') }}</x-filament-tables::header-cell>
-                    <x-filament-tables::header-cell>{{ __('finance.columns.method') }}</x-filament-tables::header-cell>
-                    <x-filament-tables::header-cell class="text-right">{{ __('finance.columns.amount') }}</x-filament-tables::header-cell>
-                </x-slot>
-
-                @forelse ($report['recentPayments'] as $payment)
-                    <x-filament-tables::row>
-                        <x-filament-tables::cell>{{ $payment->date->format('d/m/Y') }}</x-filament-tables::cell>
-                        <x-filament-tables::cell>{{ $payment->rental?->tenant?->name ?? '—' }}</x-filament-tables::cell>
-                        <x-filament-tables::cell>{{ $payment->rental?->name ?? '—' }}</x-filament-tables::cell>
-                        <x-filament-tables::cell>{{ $payment->invoice?->number ?? '—' }}</x-filament-tables::cell>
-                        <x-filament-tables::cell>{{ $payment->methodLabel() }}</x-filament-tables::cell>
-                        <x-filament-tables::cell class="text-right font-medium">{{ '$'.number_format($payment->amount, 0, ',', '.') }}</x-filament-tables::cell>
-                    </x-filament-tables::row>
-                @empty
-                    <x-filament-tables::row>
-                        <x-filament-tables::cell colspan="6" class="py-6 text-center text-gray-500">
-                            {{ __('finance.activity.empty') }}
-                        </x-filament-tables::cell>
-                    </x-filament-tables::row>
-                @endforelse
-            </x-filament-tables::table>
-        </x-filament::section>
+        <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-50 dark:bg-white/5">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.date') }}</th>
+                            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.tenant') }}</th>
+                            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.rental') }}</th>
+                            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.invoice') }}</th>
+                            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.method') }}</th>
+                            <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ __('finance.columns.amount') }}</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100 dark:divide-white/5">
+                        @forelse ($report['recentPayments'] as $payment)
+                            <tr class="transition hover:bg-gray-50 dark:hover:bg-white/5">
+                                <td class="px-4 py-3 whitespace-nowrap text-gray-600 dark:text-gray-300">{{ $payment->date->format('d/m/Y') }}</td>
+                                <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">{{ $payment->rental?->tenant?->name ?? '—' }}</td>
+                                <td class="px-4 py-3 text-gray-600 dark:text-gray-300">{{ $payment->rental?->name ?? '—' }}</td>
+                                <td class="px-4 py-3 text-gray-600 dark:text-gray-300">{{ $payment->invoice?->number ?? '—' }}</td>
+                                <td class="px-4 py-3 text-gray-600 dark:text-gray-300">{{ $payment->methodLabel() }}</td>
+                                <td class="px-4 py-3 text-right font-semibold text-gray-900 dark:text-white">{{ '$'.number_format($payment->amount, 0, ',', '.') }}</td>
+                            </tr>
+                        @empty
+                            <tr>
+                                <td colspan="6" class="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                                    {{ __('finance.activity.empty') }}
+                                </td>
+                            </tr>
+                        @endforelse
+                    </tbody>
+                </table>
+        </div>
     </div>
 </x-filament-panels::page>
