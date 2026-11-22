@@ -18,20 +18,30 @@ class DatabaseSeeder extends Seeder
         User::factory()->create([
             'name' => 'admin',
             'email' => 'admin@admin.com',
-            'password' => Hash::make('admin')
+            'password' => Hash::make('admin'),
         ]);
 
         User::factory()->create([
             'name' => 'user',
             'email' => 'user@user.com',
-            'password' => Hash::make('user')
+            'password' => Hash::make('user'),
         ]);
 
         $this->call([
+            // El IPC va primero: los reajustes y las cartas que citan esa
+            // fuente dependen de que el año este disponible.
+            IpcRateSeeder::class,
             TenantSeeder::class,
             PropertySeeder::class,
             RentalSeeder::class,
-            PaymentSeeder::class
+            SpaceSeeder::class,
+            MasterInventoryItemSeeder::class,
+            PaymentSeeder::class,
+            DeliveryActSeeder::class,
+
+            // Los reajustes van al final porque se apoyan en un alquiler con
+            // canon vigente y en el IPC del año anterior.
+            RentAdjustmentSeeder::class,
         ]);
     }
 }

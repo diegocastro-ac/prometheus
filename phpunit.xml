@@ -19,6 +19,21 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing"/>
+        <!--
+            El idioma se fija aqui y no se hereda del .env.
+
+            Las pruebas de documentos y de interfaz afirmaciones en texto: comprueban
+            que la carta diga "Comunicada el" o que el comprobante se llame
+            "Comprobante de pago". Si la locale sale del entorno local, la suite
+            pasa en espanol en una maquina y falla en ingles en otra, sin que nada
+            haya cambiado en el codigo.
+
+            espanol es el idioma primario del proyecto: lang/es es la traduccion
+            base y lang/en la alternativa.
+        -->
+        <env name="APP_LOCALE" value="es"/>
+        <env name="APP_FALLBACK_LOCALE" value="en"/>
+        <env name="APP_FAKER_LOCALE" value="es_CO"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="CACHE_STORE" value="array"/>
