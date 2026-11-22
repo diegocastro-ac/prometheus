@@ -11,6 +11,10 @@
  * @type {import('tailwindcss').Config}
  */
 export default {
+    // Filament alterna el tema con la clase `.dark` en <html>, no con la
+    // preferencia del OS. Sin esto las variantes `dark:` de nuestras vistas
+    // responderian a prefers-color-scheme y se desincronizarian del tema.
+    darkMode: 'class',
     content: [
         './resources/views/**/*.blade.php',
         './app/Filament/**/*.php',

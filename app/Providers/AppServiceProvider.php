@@ -231,17 +231,24 @@ class AppServiceProvider extends ServiceProvider
         | Filament v3 usa Tailwind v3, pero su hoja compilada por defecto solo
         | trae las clases de SUS componentes. Las utilidades Tailwind escritas
         | en nuestras vistas (grid, xl:grid-cols-3, space-y-6, etc.) no existen
-        | en esa hoja. Por eso se compila una hoja adicional con Tailwind v3 y
-        | se carga DESPUES del CSS de Filament.
+        | en esa hoja. Por eso se compila una hoja adicional con Tailwind v3.
         |
-        | El hook STYLES_AFTER es importante: si se inyecta en HEAD_START, el
-        | CSS de Filament se carga despues y puede tapar nuestras reglas.
-        | resources/css/filament.css conserva los estilos .ajuste-* y tambien
-        | debe ir despues del CSS base.
+        | DEbe cargarse ANTES del CSS de Filament (STYLES_BEFORE), no despues.
+        | Esta hoja re-emite utilidades genericas (.fixed, .absolute, etc.) que
+        | tambien usa Filament. Si carga despues, un `.fixed{position:fixed}`
+        | gana por orden de cascada al `.lg\:sticky` de la sidebar y esta queda
+        | fuera del flujo flex: el contenido principal ocupa todo el ancho y se
+        | monta encima del menu. Cargando primero, las variantes de Filament
+        | ganan y las utilidades unicas de nuestras vistas (que Filament no
+        | define) siguen aplicando igual: los dos builds generan las mismas
+        | reglas para las clases compartidas.
+        |
+        | El ?v= con filemtime es obligatorio: sin version el navegador cachea
+        | la hoja y los cambios del build no llegan nunca al cliente.
         */
         FilamentView::registerRenderHook(
-            PanelsRenderHook::STYLES_AFTER,
-            fn (): string => '<link rel="stylesheet" href="'.e(asset('css/filament/app-utilities.css')).'" data-navigate-track />',
+            PanelsRenderHook::STYLES_BEFORE,
+            fn (): string => '<link rel="stylesheet" href="'.e(asset('css/filament/app-utilities.css')).'?v='.e(\Illuminate\Support\Facades\File::lastModified(public_path('css/filament/app-utilities.css'))).'" data-navigate-track />',
         );
 
         FilamentView::registerRenderHook(

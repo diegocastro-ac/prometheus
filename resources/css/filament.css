@@ -321,3 +321,193 @@
         justify-content: space-between;
     }
 }
+
+/*
+||------------------------------------------------------------------------------
+|| Red de seguridad para la sidebar en escritorio (>=1024px)
+||------------------------------------------------------------------------------
+||
+|| La sidebar de Filament alterna `fixed` (movil, drawer overlay) y `lg:sticky`
+|| (desktop, en flujo flex). Si otra hoja de utilidades redefine `position` con
+|| la misma especificidad y carga despues, `lg:sticky` pierde y la sidebar
+|| queda `fixed` fuera del flujo: el contenido principal ocupa todo el ancho
+|| y se monta encima del menu.
+||
+|| Esta regla carga al final (STYLES_AFTER) y fija el estado correcto en
+|| escritorio. No afecta a movil: por debajo de 1024px la sidebar debe seguir
+|| siendo `fixed` para funcionar como drawer.
+*/
+@media (min-width: 1024px) {
+    .fi-sidebar {
+        position: sticky;
+    }
+}
+
+/*
+||------------------------------------------------------------------------------
+|| Utilidades responsive del asistente que la hoja de Filament no genera
+||------------------------------------------------------------------------------
+||
+|| app-utilities.css (las clases Tailwind del chat) carga ANTES que la hoja de
+|| Filament. Las variantes responsive (sm:, lg:) no suman especificidad, asi que
+|| la clase base que llega despues les gana: el `.hidden` de Filament pisa
+|| `sm:inline` del FAB y `lg:block` del handle de resize, y el texto "Asistente"
+|| y la zona de arrastre nunca aparecen.
+||
+|| Estas reglas cargan al final del cascade (este archivo va en STYLES_AFTER)
+|| y restauran lo que las clases ya declaran: por debajo del breakpoint sigue
+|| mandando `.hidden`; a partir de el muestra el elemento.
+*/
+@media (min-width: 640px) {
+    .sm\:inline {
+        display: inline;
+    }
+}
+
+@media (min-width: 1024px) {
+    .lg\:block {
+        display: block;
+    }
+}
+
+/*
+||------------------------------------------------------------------------------
+|| Texto de los mensajes del asistente (markdown)
+||------------------------------------------------------------------------------
+||
+|| La respuesta de Gemini llega en markdown y se renderiza con CommonMark
+|| (el HTML crudo se escapa). Sin estas reglas el HTML generado queda pegado
+|| a los bordes de la burbuja y las listas/codigo no se distinguen. Se usan
+|| las variables de Filament para heredar el tema; el modo oscuro se ajusta
+|| con las mismas excepciones que el resto del archivo.
+*/
+.assistant-md > :first-child {
+    margin-top: 0;
+}
+
+.assistant-md > :last-child {
+    margin-bottom: 0;
+}
+
+.assistant-md p {
+    margin: 0 0 0.5rem;
+}
+
+.assistant-md ul,
+.assistant-md ol {
+    margin: 0 0 0.5rem;
+    padding-inline-start: 1.25rem;
+}
+
+.assistant-md ul {
+    list-style: disc;
+}
+
+.assistant-md ol {
+    list-style: decimal;
+}
+
+.assistant-md li {
+    margin: 0.125rem 0;
+}
+
+.assistant-md li::marker {
+    color: var(--gray-400);
+}
+
+.assistant-md strong {
+    font-weight: 600;
+}
+
+.assistant-md a {
+    color: var(--primary-600);
+    text-decoration: underline;
+}
+
+.assistant-md code {
+    padding: 0.1em 0.3em;
+    border-radius: 0.25rem;
+    background-color: var(--gray-100);
+    font-size: 0.85em;
+}
+
+.assistant-md pre {
+    margin: 0 0 0.5rem;
+    padding: 0.75rem;
+    overflow-x: auto;
+    border-radius: 0.5rem;
+    background-color: var(--gray-900);
+    color: var(--gray-100);
+    font-size: 0.8rem;
+}
+
+.assistant-md pre code {
+    padding: 0;
+    background-color: transparent;
+    color: inherit;
+}
+
+.assistant-md blockquote {
+    margin: 0 0 0.5rem;
+    padding-inline-start: 0.75rem;
+    border-inline-start: 3px solid var(--gray-300);
+    color: var(--gray-500);
+}
+
+.assistant-md hr {
+    margin: 0.75rem 0;
+    border-color: var(--gray-200);
+}
+
+.assistant-md table {
+    width: 100%;
+    margin: 0 0 0.5rem;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+}
+
+.assistant-md th,
+.assistant-md td {
+    padding: 0.25rem 0.5rem;
+    border-bottom: 1px solid var(--gray-200);
+    text-align: left;
+}
+
+.assistant-md th {
+    font-weight: 600;
+    color: var(--gray-500);
+}
+
+.dark .assistant-md li::marker {
+    color: var(--gray-500);
+}
+
+.dark .assistant-md a {
+    color: var(--primary-400);
+}
+
+.dark .assistant-md code {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.dark .assistant-md pre {
+    background-color: var(--gray-950);
+}
+
+.dark .assistant-md blockquote {
+    border-inline-start-color: var(--gray-700);
+    color: var(--gray-400);
+}
+
+.dark .assistant-md hr {
+    border-color: var(--gray-700);
+}
+
+.dark .assistant-md th,
+.dark .assistant-md td {
+    border-bottom-color: var(--gray-700);
+}
+
+.dark .assistant-md th {
+    color: var(--gray-400);
+}

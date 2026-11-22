@@ -360,6 +360,16 @@ return [
             'tag' => 'Fast',
             'use' => 'Very fast replies and high volume; ideal for simple queries.',
         ],
+        [
+            'name' => 'Gemini 3.1 Flash-Lite',
+            'tag' => 'Ultra fast',
+            'use' => 'The fastest and lightest: classifies, extracts data and answers instantly.',
+        ],
+        [
+            'name' => 'Gemma 4 31B',
+            'tag' => 'Open',
+            'use' => "Google's open model; a general-purpose alternative for chat and writing.",
+        ],
     ],
 
     'nested' => [

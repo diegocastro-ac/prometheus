@@ -360,6 +360,16 @@ return [
             'tag' => 'Rápido',
             'use' => 'Respuestas muy rápidas y alto volumen; ideal para consultas simples.',
         ],
+        [
+            'name' => 'Gemini 3.1 Flash-Lite',
+            'tag' => 'Ultra rápido',
+            'use' => 'El más veloz y ligero: clasifica, extrae datos y responde al instante.',
+        ],
+        [
+            'name' => 'Gemma 4 31B',
+            'tag' => 'Abierto',
+            'use' => 'Modelo abierto de Google; alternativa generalista para chat y redacción.',
+        ],
     ],
 
     'nested' => [

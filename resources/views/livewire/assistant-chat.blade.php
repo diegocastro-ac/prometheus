@@ -419,7 +419,6 @@
                 class="relative flex min-h-0 flex-1 flex-col"
             >
             <div
-                x-ref="messages"
                 x-ref="messagesScroll"
                 x-init="$nextTick(() => { $el.scrollTop = $el.scrollHeight })"
                 x-on:assistant-scroll.window="$nextTick(() => { $el.scrollTop = $el.scrollHeight })"
@@ -462,12 +461,12 @@
                                 @if (! empty($message['sections']))
                                     @foreach ($message['sections'] as $section)
                                         @if (! empty($section['text']))
-                                            <p class="whitespace-pre-line leading-relaxed {{ $loop->first ? '' : 'mt-3' }}">{{ $section['text'] }}</p>
+                                            <div class="assistant-md leading-relaxed {{ $loop->first ? '' : 'mt-3' }}">{!! \Illuminate\Support\Str::markdown($section['text'], ['html_input' => 'escape', 'allow_unsafe_links' => false]) !!}</div>
                                         @endif
                                         @include('livewire.partials.assistant-tables', ['data' => $section['data'] ?? null, 'messageIndex' => $index])
                                     @endforeach
                                 @else
-                                    <p class="whitespace-pre-line leading-relaxed">{{ $message['text'] }}</p>
+                                    <div class="assistant-md leading-relaxed">{!! \Illuminate\Support\Str::markdown($message['text'], ['html_input' => 'escape', 'allow_unsafe_links' => false]) !!}</div>
 
                                     {{-- Datos estructurados: tabla compacta cuando el
                                          intent devolvio filas. --}}
@@ -574,7 +573,7 @@
 
                                 @if ($message['at'] ?? null)
                                     <p class="mt-1.5 {{ $message['role'] === 'assistant' ? 'pr-8' : '' }} text-right text-[10px] text-gray-400 dark:text-gray-500">
-                                        {{ \Illuminate\Support\Carbon::parse($message['at'])->format('H:i') }}
+                                        {{ \Illuminate\Support\Carbon::parse($message['at'])->format('h:i A') }}
                                     </p>
                                 @endif
                             </div>
@@ -616,11 +615,12 @@
                         </div>
                     </template>
 
-                    {{-- Indicador de escritura: wire:loading lo muestra al
-                         instante del clic, sin esperar la respuesta. --}}
+                    {{-- Indicador de escritura: `sending` lo muestra en el
+                         mismo tick de Alpine que el mensaje pendiente, asi el
+                         scrollToBottom del envio ya lo deja visible. --}}
                     <div
-                        wire:loading
-                        wire:target="send,askSuggestion"
+                        x-show="sending"
+                        x-cloak
                         class="flex justify-start"
                     >
                         <div class="flex items-center gap-1.5 rounded-2xl rounded-bl-md bg-white px-4 py-3.5 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-800 dark:ring-white/10">
@@ -704,7 +704,7 @@
                         </div>
 
                         @if (! empty($contextSuggestions))
-                            <div class="flex gap-1.5 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                            <div class="flex gap-1.5 overflow-x-auto px-0.5 pb-1 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                                 @foreach ($contextSuggestions as $key)
                                     <button
                                         type="button"
@@ -837,12 +837,21 @@
                             </svg>
                             {{ __('assistant.preview.confirm_note') }}
                         </p>
-                    @elseif ($preview['kind'] === 'data_all')
-                        {{-- Todas las tablas del mensaje apiladas. --}}
+                    @else
+                        {{-- data / data_all: una o varias tablas. Las celdas con
+                             listas de filas se despliegan igual que en las
+                             tablas inline del chat. --}}
+                        @php
+                            $previewTables = $preview['kind'] === 'data_all'
+                                ? $preview['tables']
+                                : [['title' => null, 'columns' => $preview['columns'], 'rows' => $preview['rows']]];
+                        @endphp
                         <div class="space-y-5">
-                            @foreach ($preview['tables'] as $table)
+                            @foreach ($previewTables as $table)
                                 <div>
-                                    <p class="mb-1.5 px-0.5 text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">{{ $table['title'] }}</p>
+                                    @if (! empty($table['title']))
+                                        <p class="mb-1.5 px-0.5 text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">{{ $table['title'] }}</p>
+                                    @endif
                                     <div class="overflow-x-auto rounded-xl ring-1 ring-gray-950/10 dark:ring-white/10">
                                         <table class="w-full text-xs">
                                             <thead class="bg-gray-50 dark:bg-gray-800">
@@ -852,42 +861,76 @@
                                                     @endforeach
                                                 </tr>
                                             </thead>
-                                            <tbody>
-                                                @foreach ($table['rows'] as $row)
-                                                    <tr class="border-t border-gray-950/5 dark:border-white/5">
+                                            @foreach ($table['rows'] as $row)
+                                                @php
+                                                    $nestedCells = collect($row)->filter(
+                                                        fn ($cell): bool => is_array($cell) && isset($cell[0]) && is_array($cell[0]),
+                                                    );
+                                                @endphp
+                                                <tbody
+                                                    x-data="{ open: false }"
+                                                    class="border-t border-gray-950/5 dark:border-white/5"
+                                                >
+                                                    <tr>
                                                         @foreach ($row as $cell)
-                                                            <td class="px-2.5 py-1.5">{{ is_array($cell) && isset($cell[0]) && is_array($cell[0]) ? __('assistant.nested.count', ['count' => count($cell)]) : (is_array($cell) ? json_encode($cell, JSON_UNESCAPED_UNICODE) : $cell) }}</td>
+                                                            <td class="px-2.5 py-1.5">
+                                                                @if (is_array($cell) && $cell === [])
+                                                                    <span class="text-gray-400 dark:text-gray-500">—</span>
+                                                                @elseif (is_array($cell) && isset($cell[0]) && is_array($cell[0]))
+                                                                    <button
+                                                                        type="button"
+                                                                        x-on:click="open = ! open"
+                                                                        class="inline-flex items-center gap-1 rounded-full bg-primary-50 px-2 py-0.5 text-[10px] font-semibold text-primary-700 ring-1 ring-primary-600/20 transition hover:bg-primary-100 dark:bg-primary-500/10 dark:text-primary-300 dark:ring-primary-400/30"
+                                                                    >
+                                                                        <span x-text="open ? '▾' : '▸'"></span>
+                                                                        {{ __('assistant.nested.count', ['count' => count($cell)]) }}
+                                                                    </button>
+                                                                @elseif (is_array($cell))
+                                                                    {{ json_encode($cell, JSON_UNESCAPED_UNICODE) }}
+                                                                @else
+                                                                    {{ $cell }}
+                                                                @endif
+                                                            </td>
                                                         @endforeach
                                                     </tr>
-                                                @endforeach
-                                            </tbody>
+                                                    @if ($nestedCells->isNotEmpty())
+                                                        <tr x-show="open">
+                                                            <td colspan="{{ count($table['columns']) }}" class="bg-gray-50/60 px-3 py-2.5 dark:bg-white/5">
+                                                                <div class="space-y-2">
+                                                                    @foreach ($nestedCells as $nestedRows)
+                                                                        <table class="w-full text-[11px]">
+                                                                            <thead>
+                                                                                <tr>
+                                                                                    @foreach (array_keys($nestedRows[0]) as $nestedColumn)
+                                                                                        <th class="px-2 py-1 text-left font-semibold text-gray-400 dark:text-gray-500">
+                                                                                            {{ __("assistant.columns.{$nestedColumn}") !== "assistant.columns.{$nestedColumn}" ? __("assistant.columns.{$nestedColumn}") : str_replace('_', ' ', ucfirst($nestedColumn)) }}
+                                                                                        </th>
+                                                                                    @endforeach
+                                                                                </tr>
+                                                                            </thead>
+                                                                            <tbody>
+                                                                                @foreach ($nestedRows as $nestedRow)
+                                                                                    <tr class="border-t border-gray-950/5 dark:border-white/5">
+                                                                                        @foreach ($nestedRow as $nestedCell)
+                                                                                            <td class="px-2 py-1">{{ is_array($nestedCell) ? json_encode($nestedCell, JSON_UNESCAPED_UNICODE) : $nestedCell }}</td>
+                                                                                        @endforeach
+                                                                                    </tr>
+                                                                                @endforeach
+                                                                            </tbody>
+                                                                        </table>
+                                                                    @endforeach
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    @endif
+                                                </tbody>
+                                            @endforeach
                                         </table>
                                     </div>
                                 </div>
                             @endforeach
                         </div>
-                    @else
-                        <div class="overflow-x-auto rounded-xl ring-1 ring-gray-950/10 dark:ring-white/10">
-                            <table class="w-full text-xs">
-                                <thead class="bg-gray-50 dark:bg-gray-800">
-                                    <tr>
-                                        @foreach ($preview['columns'] as $column)
-                                            <th class="px-2.5 py-2 text-left font-semibold text-gray-500 dark:text-gray-400">{{ $column }}</th>
-                                        @endforeach
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    @foreach ($preview['rows'] as $row)
-                                        <tr class="border-t border-gray-950/5 dark:border-white/5">
-                                            @foreach ($row as $cell)
-                                                <td class="px-2.5 py-1.5">{{ is_array($cell) && isset($cell[0]) && is_array($cell[0]) ? __('assistant.nested.count', ['count' => count($cell)]) : (is_array($cell) ? json_encode($cell, JSON_UNESCAPED_UNICODE) : $cell) }}</td>
-                                            @endforeach
-                                        </tr>
-                                    @endforeach
-                                </tbody>
-                            </table>
-                        </div>
-                        @if (count($preview['rows']) >= 200)
+                        @if ($preview['kind'] !== 'data_all' && count($preview['rows'] ?? []) >= 200)
                             <p class="mt-2 text-center text-[11px] text-gray-400">{{ __('assistant.preview.truncated') }}</p>
                         @endif
                     @endif
