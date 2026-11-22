@@ -124,11 +124,33 @@ class Rental extends Model
     }
 
     /**
+     * Actas de entrega asociadas a este alquiler.
+     */
+    public function deliveryActs(): HasMany
+    {
+        return $this->hasMany(DeliveryAct::class);
+    }
+
+    /**
      * Reajustes del canon propuestos para este alquiler.
      */
     public function rentAdjustments(): HasMany
     {
         return $this->hasMany(RentAdjustment::class);
+    }
+
+    /**
+     * Todas las facturas del alquiler, sin filtro de periodo.
+     *
+     * invoicesForPeriod() sigue siendo el metodo para el estado de cuenta de
+     * un mes concreto; esta relacion existe para consultas de cartera que
+     * cruzan periodos ( aging, saldo total, proyecciones ).
+     *
+     * @return HasMany<Invoice>
+     */
+    public function invoices(): HasMany
+    {
+        return $this->hasMany(Invoice::class);
     }
 
     /**

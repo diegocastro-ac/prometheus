@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Contracts\AgreementStorageInterface;
 use App\Contracts\BusinessCalendar;
 use App\Contracts\CurrentUserContextInterface;
+use App\Contracts\DataAssistantInterface;
 use App\Contracts\DocumentAccessLogger;
 use App\Contracts\Ipc\IpcProvider;
 use App\Documents\Audit\DatabaseDocumentAccessLogger;
@@ -12,6 +13,7 @@ use App\Documents\DocumentFactoryLocator;
 use App\Documents\Factories\DocumentFactory;
 use App\Documents\Factories\TextDocumentFactory;
 use App\Events\IpcSeriesSynchronized;
+use App\Infrastructure\Ai\GeminiDataAssistant;
 use App\Infrastructure\AuthUserContext;
 use App\Infrastructure\Holidays\CachedHolidaySource;
 use App\Infrastructure\Holidays\NagerDateBusinessCalendar;
@@ -188,6 +190,21 @@ class AppServiceProvider extends ServiceProvider
         // Mediator: un solo coordinador del flujo de reajustes. No tiene estado;
         // la cadena de reglas y los calculadores conservan sus ciclos de vida.
         $this->app->singleton(AdjustmentMediator::class);
+
+        /*
+        |------------------------------------------------------------------
+        | Copiloto del arrendador (Adapter)
+        |------------------------------------------------------------------
+        |
+        | Mismo criterio que BusinessCalendar: el dominio habla con
+        | DataAssistantInterface y no sabe si detras hay Gemini, otra API o
+        | nada. GeminiDataAssistant ya degrada solo: sin GEMINI_API_KEY el
+        | matcher local sigue respondiendo consultas de lectura y las
+        | preguntas complejas muestran un aviso en vez de fallar.
+        |
+        */
+
+        $this->app->bind(DataAssistantInterface::class, GeminiDataAssistant::class);
     }
 
     /**

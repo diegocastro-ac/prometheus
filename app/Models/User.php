@@ -22,6 +22,7 @@ class User extends Authenticatable
         'document',
         'name',
         'phone_number',
+        'assistant_model',
         'email',
         'password',
     ];

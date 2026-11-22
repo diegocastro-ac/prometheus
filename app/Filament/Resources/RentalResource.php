@@ -5,6 +5,7 @@ namespace App\Filament\Resources;
 use App\Contracts\CurrentUserContextInterface;
 use App\Enums\BillingCadence;
 use App\Filament\Resources\RentalResource\Pages;
+use App\Filament\Resources\RentalResource\RelationManagers\InvoicesRelationManager;
 use App\Models\Property;
 use App\Models\Rental;
 use App\Models\Tenant;
@@ -340,7 +341,7 @@ class RentalResource extends Resource
     public static function getRelations(): array
     {
         return [
-            //
+            InvoicesRelationManager::class,
         ];
     }
 

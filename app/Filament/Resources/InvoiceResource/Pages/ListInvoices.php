@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\InvoiceResource\Pages;
 
+use App\Enums\InvoiceStatus;
 use App\Filament\Pages\DocumentsPage;
 use App\Filament\Resources\InvoiceResource;
 use Filament\Actions;
@@ -10,6 +11,28 @@ use Filament\Resources\Pages\ListRecords;
 class ListInvoices extends ListRecords
 {
     protected static string $resource = InvoiceResource::class;
+
+    public function bootedInteractsWithTable(): void
+    {
+        parent::bootedInteractsWithTable();
+
+        // Deep-link del copiloto: ?af[status]=VENCIDA aplica el filtro de
+        // estado. Se hace aqui y no en mount() porque el form de filtros se
+        // cachea y se llena en este hook; setear la propiedad antes hace que
+        // el form la pise con su estado vacio. Solo se aceptan estados
+        // reales del enum y nunca se pisa un filtro ya elegido por el usuario.
+        $af = request()->query('af');
+        $status = is_array($af) ? strtolower((string) ($af['status'] ?? '')) : '';
+        $valid = array_column(InvoiceStatus::cases(), 'value');
+
+        if ($status !== ''
+            && in_array($status, $valid, true)
+            && blank(data_get($this->tableFilters, 'status.value'))) {
+            $state = ['status' => ['isActive' => true, 'value' => $status]];
+            $this->tableFilters = $state;
+            $this->getTableFiltersForm()->fill($state);
+        }
+    }
 
     protected function getHeaderActions(): array
     {

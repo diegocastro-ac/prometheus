@@ -80,4 +80,23 @@ return [
         'country' => env('HOLIDAYS_COUNTRY', 'CO'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Gemini - Copiloto del arrendador
+    |--------------------------------------------------------------------------
+    |
+    | El asistente usa la API gratuita de Google AI Studio. La IA solo
+    | interpreta la pregunta y clasifica la intencion; las cifras siempre las
+    | calculan los servicios del sistema. Sin GEMINI_API_KEY la pagina del
+    | asistente muestra un aviso y el resto de la app funciona igual.
+    |
+    */
+
+    'gemini' => [
+        'key' => env('GEMINI_API_KEY'),
+        'model' => env('GEMINI_MODEL', 'gemini-3.5-flash-lite'),
+        'fallback_model' => env('GEMINI_FALLBACK_MODEL', 'gemini-3.5-flash-lite'),
+        'timeout' => (int) env('GEMINI_TIMEOUT', 10),
+    ],
+
 ];

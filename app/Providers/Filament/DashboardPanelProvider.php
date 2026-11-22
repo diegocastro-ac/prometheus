@@ -2,24 +2,24 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Pages\AjustesPage;
+use App\Filament\Pages\EditProfile;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
 use Filament\Http\Middleware\DispatchServingFilamentEvent;
+use Filament\Navigation\MenuItem;
 use Filament\Pages;
 use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\Support\Colors\Color;
-use Filament\Widgets;
+use Filament\View\PanelsRenderHook;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
-use Filament\Navigation\MenuItem;
-use App\Filament\Pages\EditProfile;
-use App\Filament\Pages\AjustesPage;
 
 class DashboardPanelProvider extends PanelProvider
 {
@@ -36,11 +36,11 @@ class DashboardPanelProvider extends PanelProvider
             ->userMenuItems([
                 'profile' => MenuItem::make()
                     ->label(fn () => __('profile.title'))
-                    ->url(fn(): string => EditProfile::getUrl())
+                    ->url(fn (): string => EditProfile::getUrl())
                     ->icon('heroicon-o-user-circle'),
                 'settings' => MenuItem::make()
                     ->label(fn () => __('settings.navigation_label'))
-                    ->url(fn(): string => AjustesPage::getUrl())
+                    ->url(fn (): string => AjustesPage::getUrl())
                     ->icon('heroicon-o-cog-6-tooth'),
             ])
             ->colors([
@@ -56,6 +56,12 @@ class DashboardPanelProvider extends PanelProvider
                 \App\Filament\Widgets\AccountWidget::class,
             ])
             ->sidebarCollapsibleOnDesktop()
+            ->renderHook(
+                PanelsRenderHook::BODY_END,
+                fn (): string => auth()->check()
+                    ? view('filament.partials.assistant-chat')->render()
+                    : '',
+            )
             ->navigationGroups([
                 'Administration',
                 'Information',

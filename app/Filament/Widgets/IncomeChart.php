@@ -12,6 +12,12 @@ class IncomeChart extends ChartWidget
 {
     protected static ?int $sort = 1;
 
+    /**
+     * Ventana en meses. La pagina de Finanzas la ajusta con el filtro de
+     * periodo; en el dashboard queda en 12.
+     */
+    public int $months = 12;
+
     public function getHeading(): string
     {
         return __('dashboard.charts.monthly_income.title');
@@ -29,8 +35,8 @@ class IncomeChart extends ChartWidget
         $expected = []; // Scheduled payments
         $collected = []; // Payments marked as paid
 
-        // Last 12 months (includes the current month)
-        for ($i = 11; $i >= 0; $i--) {
+        // Ultimos N meses (incluye el mes en curso)
+        for ($i = $this->months - 1; $i >= 0; $i--) {
             $date = Carbon::now()->subMonths($i);
             $labels[] = $date->translatedFormat('M Y');
 
