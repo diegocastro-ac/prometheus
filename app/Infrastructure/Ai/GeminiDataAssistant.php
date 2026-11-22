@@ -90,7 +90,16 @@ class GeminiDataAssistant implements DataAssistantInterface
 
         $parsed = $this->classify($question, $history, $digest->toArray(), $userId);
 
+        // Si Gemini no responde (red, TLS, cuota, 5xx) el chat no debe quedar
+        // mudo: el matcher local resuelve las consultas mas comunes sin red.
+        // Solo si tampoco reconoce la pregunta se muestra el error generico.
         if ($parsed === null) {
+            $local = $this->matcher->match($question);
+
+            if ($local !== null) {
+                return $this->resolveLocal($local, $userId);
+            }
+
             return AssistantReply::say(__('assistant.error'));
         }
 
@@ -402,10 +411,21 @@ class GeminiDataAssistant implements DataAssistantInterface
     private function generateWithModel(string $key, string $model, array $body, int $timeout): string
     {
         try {
-            $response = Http::withHeaders(['x-goog-api-key' => $key])
+            $request = Http::withHeaders(['x-goog-api-key' => $key])
                 ->connectTimeout(5)
-                ->timeout($timeout)
-                ->post(self::BASE_URL.'/'.$model.':generateContent', $body);
+                ->timeout($timeout);
+
+            // En Windows PHP no lee el almacen de certificados del sistema:
+            // sin un bundle de CAs toda llamada HTTPS muere con "cURL error 60".
+            // Se apunta a uno explicito solo si existe; nunca se desactiva la
+            // verificacion, porque eso expondria la API key a un MITM.
+            $caBundle = (string) config('services.gemini.ca_bundle');
+
+            if ($caBundle !== '' && is_file($caBundle)) {
+                $request = $request->withOptions(['verify' => $caBundle]);
+            }
+
+            $response = $request->post(self::BASE_URL.'/'.$model.':generateContent', $body);
 
             if (! $response->successful()) {
                 Log::warning('gemini.assistant.http_error', [

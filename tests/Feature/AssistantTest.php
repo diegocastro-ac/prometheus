@@ -120,6 +120,54 @@ class AssistantTest extends TestCase
     }
 
     // ---------------------------------------------------------------
+    // Resiliencia
+    // ---------------------------------------------------------------
+
+    #[Test]
+    public function si_gemini_falla_el_matcher_local_sigue_respondiendo(): void
+    {
+        Invoice::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'number' => 'FV-2026-0001',
+            'amount' => 800000,
+            'status' => InvoiceStatus::EMITIDA,
+            'issued_at' => today()->toDateString(),
+            'due_at' => today()->addDays(5)->toDateString(),
+            'period' => today()->format('Y-m'),
+        ]);
+
+        config()->set('services.gemini.key', 'test-key');
+        config()->set('services.gemini.model', 'gemini-test');
+
+        // API caida (red, TLS, cuota o 5xx): el chat no debe quedarse mudo
+        // cuando la pregunta se puede resolver con el matcher local.
+        Http::fake([
+            'generativelanguage.googleapis.com/*' => Http::response('', 500),
+        ]);
+
+        $reply = $this->assistant()->ask('cuanto me deben', [], $this->user->id);
+
+        $this->assertStringNotContainsString('No pude responder', $reply->text);
+        $this->assertStringContainsString('$800.000', $reply->text);
+    }
+
+    #[Test]
+    public function si_gemini_falla_y_no_hay_match_local_muestra_el_error(): void
+    {
+        config()->set('services.gemini.key', 'test-key');
+        config()->set('services.gemini.model', 'gemini-test');
+
+        Http::fake([
+            'generativelanguage.googleapis.com/*' => Http::response('', 500),
+        ]);
+
+        $reply = $this->assistant()->ask('xyzzy platano', [], $this->user->id);
+
+        $this->assertStringContainsString('No pude responder', $reply->text);
+    }
+
+    // ---------------------------------------------------------------
     // Dominio
     // ---------------------------------------------------------------
 

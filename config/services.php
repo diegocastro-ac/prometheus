@@ -97,6 +97,12 @@ return [
         'model' => env('GEMINI_MODEL', 'gemini-3.5-flash-lite'),
         'fallback_model' => env('GEMINI_FALLBACK_MODEL', 'gemini-3.5-flash-lite'),
         'timeout' => (int) env('GEMINI_TIMEOUT', 10),
+
+        // Ruta opcional al bundle de CAs (cacert.pem). En Windows PHP no usa
+        // el almacen del sistema: sin curl.cainfo configurado, toda llamada
+        // HTTPS falla con "cURL error 60". Apuntar aqui permite resolverlo sin
+        // tocar php.ini. Si queda vacio se usa la configuracion de PHP.
+        'ca_bundle' => env('GEMINI_CA_BUNDLE'),
     ],
 
 ];
