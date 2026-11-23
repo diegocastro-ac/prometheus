@@ -76,6 +76,8 @@ class AssistantActionExecutor
                 'batch' => $this->executeBatch($action['items'] ?? [], $userId),
                 default => AssistantReply::say(__('assistant.actions.unknown')),
             };
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+            return AssistantReply::say(__('assistant.actions.entity_missing'));
         } catch (DomainException $exception) {
             return AssistantReply::say($exception->getMessage());
         } catch (Throwable $exception) {
@@ -547,9 +549,24 @@ class AssistantActionExecutor
             return AssistantReply::say(__('assistant.actions.profile_invalid', ['field' => __('assistant.fields.email')]));
         }
 
+        // El nombre ANTES de guardar: tras fill() ya es el nuevo y el
+        // mensaje "actualizado X de Y" quedaria incoherente.
+        $before = $tenant->name;
         $tenant->fill($changes)->save();
 
-        return AssistantReply::say(__('assistant.actions.tenant_updated', ['name' => $tenant->name]), [
+        if (isset($changes['name'])) {
+            return AssistantReply::say(__('assistant.actions.name_updated', [
+                'from' => $before,
+                'to' => $tenant->name,
+            ]), [
+                __('assistant.suggestions.tenants'),
+            ]);
+        }
+
+        return AssistantReply::say(__('assistant.actions.tenant_updated', [
+            'name' => $before,
+            'fields' => $this->fieldList($changes),
+        ]), [
             __('assistant.suggestions.tenants'),
         ]);
     }
@@ -572,9 +589,22 @@ class AssistantActionExecutor
             return AssistantReply::say(__('assistant.actions.no_changes'));
         }
 
+        $before = $property->name;
         $property->fill($changes)->save();
 
-        return AssistantReply::say(__('assistant.actions.property_updated', ['name' => $property->name]), [
+        if (isset($changes['name'])) {
+            return AssistantReply::say(__('assistant.actions.property_name_updated', [
+                'from' => $before,
+                'to' => $property->name,
+            ]), [
+                __('assistant.suggestions.properties'),
+            ]);
+        }
+
+        return AssistantReply::say(__('assistant.actions.property_updated', [
+            'name' => $before,
+            'fields' => $this->fieldList($changes),
+        ]), [
             __('assistant.suggestions.properties'),
         ]);
     }
@@ -617,9 +647,49 @@ class AssistantActionExecutor
 
         $rental->fill($changes)->save();
 
-        return AssistantReply::say(__('assistant.actions.rental_updated', ['name' => $rental->name]), [
+        return AssistantReply::say(__('assistant.actions.rental_updated', [
+            'name' => $rental->name,
+            'fields' => $this->fieldList($changes),
+        ]), [
             __('assistant.suggestions.rentals'),
         ]);
+    }
+
+    /**
+     * Nombres de campo legibles para el mensaje de confirmacion:
+     * "Teléfono, Correo" en vez de "phone_number, email". Reutiliza las
+     * etiquetas de assistant.fields y les quita el articulo.
+     *
+     * @param  array<string, mixed>  $changes
+     */
+    private function fieldList(array $changes): string
+    {
+        // Campos del modelo -> clave en assistant.fields (algunos difieren:
+        // phone_number se dice "teléfono", no "phone_number").
+        $keyMap = [
+            'phone_number' => 'phone',
+            'default_city_code' => 'default_city',
+        ];
+
+        $labels = [];
+
+        foreach (array_keys($changes) as $field) {
+            $key = $keyMap[$field] ?? $field;
+            $label = __('assistant.fields.'.$key);
+
+            if ($label === 'assistant.fields.'.$key) {
+                $label = __("assistant.columns.{$field}");
+            }
+
+            if ($label === "assistant.columns.{$field}") {
+                $label = str_replace('_', ' ', $field);
+            }
+
+            $label = trim((string) preg_replace('/^(?:el|la|los|las|the)\s+/iu', '', $label));
+            $labels[] = $label === '' ? $field : mb_strtoupper(mb_substr($label, 0, 1)).mb_substr($label, 1);
+        }
+
+        return implode(', ', $labels);
     }
 
     /**
@@ -923,6 +993,7 @@ class AssistantActionExecutor
             'currency', 'invoice_due_days', 'legal_footer', 'default_city_code'];
 
         $data = $this->settings->current();
+        $changes = [];
         $changed = false;
 
         foreach ($allowed as $field) {
@@ -931,6 +1002,7 @@ class AssistantActionExecutor
             }
 
             $data[$field] = $params[$field];
+            $changes[$field] = $params[$field];
             $changed = true;
         }
 
@@ -940,7 +1012,9 @@ class AssistantActionExecutor
 
         $this->settings->save($data);
 
-        return AssistantReply::say(__('assistant.actions.settings_done'), [
+        return AssistantReply::say(__('assistant.actions.settings_done', [
+            'fields' => $this->fieldList($changes),
+        ]), [
             __('assistant.suggestions.settings'),
         ]);
     }
@@ -976,6 +1050,12 @@ class AssistantActionExecutor
 
         if ($document === null) {
             return AssistantReply::say(__('assistant.actions.document_failed'));
+        }
+
+        // El estado de cuenta de un periodo sin facturas es un documento
+        // vacio: mejor un mensaje claro que un PDF en cero.
+        if ($document->isEmpty()) {
+            return AssistantReply::say(__('assistant.replies.document_no_movements'));
         }
 
         $token = (string) Str::uuid();

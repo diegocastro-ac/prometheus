@@ -139,5 +139,9 @@ return [
         'needs_agreement' => 'The increase exceeds what the CPI gives. The reason is recorded in the notes.',
         'recalculated' => 'Chain recalculated',
         'missing_ipc' => 'The December CPI of the preceding year is missing. The official figure has not yet been loaded into the system.',
+        'notified' => 'Adjustment notified to the tenant',
+        'rental_missing' => 'The selected rental does not exist.',
+        'pactado_cap_title' => 'The agreed percentage was applied, not the full CPI.',
+        'pactado_cap_body' => 'The :year CPI was :legal % and :applied % was applied.',
     ],
 ];

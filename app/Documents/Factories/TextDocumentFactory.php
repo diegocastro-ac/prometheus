@@ -9,6 +9,7 @@ use App\Documents\Rendering\PlainTextRenderer;
 use App\Documents\RentInvoice;
 use App\Models\Invoice;
 use App\Models\RentAdjustment;
+use App\Models\Rental;
 
 /**
  * Familia de documentos en texto plano.
@@ -36,9 +37,9 @@ class TextDocumentFactory implements DocumentFactory
     /**
      * @param  list<Invoice>  $invoices
      */
-    public function monthlyStatement(string $period, array $invoices): MonthlyStatement
+    public function monthlyStatement(string $period, array $invoices, ?Rental $rental = null): MonthlyStatement
     {
-        return MonthlyStatement::forPeriod($period, $invoices, $this->renderer);
+        return MonthlyStatement::forPeriod($period, $invoices, $this->renderer, $rental);
     }
 
     public function rentInvoice(Invoice $invoice): RentInvoice

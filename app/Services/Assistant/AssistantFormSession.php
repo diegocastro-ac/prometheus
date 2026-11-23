@@ -20,6 +20,14 @@ class AssistantFormSession
     private const PREFIX = 'assistant.form.';
 
     /**
+     * Formularios de CREACION (tenant/property/rental): a diferencia de
+     * los wizards, NO interceptan los mensajes del chat — la IA sigue
+     * clasificando texto libre y el formulario es una via paralela para
+     * diligenciar campos con tipos correctos. Por eso vive en otra key.
+     */
+    private const CREATE_PREFIX = 'assistant.createform.';
+
+    /**
      * Formulario activo del usuario: {form, data} o null si no hay wizard.
      *
      * @return array{form: string, data: array<string, mixed>}|null
@@ -88,5 +96,37 @@ class AssistantFormSession
     public function clear(int $userId): void
     {
         session()->forget(self::PREFIX.$userId);
+    }
+
+    /**
+     * Formulario de creacion abierto: {entity, values} o null.
+     *
+     * @return array{entity: string, values: array<string, mixed>}|null
+     */
+    public function getCreate(int $userId): ?array
+    {
+        $data = session()->get(self::CREATE_PREFIX.$userId);
+
+        if (! is_array($data) || ! isset($data['entity']) || ! is_string($data['entity'])) {
+            return null;
+        }
+
+        return [
+            'entity' => $data['entity'],
+            'values' => is_array($data['values'] ?? null) ? $data['values'] : [],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     */
+    public function putCreate(int $userId, string $entity, array $values): void
+    {
+        session()->put(self::CREATE_PREFIX.$userId, ['entity' => $entity, 'values' => $values]);
+    }
+
+    public function clearCreate(int $userId): void
+    {
+        session()->forget(self::CREATE_PREFIX.$userId);
     }
 }

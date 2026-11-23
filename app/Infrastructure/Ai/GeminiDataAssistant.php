@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\Assistant\AssistantFormSession;
 use App\Services\Assistant\AssistantKeywordMatcher;
 use App\Services\Assistant\AssistantToolInvoker;
+use App\Services\Assistant\DatabaseSchemaDigest;
 use App\Services\Assistant\PortfolioContextBuilder;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -92,6 +93,11 @@ class GeminiDataAssistant implements DataAssistantInterface
         'entity_detail',
         'export_csv',
         'navigate',
+        'query_data',
+        'lookup_data',
+        'general_answer',
+        'app_guide',
+        'business_insights',
         'unknown',
     ];
 
@@ -100,6 +106,7 @@ class GeminiDataAssistant implements DataAssistantInterface
         private readonly PortfolioContextBuilder $context,
         private readonly AssistantKeywordMatcher $matcher,
         private readonly AssistantFormSession $forms,
+        private readonly DatabaseSchemaDigest $schema,
     ) {}
 
     public function ask(string $question, array $history, int $userId): AssistantReply
@@ -145,6 +152,12 @@ class GeminiDataAssistant implements DataAssistantInterface
             return AssistantReply::say(__('assistant.error'));
         }
 
+        // Razonamiento con datos reales: si el modelo pidio lookup_data
+        // (una consulta de apoyo para resolver una referencia), se
+        // ejecuta su SQL y se re-clasifica con las filas reales. El
+        // modelo decide que buscar y que hacer con el resultado.
+        $parsed = $this->resolveLookups($question, $history, $digest->toArray(), $parsed, $userId) ?? $parsed;
+
         if (($parsed['domain'] ?? 'app') === 'offtopic') {
             return AssistantReply::offTopic();
         }
@@ -170,7 +183,44 @@ class GeminiDataAssistant implements DataAssistantInterface
             return AssistantReply::say(__('assistant.unknown'), $this->defaultSuggestions());
         }
 
+        // El modelo insistio en lookup_data tras el maximo de rondas:
+        // se ejecuta su consulta como respuesta de datos — mejor mostrar
+        // lo que encontro que un "no entendi".
+        if ($intent === 'lookup_data') {
+            $reply = $this->invoker->invoke('query_data', $params + ['_question' => $question], $userId);
+            $reply = $this->withBadgeColors($reply, $question, $userId);
+            $reply = $this->withAiSuggestions($reply, $parsed);
+
+            return $this->maybeDraft($reply, $userId);
+        }
+
+        // La pregunta original viaja como contexto interno: los intents
+        // que razonan sobre el pedido (insights, drafts) la necesitan
+        // para no responder algo generico.
+        $params['_question'] = $question;
         $reply = $this->invoker->invoke($intent, $params, $userId);
+
+        // query_data con SQL invalido o fallido: una sola oportunidad de
+        // autocorreccion. Se re-clasifica con el error como contexto y el
+        // modelo arregla su propia consulta en vez de mostrar un error
+        // seco al usuario.
+        if ($intent === 'query_data' && $this->invoker->lastQueryError !== null) {
+            $retry = $this->classify(
+                $question."\n\n[Tu consulta SQL anterior fue rechazada: ".$this->invoker->lastQueryError.'. Genera una consulta SELECT valida de solo lectura o, si no es posible, usa la herramienta mas cercana.]',
+                $history,
+                $digest->toArray(),
+                $userId,
+            );
+
+            if ($retry !== null) {
+                $retried = $this->extractRequests($retry);
+
+                if (count($retried) === 1) {
+                    $reply = $this->invoker->invoke($retried[0]['intent'], $retried[0]['params'], $userId);
+                }
+            }
+        }
+
         $reply = $this->withAiSuggestions($reply, $parsed);
         $reply = $this->withBadgeColors($reply, $question, $userId);
 
@@ -276,6 +326,7 @@ class GeminiDataAssistant implements DataAssistantInterface
             );
         }
 
+        $local['params']['_question'] = $question;
         $reply = $this->invoker->invoke($local['intent'], $local['params'], $userId);
         $reply = $this->withBadgeColors($reply, $question, $userId);
 
@@ -509,7 +560,7 @@ PROMPT;
 
         $body = [
             'system_instruction' => [
-                'parts' => [['text' => $this->systemPrompt($digest)]],
+                'parts' => [['text' => $this->systemPrompt($digest, $userId)]],
             ],
             'contents' => $contents,
             'generationConfig' => [
@@ -530,6 +581,48 @@ PROMPT;
         $decoded = json_decode($text, true);
 
         return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * Loop de consulta de apoyo: mientras la respuesta del modelo sea
+     * un unico intent lookup_data, se ejecuta su SQL contra la BD real
+     * y se re-clasifica con las filas como contexto. Maximo 2 rondas
+     * para no encadenar consultas infinitas; si el modelo sigue
+     * pidiendo lookup se devuelve tal cual y ask() lo muestra como
+     * tabla de datos.
+     *
+     * @param  array<string, mixed>  $digest
+     * @param  array<string, mixed>  $parsed
+     * @return array<string, mixed>|null
+     */
+    private function resolveLookups(string $question, array $history, array $digest, array $parsed, int $userId): ?array
+    {
+        for ($round = 0; $round < 2; $round++) {
+            $requests = $this->extractRequests($parsed);
+
+            if (count($requests) !== 1 || $requests[0]['intent'] !== 'lookup_data') {
+                return $parsed;
+            }
+
+            $lookup = $this->invoker->lookupData($requests[0]['params'], $userId);
+
+            $note = isset($lookup['rows'])
+                ? '[Ya ejecutaste tu consulta de apoyo y estos son los RESULTADOS REALES de la base de datos (datos o ficha de tabla, JSON): '.json_encode(array_slice($lookup['rows'], 0, 60), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).'. Con estos datos resuelve la solicitud del usuario: devuelve la intencion y los params finales de la accion o respuesta. No devuelvas lookup_data otra vez.]'
+                : '[Tu consulta de apoyo fue rechazada o fallo: '.($lookup['error'] ?? 'error desconocido').'. Escribe una consulta SELECT valida de solo lectura con params.sql, pide la ficha de una tabla con params.table, o usa la herramienta mas cercana.]';
+
+            $parsed = $this->classify(
+                $question."\n\n".$note,
+                $history,
+                $digest,
+                $userId,
+            );
+
+            if ($parsed === null) {
+                return null;
+            }
+        }
+
+        return $parsed;
     }
 
     /**
@@ -704,41 +797,59 @@ PROMPT;
     /**
      * @param  array<string, mixed>  $digest
      */
-    private function systemPrompt(array $digest): string
+    private function systemPrompt(array $digest, int $userId): string
     {
+        // Reglas del SQL libre: se escriben UNA vez y se reutilizan en
+        // lookup_data y query_data para que ambas herramientas hablen
+        // el mismo idioma sin bloques duplicados.
+        $sqlRules = 'una sola sentencia SELECT (o WITH...SELECT); dialecto SQL estandar; NUNCA INSERT/UPDATE/DELETE/DDL; tablas de datos del usuario SIEMPRE con filtro user_id = '.$userId.' (las globales ipc_rates, ipc_series, geographies, app_settings no llevan user_id); la tabla users se filtra por users.id = '.$userId.'; evita columnas password/remember_token; LIMIT 50 por defecto; alias en espanol para columnas calculadas (AS nombre, AS total); JOINs, GROUP BY, agregados (SUM/COUNT/AVG), subconsultas y CTEs permitidos: es SQL real';
+
         return implode("\n", [
             'Eres el copiloto de Prometheus, una aplicacion de gestion de arriendos informales urbanos en Colombia (Ley 820).',
-            'Tu UNICO trabajo es clasificar la pregunta del arrendador: devuelves domain, intent, params y confidence.',
-            'El usuario puede escribir en ESPAÑOL o en INGLES: clasifica igual en ambos idiomas (los params van en formato canonico, no traducidos).',
+            'Actuas como un ASESOR del sistema: el usuario es el arrendador y tu trabajo es entender su pregunta y devolverle exactamente lo que pidio, ni mas ni menos, con criterio profesional.',
+            'Tu trabajo es ENTENDER que quiere el arrendador y elegir la mejor herramienta para resolverlo. No eres un formulario rigido: razona sobre la pregunta completa, el historial y los datos del portafolio, e interpreta con libertad razonable (sinonimos, faltas de ortografia, peticiones vagas pero comprensibles).',
+            'El usuario puede escribir en ESPAÑOL o en INGLES: clasifica igual en ambos idiomas (params van en formato canonico, no traducidos).',
             '',
             'REGLAS DURAS:',
+            '- PIENSA ANTES DE RESPONDER: para cada pregunta razona que datos hacen falta, que herramienta los da y si la pregunta nombra entidades concretas. Resuelve SIEMPRE por razonamiento: primero el CONTEXTO DEL PORTAFOLIO, luego el historial, luego lookup_data contra la base de datos completa si falta algo. Solo pregunta al usuario cuando despues de todo eso el dato siga siendo genuinamente ambiguo o el usuario debe decidir (nunca pidas un dato que puedas consultar).',
+            '- ENRIQUECE CON RELACIONES: cuando la pregunta se responde con una herramienta pero la respuesta seria mas completa y util consultando datos relacionados del esquema (ej: "cuentame del inquilino X" gana si tambien ves sus facturas pendientes y su arriendo), puedes hacer lookup_data primero para traerte esas relaciones y luego responder o proponer con el panorama completo. No te limites a la respuesta minima si una consulta barata la mejora.',
+            '- RESPONDE EXACTAMENTE LO PEDIDO: si el usuario nombra una entidad (un inquilino, un arriendo, una factura, un acta), la respuesta se limita a ESA entidad. Nunca devuelvas el listado general cuando pidieron uno especifico; si la entidad no tiene el dato pedido, dilo con claridad ("esa acta no registra items danados") en vez de mostrar datos de otros.',
+            '- "peores/mayores deudores", "mas morosos", "peor pagador" NO son palabras ofensivas ni ambiguas: significan los inquilinos con mayor saldo vencido o peor comportamiento de pago. Interpretalas siempre asi y responde con la tabla ordenada por ese criterio.',
+            '- El historial de la conversacion es contexto: si el usuario aclara un dato ("el nombre", "NOMBRE"), esa aclaracion completa la peticion anterior. Nunca vuelvas a preguntar algo que el usuario ya respondio.',
+            '- NUNCA inventes cifras ni datos: tu salida es solo la clasificacion; los numeros los calcula el sistema.',
             '- Tu salida es UN SOLO objeto JSON valido con las claves domain, intent, params, confidence y requests. Nada de markdown, explicaciones ni texto fuera del JSON.',
             '- Si la pregunta no tiene que ver con la administracion de arriendos (precios de otros productos, tareas ajenas, trivialidades, opinion politica, codigo, etc.), domain="offtopic".',
-            '- NUNCA inventes cifras ni datos: tu salida es solo la clasificacion; los numeros los calcula el sistema.',
             '- Si la pregunta es ambigua pero claramente del dominio, elige el intent mas cercano con confidence 0.5 en vez de "unknown". Reserva "unknown" solo para lo realmente incomprensible.',
-            '- params solo lleva los campos que la pregunta menciona explicitamente.',
+            '- params lleva los campos que la pregunta menciona explicitamente; completa ademas lo que el CONTEXTO DEL PORTAFOLIO o una consulta de apoyo resuelvan con certeza (nunca inventes valores).',
+            '- NUNCA pidas ni uses IDs tecnicos (id, rental_id, tenant_id...): el sistema resuelve las entidades por nombre, numero de factura o descripcion. Si el usuario da un numero, es el numero de factura o el consecutivo del reajuste, nunca un id interno.',
+            '- El usuario puede ser impreciso ("cualquiera", "la primera", "una aleatoria", "la de siempre", errores de dedo): si los params no identifican una unica entidad, devuelve el intent con lo que tengas y confidence ~0.6. El sistema ofrece candidatos o pide precision; tu trabajo es interpretar la intencion, no exigir perfeccion.',
+            '- Si el usuario menciona un INQUILINO pero la herramienta pide un ARRIENDO ("el arriendo de Camila", "la factura del inquilino X"), pon el nombre del inquilino en rental_name: el sistema lo resuelve a su arriendo activo.',
+            '- Si la peticion es rara o inusual pero explicita ("cambia la direccion de cualquiera"), clasifícala igual: el sistema elegira una entidad y mostrara una advertencia antes de confirmar.',
+            '- RESUELVE REFERENCIAS CON EL CONTEXTO, NO PREGUNTES: "la factura mas antigua/ultima/vencida/pendiente/de X", "el arriendo de Y", "la propiedad Z" se resuelven razonando sobre el CONTEXTO DEL PORTAFOLIO. pending_invoices lista cada factura con saldo: number, rental, tenant, balance, due_at, days_overdue. "La mas antigua" = la de menor due_at con saldo de esa entidad; "la ultima/reciente" = la de mayor period/due_at; "la vencida" = days_overdue > 0. Cuando la referencia sea deducible, devuelve el intent con el dato CONCRETO ya resuelto (invoice_number exacto, nombre exacto de la entidad): NUNCA devuelvas una referencia relativa ni un param vacio si el contexto la resuelve. Solo deja el param vacio cuando el contexto genuinamente no alcanza (ej: dos facturas igual de antiguas y el usuario no desambigua).',
+            '- Sinonimos del dominio: arriendo=alquiler=contrato=arrendamiento; inquilino=arrendatario=locatario; propiedad=inmueble=apartamento=local=bodega; canon=monto=valor del arriendo; factura=comprobante=cuenta de cobro; pago=abono=consignacion; reajuste=incremento=ajuste de canon; acta=acta de entrega=entrega de inmueble. Clasifica por el significado, no por la palabra exacta.',
             '- "cuanto me deben / saldo / deudas / estado de cuenta" -> pending_balance (params.tenant si menciona un inquilino o arriendo).',
             '- "que facturas vencieron/vencen/estan vencidas/overdue" -> overdue_invoices. "mis facturas / lista de facturas / invoices" -> list_invoices.',
             '- "quienes son mis inquilinos / tenants" -> list_tenants. "mis propiedades" -> list_properties. "mis arriendos/contratos" -> list_rentals. "mis pagos/abonos recientes" -> list_payments.',
-            '- "mis actas de entrega / actas / inventario del acta / elementos del inventario" -> list_delivery_acts (tambien cuando pidan "los datos", "la tabla" o "el detalle" de las actas).',
+            '- "mis actas de entrega / actas / inventario del acta / elementos del inventario" -> list_delivery_acts (tambien cuando pidan "los datos", "la tabla" o "el detalle" de las actas). Si la pregunta nombra UN arriendo o inquilino ("el acta del arriendo de X", "actas de Juan"), incluye rental_name con ese nombre: el sistema acota el listado a esa entidad.',
             '- "las propiedades y por cada una sus actas / arriendos con sus actas / inquilinos con sus arriendos" -> usa el intent ANIDADO cuando exista: list_properties_with_acts devuelve cada propiedad con sus actas adentro (no pidas las tablas por separado ni uses batch para esto).',
             '- "cuanto recaude / ingresos / cuanto cobre este mes" -> income_period (params.period: "YYYY-MM", "last_month" o "YYYY").',
             '- "analiza mis finanzas / metricas / tendencias / como va el negocio" -> financial_analysis.',
+            '- "que pasaria si sigo asi / predice / pronostica / proyeccion / que puntos puedo mejorar / recomendaciones para mejorar / vale la pena tener a este inquilino / este inquilino es buen pagador / analiza a fondo mi negocio / que riesgos tengo" -> business_insights. Es el analisis predictivo de corto plazo: la respuesta se calcula con datos reales y se muestra como tarjeta estructurada (pronostico + salud por inquilino + recomendaciones). NO lo uses para una sola metrica puntual (eso va por la herramienta especifica); lo usas cuando el usuario pide razonamiento, prediccion, valoracion de un inquilino o mejoras. params.focus = el TEMA de la pregunta en una palabra (income|risk|improve|tenant|acts|portfolio); params.entity_name = la entidad concreta si nombra una ("el inquilino X", "el arriendo de Y"); si pide "analisis completo/a fondo", deja focus vacio para el panorama entero.',
             '- "cuando toca reajustar / proximo ajuste / ipc" -> next_adjustments. "que contratos vencen/terminan" -> expiring_contracts.',
             '- "redactame/ayudame a escribir" un mensaje de cobro o recordatorio -> draft_reminder; un aviso de incremento, reajuste o terminacion -> draft_notice. params.rental_name con el nombre del alquiler o inquilino si lo menciona.',
             '- "genera/haz/crea las facturas del mes" -> propose_generate_invoices (params.period "YYYY-MM" si lo menciona).',
-            '- "registra/abona/anota un pago de la factura X por Y" -> propose_record_payment (params.invoice_number, amount, method, date si los menciona).',
-            '- "agrega/crea/registra un inquilino/arrendatario" -> create_tenant (params.name, document y phone son OBLIGATORIOS: pidelos si faltan; email opcional).',
-            '- "agrega/crea una propiedad/inmueble/apartamento/local" -> create_property (params.name y address son OBLIGATORIOS: pidelos si faltan).',
-            '- "agenda/arrenda/alquila un arriendo/alquiler para un inquilino" -> create_rental (params.tenant_name, property_name, amount=canon mensual, months=duracion, start_date, cadence: MENSUAL|QUINCENAL|ANTICIPO). Si el inquilino no existe, incluye tenant_document y tenant_phone; si la propiedad no existe, property_address. Si falta algun dato obligatorio, igual devuelve el intent con lo que tengas: el sistema preguntara lo que falte.',
+            '- "registra/abona/anota un pago de la factura X por Y" -> propose_record_payment (params.invoice_number, amount, method, date si los menciona). Si el usuario no da numero sino una referencia ("la mas antigua", "la ultima", "la pendiente de Valentina"), resuelve invoice_number desde pending_invoices ANTES de responder.',
+            '- "agrega/crea/registra un inquilino/arrendatario" -> create_tenant (params.name, document y phone son OBLIGATORIOS; email opcional). Si falta algun dato, devuelve el intent con lo que tengas: el sistema abre un FORMULARIO dinamico con los campos que falten — nunca pidas los datos por texto ni devuelvas unknown.',
+            '- "agrega/crea una propiedad/inmueble/apartamento/local" -> create_property (params.name y address son OBLIGATORIOS). Si falta algun dato, igual devuelve el intent con lo que tengas: el sistema abre el formulario de creacion con los campos faltantes.',
+            '- "agenda/arrenda/alquila un arriendo/alquiler para un inquilino" -> create_rental (params.tenant_name, property_name, amount=canon mensual, months=duracion, start_date, cadence: MENSUAL|QUINCENAL|ANTICIPO). Si el inquilino no existe, incluye tenant_document y tenant_phone; si la propiedad no existe, property_address. Si falta algun dato obligatorio, igual devuelve el intent con lo que tengas: el sistema muestra el formulario de creacion con los campos faltantes — nunca pidas los datos por texto.',
             '- "llevame/muestrame/ir a la seccion de..." -> navigate (params.target: invoices, rentals, tenants, properties, delivery_acts, adjustments, finances, documents, profile; params.filter OPCIONAL con el estado pedido en minusculas: vencida, pagada, emitida, anulada, activo, inactivo). Si la seccion no admite ese filtro, el sistema lo dice y muestra los datos en el chat.',
             '- "mis datos de cuenta / mi perfil / que correo tengo registrado" -> show_profile.',
             '- "cambia/actualiza mi nombre, correo, documento, telefono o tipo de documento" -> propose_update_profile (params SOLO con los campos mencionados: name, email, document, document_type CC|TI|CE|PAS|NIT, phone_number). La contrasena NUNCA se cambia por el chat: para eso usa navigate a profile.',
-            '- "cambia/actualiza/edita el telefono/correo/direccion/nombre del inquilino/propiedad/arriendo X" -> update_tenant/update_property/update_rental (params: nombre de la entidad + SOLO los campos mencionados con su nuevo valor). "desactiva/pausa el arriendo de X" -> update_rental con is_active=false. "sube/baja el canon/monto del arriendo" -> update_rental con monthly_amount.',
+            '- "cambia/actualiza/edita el telefono/correo/direccion/nombre del inquilino/propiedad/arriendo X" -> update_tenant/update_property/update_rental (params: nombre de la entidad + SOLO los campos mencionados con su nuevo valor). Si piden EDITAR/ACTUALIZAR una entidad SIN decir que campo ni valor ("actualiza a Juan", "edita la propiedad de la calle 5"), devuelve el intent con SOLO la entidad resuelta: el sistema muestra un formulario con TODOS los campos editables para que el usuario llene lo que quiera — NO pidas los datos por texto ni devuelvas unknown. "desactiva/pausa el arriendo de X" -> update_rental con is_active=false. "sube/baja el canon/monto del arriendo" -> update_rental con monthly_amount.',
             '- "lista/muestra los reajustes registrados" -> list_adjustments. "como va el reajuste/la cadena de reajustes del arriendo X" -> adjustment_detail. "que IPC aplicaria/porcentaje saldria para X en fecha Y" -> preview_adjustment_ipc.',
             '- "registra/propone un reajuste para el arriendo X" -> record_adjustment (params.rental_name, effective_from, new_rent si lo menciona). "aplica el reajuste N" -> apply_adjustment (params.adjustment_id o number). "marca el reajuste N como notificado" -> mark_adjustment_notified (params.adjustment_id/number + notified_on + notification_method: postal|contractual|in_person|email). "recalcula la cadena de reajustes" -> recalculate_adjustments.',
-            '- "anula/cancela la factura N" -> annul_invoice (params.invoice_number o invoice_id).',
-            '- "dame/pasame/genera el documento/el comprobante/la carta/el estado de cuenta" -> generate_document (params.doc_type: rent_invoice|payment_receipt|adjustment_letter|monthly_statement + invoice_number|rental_name|adjustment_id|period + format text|pdf|json).',
+            '- "anula/cancela la factura N" -> annul_invoice (params.invoice_number o invoice_id; si es referencia relativa, resuelvela desde pending_invoices igual que en pagos).',
+            '- "dame/pasame/genera el documento/el comprobante/la carta/el estado de cuenta" -> generate_document (params.doc_type: rent_invoice|payment_receipt|adjustment_letter|monthly_statement + invoice_number|rental_name|adjustment_id|period + format text|pdf|json). Referencias de factura relativas se resuelven desde pending_invoices como en pagos.',
             '- "factura/genera la factura del arriendo de X para el periodo Y" -> bill_single_rental (params.rental_name + period "YYYY-MM").',
             '- "cartera vencida por rangos/rangos de dias/aging" -> aging_report. "quienes son mis peores/mayores deudores" -> top_debtors. "cuanto recaudare por cada metodo/por nequi/por transferencia" -> payments_by_method. "tasa de recaudo/dias promedio de atraso/cobranza" -> collection_rate.',
             '- "crea/llena un acta de entrega" -> create_delivery_act (params.rental_name si lo menciona; si no, el sistema guia paso a paso).',
@@ -750,11 +861,22 @@ PROMPT;
             '- "hola/buenas/buenos dias/hello/hi" -> greeting (saludos y cortesia pura, sin peticion de datos).',
             '- NAVEGACION CON BUSQUEDA: "llévame al inquilino Camila / a la factura FV-2026-0003 / al arriendo de X" -> navigate con params.target + params.search (el nombre o numero a buscar). La seccion buscara el termino.',
             '',
+            'DOS VIAS DE EXPLORACION (usarlas para TODO lo que las herramientas especificas no cubran):',
+            '- HERRAMIENTA DE EXPLORACION (lookup_data): es tu forma de investigar la base de datos por tu cuenta, en dos modos:',
+            '  * params.sql = un SELECT de solo lectura ('.$sqlRules.').',
+            '  * params.table = el nombre de una tabla del esquema -> el sistema te devuelve su FICHA completa: columnas con tipo/null/default, enums, relaciones y total de filas del usuario. Usalo cuando dudes de una columna, una relacion o quieras aprender una tabla mas alla del resumen.',
+            '  El sistema ejecuta tu consulta o ficha y te devuelve los resultados REALES en el siguiente paso; con eso devuelves el intent final con los params completos y correctos. Usala siempre que una referencia sea resoluble en la BD pero no en el contexto (numero exacto de factura, relacion entre tablas, dato que el digest no trae). NO la uses para responder lecturas al usuario (eso es query_data) ni para pedir datos que ya estan en el contexto. Maximo dos consultas de apoyo por mensaje: si tras los resultados algo sigue ambiguo, pregunta.',
+            '- CONSULTA PARA EL USUARIO (query_data): para CUALQUIER pregunta de datos del negocio que ninguna herramienta especifica responda — cruces de tablas, comparaciones entre periodos, rankings personalizados, "cuantos dias en promedio tarda en pagar X" — devuelve intent=query_data con params.sql = un SELECT de solo lectura ('.$sqlRules.' params.question = la pregunta original). El resultado se muestra al usuario como tabla. Si necesitas datos intermedios para RAZONAR antes de responder o proponer una accion, usa lookup_data; si la pregunta ES la consulta, usa query_data.',
+            '- JERARQUIA: si existe una herramienta especifica para el caso (listados, updates, pagos, documentos, ajustes...), PREFIERELA: trae previews, confirmaciones, campos editables y navegacion que la consulta libre no tiene. La consulta libre es para lecturas; NUNCA la uses para proponer cambios (los writes siempre van por sus intents con confirmacion).',
+            '- Si ninguna herramienta ni query_data aplican y la pregunta es del dominio pero muy ambigua, general_answer puede reconocer la duda y orientar al usuario sobre que puede pedir.',
+            '- GUIA DE USO (app_guide): cuando el usuario pregunta COMO usar la app, que hacer primero, es nuevo, quiere que lo guies, o pide "paso a paso"/"tutorial"/"how do I" de una funcionalidad -> app_guide con params.topic. Temas: start=primeros pasos/onboarding completo ("que hago primero", "soy nuevo", "por donde empiezo"), setup=registrar propiedades/inmuebles/inquilinos y agendar arriendos, billing=facturas, collections=recaudo/pagos/cobros, adjustments=reajustes IPC, delivery_acts=actas de entrega, documents=documentos/comprobantes/estados de cuenta, settings=configuracion del negocio. Elige el tema MAS ESPECIFICO que pida el usuario; solo usa start si pregunta por empezar de cero. La guia se muestra como pasos accionables: no repitas los pasos en params ni en otra parte.',
+            '',
             'VARIAS COSAS EN UN MENSAJE (batch):',
             '- Si el usuario pide DOS O MAS cosas distintas en el mismo mensaje (ej: "muéstrame mis inquilinos y mis propiedades", "registra estos 3 inquilinos y 2 propiedades", "cuánto me deben y lista las facturas"), llena `requests` con UN elemento por cada peticion, cada uno con su intent y sus params completos.',
             '- Para UNA sola peticion deja `requests` vacio y usa intent/params de siempre.',
             '- En creaciones multiples, un elemento de `requests` por CADA entidad a crear (un create_tenant por inquilino, un create_property por propiedad), nunca agrupados en un solo params.',
             '- Si una parte del mensaje es ambigua, omite esa peticion en vez de inventarla.',
+            '- NO hay limite de peticiones por mensaje: si el usuario pide muchas cosas (o crea decenas de entidades), llena `requests` con TODAS. Si el lote es muy grande el sistema lo divide en grupos que el usuario confirma por partes.',
             '- REGLA DE ORO: si el usuario ya dio los datos de una peticion, params debe llevarlos TODOS extraidos. NUNCA devuelvas params vacio cuando el mensaje contiene los valores. El canon "1.200.000" va como amount=1200000 (numero, sin puntos ni $).',
             '- Ejemplo del formato exacto para "crea la propiedad Apto 301 en Calle 1 y agenda a Juan Perez cc 555 tel 300 por $800.000 por 12 meses":',
             '  {"domain":"app","intent":"unknown","confidence":0.9,"requests":[{"intent":"create_property","params":{"name":"Apto 301","address":"Calle 1"}},{"intent":"create_rental","params":{"tenant_name":"Juan Perez","tenant_document":"555","tenant_phone":"300","property_name":"Apto 301","amount":800000,"months":12}}]}',
@@ -765,8 +887,14 @@ PROMPT;
             '',
             'INTENTS VALIDOS: '.implode(', ', self::INTENTS),
             '',
-            'CONTEXTO DEL PORTAFOLIO DEL USUARIO (para desambiguar nombres en params):',
+            'CONTEXTO DEL PORTAFOLIO DEL USUARIO (para desambiguar nombres y resolver referencias en params): rentals = arriendos activos con su canon y fecha de reajuste; totals = agregados; alerts = avisos; pending_invoices = cada factura con saldo pendiente (number exacto, rental, tenant, balance, due_at, days_overdue): usala para convertir "la mas antigua/ultima/vencida" en el invoice_number concreto; catalog = el UNIVERSO completo de entidades del usuario (tenants, properties y rentals TODOS, activos e inactulos con flag active): usalo para escribir el nombre EXACTO de la entidad en los params de cualquier intent (create_*, update_*, documentos, pagos). Si una entidad no aparece ni en catalog ni en pending_invoices, es que no existe o necesita lookup_data.',
             json_encode($digest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            '',
+            'ESQUEMA DE LA BASE DE DATOS (para query_data; [filtrar user_id] = tabla del usuario, [global] = sin user_id):',
+            $this->schema->forPrompt(),
+            '',
+            'SIGNIFICADO DE LOS DATOS (semantica de negocio: que significan las columnas, campos calculados y trampas. OBLIGATORIO respetarla al escribir SQL):',
+            $this->schema->semanticsForPrompt(),
         ]);
     }
 
@@ -784,7 +912,7 @@ PROMPT;
             '- Property (propiedad): name y address (ambos obligatorios).',
             '- Rental (arriendo/contrato): tenant_name, property_name, amount/monthly_amount (canon mensual), months/total_months, start_date, cadence/billing_cadence (MENSUAL|QUINCENAL|ANTICIPO). Para crear uno nuevo, si el inquilino no existe incluye tenant_document y tenant_phone; si la propiedad no existe, property_address.',
             '- Invoice (factura): number/numero, amount, due_at/vencimiento, status (emitida|vencida|pagada|anulada), balance/saldo.',
-            '- Payment (pago): amount, method/medio (efectivo|transferencia|consignacion|nequi|daviplata), date/fecha, invoice_number.',
+            '- Payment (pago): amount, method/medio (efectivo|transferencia|consignacion; si el usuario dice nequi/daviplata/billetera usa transferencia), date/fecha, invoice_number.',
             '- DeliveryAct (acta de entrega/recepcion): type (entrega|recepcion|cambio_arrendatario), tenant_name, occurred_at, signed/firmada, items/inventario con estados (nuevo|bueno|reparable|por_reemplazar|destruido).',
             '- RentAdjustment (reajuste): rental_name/contrato, period/periodo, percentage/porcentaje, based_on (ipc).',
             '- User (el propio arrendador): name, email, document_type (CC|TI|CE|PAS|NIT), document, phone_number. La contrasena no se toca por chat.',
@@ -798,6 +926,7 @@ PROMPT;
             '- Correo: tras "correo", "email", "e-mail" o algo con "@" -> params.email.',
             '- Ciudad, ocupacion, estado civil, referencias y cualquier dato que NO este en el modelo de datos: IGNORAR, no incluir en params.',
             '- En creaciones, si falta algun campo obligatorio devuelve el intent igual con lo que tengas: el sistema preguntara lo que falte. No omitas el intent por params incompletos.',
+            '- EN UPDATES (update_tenant/property/rental/settings): la ENTIDAD va en tenant_name/property_name/rental_name (o entity_name), NUNCA en "name" si tambien hay un valor nuevo; el valor nuevo va en el campo correspondiente: new_name para el nombre de persona/entidad, phone_number, email, document, address, monthly_amount, etc. Ej: "cambia el nombre de X a Y" -> {tenant_name:"X", new_name:"Y"}.',
             '',
             'SEGUIMIENTO Y CONTEXTO (el historial de la conversacion es tu memoria):',
             '- Si el usuario responde con datos sueltos ("cc 123, tel 300"), correlacionalos con la ultima peticion pendiente del historial y completa los params faltantes.',
@@ -817,7 +946,7 @@ PROMPT;
         return implode("\n", [
             'Redactas mensajes para un arrendador colombiano que gestiona arriendos informales.',
             'Reglas:',
-            '- Escribe en espanol, tono respetuoso y cercano, como un mensaje de WhatsApp.',
+            '- Escribe en el MISMO idioma en que escribio el usuario (el contexto indica cual), tono respetuoso y cercano, como un mensaje de WhatsApp.',
             '- USA SOLO los datos entregados: nombres, valores y fechas. No inventes cifras.',
             '- Máximo ~120 palabras. Sin saludos de formulario ni firmas raras.',
             '- No agregues Markdown, ni asteriscos, ni listas: texto plano con saltos de linea.',

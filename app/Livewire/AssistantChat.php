@@ -83,6 +83,16 @@ class AssistantChat extends Component
      */
     public ?string $assistantModel = null;
 
+    /**
+     * Cancelacion best-effort de la respuesta en curso: el request de la IA
+     * no se puede abortar en PHP, pero si `cancelPending` llega mientras
+     * `send()` sigue procesando, la respuesta se descarta al terminar.
+     * Si llega tarde (encolada), el flag queda en true y el siguiente
+     * send() lo resetea al inicio, asi que nunca descarta una respuesta
+     * que no corresponde.
+     */
+    public bool $cancelPendingReply = false;
+
     /** Modelos gratuitos que el usuario puede elegir desde el drawer. */
     private const ASSISTANT_MODELS = [
         'gemini-3.8-flash',
@@ -255,6 +265,10 @@ class AssistantChat extends Component
 
         $this->input = '';
         $isFirstMessage = $this->messages === [];
+        // Limpia cancelaciones encoladas de requests anteriores: solo una
+        // cancelacion que llegue MIENTRAS esta respuesta se esta generando
+        // debe descartarla.
+        $this->cancelPendingReply = false;
 
         $this->ensureChat();
         $this->pushMessage('user', $question);
@@ -289,6 +303,35 @@ class AssistantChat extends Component
             return;
         }
 
+        // Cola de un batch grande: "continuar" propone el siguiente grupo
+        // de acciones; "cancela" la descarta. Otro tema no la toca — la
+        // cola sigue guardada para un continuar posterior.
+        $batchSession = app(\App\Services\Assistant\AssistantFormSession::class)->get($this->userId());
+
+        if (($batchSession['form'] ?? null) === 'batch_continue') {
+            if (preg_match('/\b(cancela\w*|cancelar|olvida\w*|stop|cancel)\b/iu', $question)) {
+                app(\App\Services\Assistant\AssistantFormSession::class)->clear($this->userId());
+                $this->pushReply(AssistantReply::say(__('assistant.replies.form_cancelled')));
+                $this->dispatch('assistant-scroll');
+
+                return;
+            }
+
+            if (preg_match('/\b(continuar|continue|sigue|seguir|next|go on|que sigue|resto|rest\w*)\b/iu', $question)) {
+                try {
+                    $reply = app(\App\Services\Assistant\AssistantToolInvoker::class)
+                        ->invoke('continue_batch', [], $this->userId());
+                } catch (\Throwable) {
+                    $reply = AssistantReply::say(__('assistant.error'));
+                }
+
+                $this->pushReply($reply);
+                $this->dispatch('assistant-scroll');
+
+                return;
+            }
+        }
+
         try {
             // Todo pasa por la IA: el historial viaja en apiHistory() para
             // que resuelva follow-ups y referencias con contexto real.
@@ -303,6 +346,16 @@ class AssistantChat extends Component
             $reply = AssistantReply::say(__('assistant.error'));
         }
 
+        // Si el usuario cancelo mientras la IA pensaba, su mensaje queda
+        // pero la respuesta se descarta con un aviso corto.
+        if ($this->cancelPendingReply) {
+            $this->cancelPendingReply = false;
+            $this->pushReply(AssistantReply::say(__('assistant.replies.request_cancelled')));
+            $this->dispatch('assistant-scroll');
+
+            return;
+        }
+
         $this->pushReply($reply);
 
         if ($isFirstMessage) {
@@ -313,12 +366,152 @@ class AssistantChat extends Component
     }
 
     /**
+     * Respuesta del input tipado del wizard (fecha, numero, switch, select):
+     * entra al mismo pipeline que un mensaje escrito, asi que el handler
+     * del formulario la parsea igual que texto libre.
+     */
+    public function answerFormField(string $value): void
+    {
+        $value = trim($value);
+
+        if ($value === '') {
+            return;
+        }
+
+        $this->input = $value;
+        $this->send();
+    }
+
+    /**
+     * Formulario dinamico del chat (update o creacion): el usuario lleno
+     * los campos que queria (cada uno con su tipo real) y el sistema
+     * arma la propuesta — sin pasar por el clasificador porque los
+     * valores ya vienen tipados y el wizard sabe que entidad es.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function submitForm(array $values): void
+    {
+        try {
+            $reply = app(\App\Services\Assistant\AssistantToolInvoker::class)
+                ->submitForm($values, $this->userId());
+        } catch (\Throwable) {
+            $reply = AssistantReply::say(__('assistant.error'));
+        }
+
+        $this->pushReply($reply);
+        $this->dispatch('assistant-scroll');
+    }
+
+    /**
      * Chip de pregunta sugerida: llena el input y envia de una vez.
      */
     public function askSuggestion(string $question): void
     {
         $this->input = $question;
         $this->send();
+    }
+
+    /**
+     * Boton de accion dentro del modal de preview (guia, insights):
+     * cierra el modal y envia el prompt como mensaje normal del chat,
+     * que ademas hace scroll al final.
+     */
+    public function askFromPreview(string $question): void
+    {
+        $this->preview = null;
+        $this->askSuggestion($question);
+    }
+
+    /**
+     * Boton "cancelar" del indicador de pensamiento: marca el request para
+     * que su respuesta se descarte cuando termine (ver send()).
+     */
+    public function cancelPending(): void
+    {
+        $this->cancelPendingReply = true;
+    }
+
+    /**
+     * Abre el modal con el analisis predictivo completo del mensaje.
+     */
+    public function previewInsights(int $messageIndex): void
+    {
+        $insights = $this->messages[$messageIndex]['data']['insights'] ?? null;
+
+        if (! is_array($insights)) {
+            return;
+        }
+
+        $this->preview = [
+            'kind' => 'insights',
+            'title' => __('assistant.insights.title'),
+            'payload' => $insights,
+            'action_index' => null,
+            'action' => null,
+        ];
+    }
+
+    /**
+     * Abre el modal con la guia de uso completa del mensaje.
+     */
+    public function previewGuide(int $messageIndex): void
+    {
+        $guide = $this->messages[$messageIndex]['data']['guide'] ?? null;
+
+        if (! is_array($guide) || empty($guide['steps'])) {
+            return;
+        }
+
+        $this->preview = [
+            'kind' => 'guide',
+            'title' => (string) ($guide['title'] ?? __('assistant.guide.fallback_title')),
+            'payload' => $guide,
+            'action_index' => null,
+            'action' => null,
+        ];
+    }
+
+    /**
+     * Chip de candidato en una respuesta ambigua ("¿cuál Camila?").
+     * Re-ejecuta la intencion original con la entidad elegida via
+     * _entity_ref: el nombre puede seguir siendo identico para otro
+     * registro, la ref es lo que desambigua de verdad.
+     */
+    public function pickCandidate(int $index, string $token): void
+    {
+        $data = $this->messages[$index]['data'] ?? null;
+        $resolution = is_array($data) ? ($data['pending_resolution'] ?? null) : null;
+        $candidates = is_array($data) ? ($data['candidates'] ?? null) : null;
+
+        if (! is_array($resolution) || ! is_array($candidates)) {
+            return;
+        }
+
+        $picked = collect($candidates)->first(
+            fn (array $candidate): bool => ($candidate['token'] ?? null) === $token,
+        );
+
+        if ($picked === null) {
+            return;
+        }
+
+        $params = is_array($resolution['params'] ?? null) ? $resolution['params'] : [];
+        $params['_entity_ref'] = $token;
+        $params[(string) ($resolution['name_key'] ?? 'name')] = (string) ($picked['name'] ?? '');
+
+        try {
+            $reply = app(\App\Services\Assistant\AssistantToolInvoker::class)->invoke(
+                (string) ($resolution['intent'] ?? 'entity_detail'),
+                $params,
+                $this->userId(),
+            );
+        } catch (\Throwable) {
+            $reply = AssistantReply::say(__('assistant.error'));
+        }
+
+        $this->pushReply($reply);
+        $this->dispatch('assistant-scroll');
     }
 
     /**
@@ -358,8 +551,11 @@ class AssistantChat extends Component
         $this->previewEdits = [];
         $reply = app(AssistantActionExecutor::class)->execute($action, $this->userId());
 
+        // La accion se resuelve EN el mismo mensaje que la propuso:
+        // el documento/resultado queda en esa burbuja y la tarjeta pasa
+        // a "Accion completada". No se abre un mensaje nuevo.
         $this->resolveAction($index);
-        $this->pushReply($reply);
+        $this->applyReplyToMessage($index, $reply);
         $this->dispatch('assistant-scroll');
     }
 
@@ -374,7 +570,7 @@ class AssistantChat extends Component
         $this->pendingForm = null;
         $this->previewEdits = [];
         $this->resolveAction($index);
-        $this->pushReply(AssistantReply::say(__('assistant.action_cancelled')));
+        $this->applyReplyToMessage($index, AssistantReply::say(__('assistant.action_cancelled')));
         $this->dispatch('assistant-scroll');
     }
 
@@ -391,7 +587,7 @@ class AssistantChat extends Component
         app(\App\Services\Assistant\AssistantFormSession::class)->clear($this->userId());
         $this->pendingForm = null;
         $this->previewEdits = [];
-        $this->pushReply(AssistantReply::say(__('assistant.form_cancelled')));
+        $this->pushReply(AssistantReply::say(__('assistant.replies.form_cancelled')));
         $this->dispatch('assistant-scroll');
     }
 
@@ -431,6 +627,30 @@ class AssistantChat extends Component
     }
 
     /**
+     * Abre el modal con el documento generado embebido (iframe): el
+     * archivo se sirve por la ruta publica con el mismo control de
+     * acceso por usuario que la descarga.
+     */
+    public function previewFile(int $index): void
+    {
+        $file = $this->messages[$index]['data']['file'] ?? null;
+
+        if (! is_array($file) || empty($file['token'])) {
+            return;
+        }
+
+        $this->preview = [
+            'kind' => 'file',
+            'title' => (string) ($file['filename'] ?? __('assistant.preview.file_title')),
+            'file_url' => route('assistant.file', ['token' => $file['token']]),
+            'file_name' => (string) ($file['filename'] ?? ''),
+            'file_token' => (string) $file['token'],
+            'columns' => [],
+            'rows' => [],
+        ];
+    }
+
+    /**
      * Abre el modal con la tabla de datos completa de un mensaje (sin el
      * recorte de 10 filas que muestra la burbuja).
      */
@@ -439,14 +659,21 @@ class AssistantChat extends Component
         // La tabla puede vivir en `data` (respuesta simple) o dentro de una
         // seccion de una respuesta batch.
         $rows = $this->messages[$messageIndex]['data'][$key] ?? null;
+        $sourceData = $this->messages[$messageIndex]['data'] ?? null;
 
         if ($rows === null) {
             foreach ($this->messages[$messageIndex]['sections'] ?? [] as $section) {
                 $rows = $section['data'][$key] ?? null;
                 if ($rows !== null) {
+                    $sourceData = $section['data'] ?? null;
                     break;
                 }
             }
+        }
+
+        // 'candidates' no es una tabla de datos: se pinta como chips.
+        if ($key === 'candidates') {
+            return;
         }
 
         if (! is_array($rows) || $rows === [] || ! isset($rows[0]) || ! is_array($rows[0])) {
@@ -455,7 +682,7 @@ class AssistantChat extends Component
 
         $this->preview = [
             'kind' => 'data',
-            'title' => __('assistant.preview.data_title', ['name' => $this->dataTitle($key)]),
+            'title' => __('assistant.preview.data_title', ['name' => $this->dataTitle($key, is_array($sourceData) ? $sourceData : null)]),
             'columns' => array_map(
                 fn (string $column): string => __("assistant.columns.{$column}") !== "assistant.columns.{$column}"
                     ? __("assistant.columns.{$column}")
@@ -493,12 +720,14 @@ class AssistantChat extends Component
 
         foreach ($sources as $data) {
             foreach ($data as $key => $rows) {
-                if (! is_array($rows) || $rows === [] || ! isset($rows[0]) || ! is_array($rows[0])) {
+                // 'candidates' se pinta como chips, no como tabla.
+                if ($key === 'candidates'
+                    || ! is_array($rows) || $rows === [] || ! isset($rows[0]) || ! is_array($rows[0])) {
                     continue;
                 }
 
                 $tables[] = [
-                    'title' => $this->dataTitle($key),
+                    'title' => $this->dataTitle($key, is_array($data) ? $data : null),
                     'columns' => array_map(
                         fn (string $column): string => __("assistant.columns.{$column}") !== "assistant.columns.{$column}"
                             ? __("assistant.columns.{$column}")
@@ -811,8 +1040,17 @@ class AssistantChat extends Component
      * Titulo legible de una tabla de datos: primero el mapa dedicado
      * (data_titles), luego columns y al final el nombre capitalizado.
      */
-    public function dataTitle(string $key): string
+    public function dataTitle(string $key, ?array $data = null): string
     {
+        // Titulo contextual: respuestas de entidad unica pueden traer
+        // `_titles` => {clave: "Arriendo de X"} para que la tabla diga
+        // exactamente de quien es el detalle pedido.
+        $custom = $data['_titles'][$key] ?? null;
+
+        if (is_string($custom) && $custom !== '') {
+            return $custom;
+        }
+
         $title = __("assistant.data_titles.{$key}");
 
         if ($title !== "assistant.data_titles.{$key}") {
@@ -1064,6 +1302,7 @@ class AssistantChat extends Component
                 'data' => $message->payload['data'] ?? null,
                 'action' => $message->payload['action'] ?? null,
                 'action_resolved' => $message->payload['action_resolved'] ?? false,
+                'resolved_action' => $message->payload['resolved_action'] ?? null,
                 'redirect' => $message->payload['redirect'] ?? null,
                 'suggestions' => $message->payload['suggestions'] ?? [],
                 'intent' => $message->payload['intent'] ?? null,
@@ -1231,6 +1470,14 @@ class AssistantChat extends Component
      */
     private function persist(string $role, string $text, array $payload): array
     {
+        // Las tablas nunca muestran ids internos: el usuario se refiere a
+        // las entidades por nombre o numero de factura, no por PK.
+        $payload['data'] = $this->stripIdColumns($payload['data'] ?? null);
+
+        foreach ($payload['sections'] ?? [] as $i => $section) {
+            $payload['sections'][$i]['data'] = $this->stripIdColumns($section['data'] ?? null);
+        }
+
         $stored = AssistantMessage::query()->create([
             'user_id' => $this->userId(),
             'chat_id' => $this->activeChatId,
@@ -1248,6 +1495,7 @@ class AssistantChat extends Component
             'data' => $payload['data'],
             'action' => $payload['action'],
             'action_resolved' => false,
+            'resolved_action' => null,
             'redirect' => $payload['redirect'],
             'suggestions' => $payload['suggestions'],
             'intent' => $payload['intent'] ?? null,
@@ -1257,6 +1505,42 @@ class AssistantChat extends Component
             'table_count' => $this->countTables($payload),
             'at' => $stored->created_at?->toIso8601String(),
         ];
+    }
+
+    /**
+     * Quita columnas `id` y `*_id` de todas las tablas del payload. Los
+     * ids siguen existiendo en el action.params para ejecutar la accion;
+     * solo se ocultan de lo que el usuario ve.
+     *
+     * @param  array<string, mixed>|null  $data
+     * @return array<string, mixed>|null
+     */
+    private function stripIdColumns(?array $data): ?array
+    {
+        if ($data === null) {
+            return null;
+        }
+
+        foreach ($data as $key => $rows) {
+            if (! is_array($rows) || $rows === [] || ! isset($rows[0]) || ! is_array($rows[0])) {
+                continue;
+            }
+
+            // array_filter conserva las claves originales: hay que
+            // reindexar con array_values o $visible quedaria [0,1,2..]
+            // y array_intersect_key vaciaria todas las filas.
+            $visible = array_values(array_filter(
+                array_keys($rows[0]),
+                fn (string $column): bool => $column !== 'id' && ! str_ends_with($column, '_id'),
+            ));
+
+            $data[$key] = array_map(
+                fn (array $row): array => array_intersect_key($row, array_flip($visible)),
+                $rows,
+            );
+        }
+
+        return $data;
     }
 
     /**
@@ -1270,7 +1554,13 @@ class AssistantChat extends Component
             return;
         }
 
+        // La accion se conserva como `resolved_action` para que la tarjeta
+        // "Accion completada" pueda mostrar que tipo de operacion fue y
+        // que cambios aplico, en vez de un simple check.
+        $resolvedAction = $message['action'] ?? null;
+
         $this->messages[$index]['action'] = null;
+        $this->messages[$index]['resolved_action'] = $resolvedAction;
         $this->messages[$index]['action_resolved'] = true;
 
         $stored = isset($message['id'])
@@ -1280,7 +1570,72 @@ class AssistantChat extends Component
         if ($stored !== null) {
             $stored->payload = array_merge($stored->payload ?? [], [
                 'action' => null,
+                'resolved_action' => $resolvedAction,
                 'action_resolved' => true,
+            ]);
+            $stored->save();
+        }
+    }
+
+    /**
+     * Vuelca el resultado de una accion confirmada/cancelada sobre el
+     * MISMO mensaje que la propuso: texto, datos (p.ej. el archivo
+     * generado), sugerencias y badges se fusionan con lo que ya tenia
+     * la burbuja y se persisten en el AssistantMessage original.
+     * Si el resultado propone otra accion, queda como `action` nueva.
+     */
+    private function applyReplyToMessage(int $index, AssistantReply $reply): void
+    {
+        $message = $this->messages[$index] ?? null;
+
+        if ($message === null) {
+            return;
+        }
+
+        $data = $this->stripIdColumns(array_merge(
+            is_array($message['data'] ?? null) ? $message['data'] : [],
+            is_array($reply->data) ? $reply->data : [],
+        ));
+
+        $suggestions = $reply->suggestions !== []
+            ? $reply->suggestions
+            : ($message['suggestions'] ?? []);
+
+        $badgeColors = array_merge(
+            is_array($message['badge_colors'] ?? null) ? $message['badge_colors'] : [],
+            is_array($reply->badgeColors) ? $reply->badgeColors : [],
+        );
+
+        $this->messages[$index]['text'] = $reply->text;
+        $this->messages[$index]['data'] = $data === [] ? null : $data;
+        $this->messages[$index]['suggestions'] = $suggestions;
+        $this->messages[$index]['badge_colors'] = $badgeColors === [] ? null : $badgeColors;
+        $this->messages[$index]['redirect'] = $reply->redirect ?? ($message['redirect'] ?? null);
+
+        if ($reply->action !== null) {
+            $this->messages[$index]['action'] = $reply->action;
+        }
+
+        if ($reply->sections !== null) {
+            $this->messages[$index]['sections'] = $reply->sections;
+        }
+
+        $this->pendingForm = $reply->pendingForm;
+
+        $stored = isset($message['id'])
+            ? AssistantMessage::query()->whereKey($message['id'])->where('user_id', $this->userId())->first()
+            : null;
+
+        if ($stored !== null) {
+            $stored->text = $reply->text;
+            $stored->payload = array_merge($stored->payload ?? [], [
+                'data' => $this->messages[$index]['data'],
+                'suggestions' => $suggestions,
+                'badge_colors' => $this->messages[$index]['badge_colors'],
+                'redirect' => $this->messages[$index]['redirect'],
+                'action' => $reply->action,
+                'sections' => $reply->sections ?? ($stored->payload['sections'] ?? null),
+                'pending_form' => $reply->pendingForm,
             ]);
             $stored->save();
         }

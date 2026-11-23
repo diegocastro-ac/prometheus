@@ -22,6 +22,11 @@ return [
         'commercial' => 'Commercial premises',
     ],
 
+    'plan_warning' => [
+        'title' => 'Attention',
+        'body' => 'The dates or months have changed, but the payment plan will NOT be automatically updated.',
+    ],
+
     'form' => [
         'sections' => [
             'main' => [

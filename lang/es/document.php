@@ -90,6 +90,7 @@ return [
     'invoices' => 'Facturas',
     'total_billed' => 'Total facturado',
     'statement_note' => 'Las fechas de vencimiento se consultan en cada factura. Las facturas anuladas no se cobran y se muestran solo como registro.',
+    'statement_empty_period' => 'Este periodo no tiene facturas registradas: el estado de cuenta sale en cero porque no hubo movimientos facturados.',
     'concept' => 'Concepto',
     'balance' => 'Saldo',
     'status' => 'Estado',

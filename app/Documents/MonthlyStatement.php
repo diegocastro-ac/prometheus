@@ -5,6 +5,7 @@ namespace App\Documents;
 use App\Documents\Rendering\DocumentBody;
 use App\Documents\Rendering\DocumentRenderer;
 use App\Models\Invoice;
+use App\Models\Rental;
 
 /**
  * Estado de cuenta de un alquiler en un periodo.
@@ -25,6 +26,7 @@ class MonthlyStatement extends AbstractDocument
         string $slug,
         private readonly string $period,
         private readonly array $invoices,
+        private readonly ?Rental $rental = null,
     ) {
         parent::__construct($body, $renderer, $slug);
     }
@@ -34,11 +36,14 @@ class MonthlyStatement extends AbstractDocument
      * fachada las entrega asi y el documento no vuelve a consultar la base de
      * datos.
      *
+     * El alquiler viaja aparte para que la cabecera (inquilino, propiedad,
+     * arriendo) este completa aunque el periodo no tenga facturas.
+     *
      * @param  list<Invoice>  $invoices
      */
-    public static function forPeriod(string $period, array $invoices, DocumentRenderer $renderer): self
+    public static function forPeriod(string $period, array $invoices, DocumentRenderer $renderer, ?Rental $rental = null): self
     {
-        $body = self::buildBody($period, $invoices);
+        $body = self::buildBody($period, $invoices, $rental);
 
         $document = new self(
             body: $body,
@@ -46,6 +51,7 @@ class MonthlyStatement extends AbstractDocument
             slug: 'estado-de-cuenta-'.$period,
             period: $period,
             invoices: $invoices,
+            rental: $rental,
         );
 
         $document->attachToBody();
@@ -53,7 +59,7 @@ class MonthlyStatement extends AbstractDocument
         return $document;
     }
 
-    private static function buildBody(string $period, array $invoices): DocumentBody
+    private static function buildBody(string $period, array $invoices, ?Rental $rental): DocumentBody
     {
         $billed = array_sum(array_map(fn (Invoice $invoice): float => $invoice->amount, $invoices));
         $paid = array_sum(array_map(fn (Invoice $invoice): float => $invoice->paidAmount(), $invoices));
@@ -70,18 +76,39 @@ class MonthlyStatement extends AbstractDocument
             'status_class' => $invoice->status->value,
         ], $invoices);
 
+        $fields = [
+            // El periodo y el numero de facturas van en la cabecera, no solo en
+            // la tabla. Un estado de cuenta sin el periodo escrito arriba es un
+            // papel suelto: la tabla puede mostrar cinco filas de un mes y de
+            // otro sin que nada lo distinga.
+            __('document.period') => $period,
+            __('document.invoices') => (string) count($invoices),
+            __('document.total_billed') => Money::exact($billed),
+            __('document.total_paid') => Money::exact($paid),
+            __('document.outstanding_balance') => Money::exact($billed - $paid),
+        ];
+
+        // Identidad del contrato: siempre presente, la tome de la primera
+        // factura o del alquiler recibido. Sin esto el documento salia con
+        // "No indicado" en inquilino y propiedad.
+        $tenant = $rental?->tenant?->name ?? $invoices[0]->rental?->tenant?->name ?? null;
+        $property = $rental?->property?->name ?? $invoices[0]->rental?->property?->name ?? null;
+        $rentalName = $rental?->name ?? $invoices[0]->rental?->name ?? null;
+
+        if ($tenant !== null) {
+            $fields[__('document.tenant')] = $tenant;
+        }
+
+        if ($property !== null) {
+            $fields[__('document.property')] = $property;
+        }
+
+        if ($rentalName !== null) {
+            $fields[__('document.rental')] = $rentalName;
+        }
+
         $body = DocumentBody::make(__('document.monthly_statement'))
-            ->withFields([
-                // El periodo y el numero de facturas van en la cabecera, no solo en
-                // la tabla. Un estado de cuenta sin el periodo escrito arriba es un
-                // papel suelto: la tabla puede mostrar cinco filas de un mes y de
-                // otro sin que nada lo distinga.
-                __('document.period') => $period,
-                __('document.invoices') => (string) count($invoices),
-                __('document.total_billed') => Money::exact($billed),
-                __('document.total_paid') => Money::exact($paid),
-                __('document.outstanding_balance') => Money::exact($billed - $paid),
-            ]);
+            ->withFields($fields);
 
         if ($rows !== []) {
             $body = $body->withTable(
@@ -99,8 +126,14 @@ class MonthlyStatement extends AbstractDocument
             );
         }
 
+        $notes = [__('document.statement_note')];
+
+        if ($invoices === []) {
+            $notes[] = __('document.statement_empty_period');
+        }
+
         return $body
-            ->withNotes(__('document.statement_note'))
+            ->withNotes(...$notes)
             ->withFooter(
                 __('document.generated_by').' '.now()->format('d/m/Y \a \l\a\s H:i'),
             );
@@ -137,12 +170,16 @@ class MonthlyStatement extends AbstractDocument
 
     public function tenantName(): string
     {
-        return $this->invoices[0]->rental?->tenant?->name ?? 'No indicado';
+        return $this->rental?->tenant?->name
+            ?? $this->invoices[0]->rental?->tenant?->name
+            ?? 'No indicado';
     }
 
     public function propertyName(): string
     {
-        return $this->invoices[0]->rental?->property?->name ?? 'No indicado';
+        return $this->rental?->property?->name
+            ?? $this->invoices[0]->rental?->property?->name
+            ?? 'No indicado';
     }
 
     public function periodStart(): \Illuminate\Support\Carbon

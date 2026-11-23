@@ -11,6 +11,7 @@ use App\Models\DeliveryAct;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Rental;
+use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Assistant\AssistantActionExecutor;
 use App\Services\Assistant\AssistantToolInvoker;
@@ -582,7 +583,7 @@ class AssistantTest extends TestCase
         Livewire::test(AssistantChat::class)
             ->set('input', 'agrega un inquilino nuevo')
             ->call('send')
-            ->assertSee('nombre');
+            ->assertSee('Revisar y proponer');
 
         // Solo existe el inquilino del arriendo del fixture: nada se creo.
         $this->assertSame(1, \App\Models\Tenant::where('user_id', $this->user->id)->count());
@@ -626,7 +627,7 @@ class AssistantTest extends TestCase
         Livewire::test(AssistantChat::class)
             ->set('input', 'agenda a María en el apto 301')
             ->call('send')
-            ->assertSee('canon');
+            ->assertSee('Canon mensual');
     }
 
     // ---------------------------------------------------------------
@@ -1455,5 +1456,1009 @@ class AssistantTest extends TestCase
         $this->assertSame('generate_document', $reply->action['type']);
         $this->assertSame('receipt', $reply->action['params']['kind']);
         $this->assertSame((int) $invoice->id, $reply->action['params']['invoice_id']);
+    }
+
+    // ---------------------------------------------------------------
+    // Eleccion flexible de entidad: "cualquiera", candidatos y chunks
+    // ---------------------------------------------------------------
+
+    #[Test]
+    public function update_con_cualquiera_elige_un_registro_y_avisa(): void
+    {
+        $this->actingAs($this->user);
+
+        $reply = app(AssistantToolInvoker::class)->invoke('update_property', [
+            'property_name' => 'cualquiera',
+            'address' => 'Cra 10 #5-20',
+        ], $this->user->id);
+
+        // El usuario delego la eleccion: se propone UNA propiedad concreta
+        // y la advertencia queda visible en el preview.
+        $this->assertSame('update_property', $reply->action['type']);
+        $this->assertNotEmpty($reply->action['warnings']);
+        $this->assertSame('Cra 10 #5-20', $reply->action['params']['address']);
+    }
+
+    #[Test]
+    public function entidad_ambigua_lista_candidatos_y_pick_candidate_resuelve(): void
+    {
+        $this->actingAs($this->user);
+
+        // Dos inquilinos con el mismo nombre: el update no debe adivinar.
+        $first = \App\Models\Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Camila Torres',
+            'phone_number' => '3111111111',
+        ]);
+        $second = \App\Models\Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Camila Torres',
+            'phone_number' => '3222222222',
+        ]);
+
+        $reply = app(AssistantToolInvoker::class)->invoke('update_tenant', [
+            'tenant_name' => 'Camila',
+            'phone_number' => '3009998877',
+        ], $this->user->id);
+
+        $this->assertNull($reply->action);
+        $this->assertCount(2, $reply->data['candidates']);
+        $this->assertSame(
+            ['intent' => 'update_tenant', 'name_key' => 'tenant_name'],
+            array_intersect_key($reply->data['pending_resolution'], ['intent' => 1, 'name_key' => 1]),
+        );
+
+        // Flujo real: el mensaje genera la respuesta ambigua (mensaje
+        // indice 1) y el chip elegido re-ejecuta con _entity_ref.
+        Livewire::test(AssistantChat::class)
+            ->set('input', 'cambia el teléfono de Camila a 3009998877')
+            ->call('send')
+            ->call('pickCandidate', 1, 'Tenant:'.$second->id)
+            ->assertSee('Camila Torres');
+
+        $resolved = app(AssistantToolInvoker::class)->invoke('update_tenant', [
+            'tenant_name' => 'Camila Torres',
+            'phone_number' => '3009998877',
+            '_entity_ref' => 'Tenant:'.$second->id,
+        ], $this->user->id);
+
+        $this->assertSame('update_tenant', $resolved->action['type']);
+        $this->assertSame($second->id, $resolved->action['params']['tenant_id']);
+        $this->assertSame('3009998877', $resolved->action['params']['phone_number']);
+    }
+
+    #[Test]
+    public function batch_grande_se_procesa_por_chunks_con_continue(): void
+    {
+        $this->actingAs($this->user);
+
+        $requests = [];
+        for ($i = 1; $i <= 15; $i++) {
+            $requests[] = [
+                'intent' => 'create_tenant',
+                'params' => ['name' => "Inquilino $i", 'document' => "Doc$i", 'phone_number' => "300000000$i"],
+            ];
+        }
+
+        $reply = app(AssistantToolInvoker::class)->invokeBatch($requests, $this->user->id);
+
+        // 15 acciones > BATCH_CHUNK (12): se proponen 12 y 3 quedan en cola.
+        $this->assertSame('batch', $reply->action['type']);
+        $this->assertCount(12, $reply->action['items']);
+        $this->assertStringContainsString('continuar', mb_strtolower($reply->text));
+
+        // "continuar" propone el siguiente grupo y libera la cola.
+        $next = app(AssistantToolInvoker::class)->invoke('continue_batch', [], $this->user->id);
+        $this->assertSame('batch', $next->action['type']);
+        $this->assertCount(3, $next->action['items']);
+    }
+
+    #[Test]
+    public function preview_ipc_con_inquilino_ambiguo_ofrece_candidatos(): void
+    {
+        $this->actingAs($this->user);
+
+        // El fixture ya tiene un arriendo con inquilino; creamos otro con
+        // el MISMO nombre de inquilino para forzar la ambiguedad.
+        $tenant = \App\Models\Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => $this->rental->tenant->name,
+        ]);
+        $property = \App\Models\Property::factory()->create(['user_id' => $this->user->id]);
+        Rental::factory()->create([
+            'user_id' => $this->user->id,
+            'tenant_id' => $tenant->id,
+            'property_id' => $property->id,
+            'name' => 'Otro arriendo',
+            'is_active' => true,
+        ]);
+
+        $reply = app(AssistantToolInvoker::class)->invoke('preview_adjustment_ipc', [
+            'rental_name' => $this->rental->tenant->name,
+        ], $this->user->id);
+
+        // Dos arriendos comparten inquilino: candidatos, no adivinanza.
+        $this->assertNull($reply->action);
+        $this->assertNotEmpty($reply->data['candidates']);
+    }
+
+    // ---------------------------------------------------------------
+    // Vias libres: query_data (SQL del modelo) y general_answer
+    // ---------------------------------------------------------------
+
+    #[Test]
+    public function query_data_ejecuta_sql_valido_y_devuelve_tabla(): void
+    {
+        $calls = 0;
+        config()->set('services.gemini.key', 'test-key');
+        config()->set('services.gemini.model', 'gemini-test');
+
+        Http::fake(function ($request) use (&$calls) {
+            $calls++;
+
+            // 1) clasificacion -> query_data con SQL real sobre el fixture
+            if ($calls === 1) {
+                return Http::response(['candidates' => [['content' => ['parts' => [['text' => json_encode([
+                    'domain' => 'app',
+                    'intent' => 'query_data',
+                    'params' => ['sql' => 'SELECT name AS inquilino, document AS cedula FROM tenants WHERE user_id = '.$this->user->id.' LIMIT 10'],
+                    'confidence' => 0.9,
+                ])]]]]]]);
+            }
+
+            // 2) draft: la IA narra los resultados
+            return Http::response(['candidates' => [['content' => ['parts' => [['text' => 'Encontré tus inquilinos.']]]]]]);
+        });
+
+        $reply = $this->assistant()->ask('dame una consulta libre de inquilinos', [], $this->user->id);
+
+        $this->assertNotNull($reply->data['results'] ?? null);
+        $this->assertSame($this->rental->tenant->name, $reply->data['results'][0]['inquilino']);
+        $this->assertSame('Encontré tus inquilinos.', $reply->text);
+    }
+
+    #[Test]
+    public function query_data_rechaza_escritura_y_reintenta_una_vez(): void
+    {
+        $tenantsBefore = Tenant::count();
+        $calls = 0;
+        config()->set('services.gemini.key', 'test-key');
+        config()->set('services.gemini.model', 'gemini-test');
+
+        Http::fake(function ($request) use (&$calls) {
+            $calls++;
+
+            // Clasificacion (y el reintento) siempre devuelve el mismo
+            // SQL malicioso: debe ser rechazado las dos veces.
+            return Http::response(['candidates' => [['content' => ['parts' => [['text' => json_encode([
+                'domain' => 'app',
+                'intent' => 'query_data',
+                'params' => ['sql' => 'DELETE FROM tenants'],
+                'confidence' => 0.9,
+            ])]]]]]]);
+        });
+
+        $reply = $this->assistant()->ask('borra todo', [], $this->user->id);
+
+        $this->assertStringContainsString('No pude completar', $reply->text);
+        // 1 clasificacion + 1 reintento de clasificacion: el SQL nunca corre.
+        $this->assertSame(2, $calls);
+        $this->assertSame($tenantsBefore, Tenant::count());
+    }
+
+    #[Test]
+    public function query_data_exige_user_id_en_tablas_del_usuario(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'query_data',
+            // SQL valido pero sin scope: el guardia lo rechaza y el
+            // reintento recibe el mismo payload -> fallo controlado.
+            'params' => ['sql' => 'SELECT * FROM rentals LIMIT 5'],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('consulta libre sin filtro', [], $this->user->id);
+
+        $this->assertStringContainsString('No pude completar', $reply->text);
+        $this->assertNull($reply->data);
+    }
+
+    #[Test]
+    public function general_answer_devuelve_el_texto_del_modelo(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'general_answer',
+            'params' => ['answer' => 'El IPC es el índice de precios al consumidor: se usa para reajustar cánones.'],
+            'confidence' => 0.95,
+        ]);
+
+        $reply = $this->assistant()->ask('qué es el IPC', [], $this->user->id);
+
+        $this->assertStringContainsString('índice de precios', $reply->text);
+        // Sin tabla ni acción: solo texto.
+        $this->assertNull($reply->data);
+        $this->assertNull($reply->action);
+    }
+
+    #[Test]
+    public function query_data_permite_tablas_globales_sin_user_id(): void
+    {
+        $calls = 0;
+        config()->set('services.gemini.key', 'test-key');
+        config()->set('services.gemini.model', 'gemini-test');
+
+        Http::fake(function ($request) use (&$calls) {
+            $calls++;
+
+            if ($calls === 1) {
+                return Http::response(['candidates' => [['content' => ['parts' => [['text' => json_encode([
+                    'domain' => 'app',
+                    'intent' => 'query_data',
+                    // ipc_series es global: no lleva user_id.
+                    'params' => ['sql' => 'SELECT COUNT(*) AS total FROM ipc_series'],
+                    'confidence' => 0.9,
+                ])]]]]]]);
+            }
+
+            return Http::response(['candidates' => [['content' => ['parts' => [['text' => 'Resumen.']]]]]]);
+        });
+
+        $reply = $this->assistant()->ask('cuántos datos IPC hay', [], $this->user->id);
+
+        $this->assertNotNull($reply->data['results'] ?? null);
+        $this->assertArrayHasKey('total', $reply->data['results'][0]);
+    }
+
+    #[Test]
+    public function app_guide_start_devuelve_pasos_accionables(): void
+    {
+        $reply = app(AssistantToolInvoker::class)->invoke('app_guide', [
+            'topic' => 'start',
+        ], $this->user->id);
+
+        $guide = $reply->data['guide'] ?? null;
+
+        $this->assertNotNull($guide);
+        $this->assertNotEmpty($guide['steps']);
+
+        // Cada paso tiene titulo y al menos uno trae accion (url o prompt).
+        $this->assertNotEmpty($guide['steps'][0]['title']);
+        $this->assertNotEmpty($guide['steps'][0]['action'] ?? null);
+    }
+
+    #[Test]
+    public function app_guide_tema_desconocido_cae_al_onboarding(): void
+    {
+        $reply = app(AssistantToolInvoker::class)->invoke('app_guide', [
+            'topic' => 'tema_que_no_existe',
+        ], $this->user->id);
+
+        // topic invalido -> 'start' (onboarding), no error.
+        $this->assertNotNull($reply->data['guide'] ?? null);
+        $this->assertNotEmpty($reply->data['guide']['steps']);
+    }
+
+    #[Test]
+    public function app_guide_llega_como_intent_desde_gemini(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'app_guide',
+            'params' => ['topic' => 'collections'],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('cómo hago para cobrar a mis inquilinos', [], $this->user->id);
+
+        $this->assertNotNull($reply->data['guide'] ?? null);
+        $this->assertNotEmpty($reply->data['guide']['steps']);
+    }
+
+    // ---------------------------------------------------------------
+    // Analisis predictivo (business_insights)
+    // ---------------------------------------------------------------
+
+    #[Test]
+    public function business_insights_calcula_pronostico_con_pagos_reales(): void
+    {
+        // Dos meses completos con recaudo: el mes en curso NO cuenta.
+        Payment::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'amount' => 900000,
+            'date' => today()->subMonth()->toDateString(),
+        ]);
+        Payment::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'amount' => 300000,
+            'date' => today()->subMonths(2)->toDateString(),
+        ]);
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'business_insights',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('que pasaria si sigo asi con los mismos ingresos', [], $this->user->id);
+
+        $insights = $reply->data['insights'] ?? null;
+        $this->assertNotNull($insights);
+        $this->assertTrue($insights['forecast']['has_history']);
+        $this->assertSame(3, $insights['forecast']['window_months']);
+        // Promedio de los ultimos 3 meses completos (900k + 300k + 0)/3.
+        $this->assertEqualsWithDelta(400000, $insights['forecast']['projected_next_month'], 1);
+        $this->assertNotEmpty($insights['tenants']);
+        $this->assertArrayHasKey('risk_score', $insights['tenants'][0]);
+        $this->assertArrayHasKey('recommendations', $insights);
+    }
+
+    #[Test]
+    public function business_insights_reporta_mora_y_danados_del_arriendo(): void
+    {
+        Invoice::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'number' => 'FV-2026-0099',
+            'amount' => 800000,
+            'status' => InvoiceStatus::VENCIDA,
+            'issued_at' => today()->subMonths(2)->toDateString(),
+            'due_at' => today()->subDays(10)->toDateString(),
+            'period' => today()->subMonth()->format('Y-m'),
+        ]);
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'business_insights',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('vale la pena tener a este inquilino', [], $this->user->id);
+
+        $tenant = $reply->data['insights']['tenants'][0] ?? null;
+        $this->assertNotNull($tenant);
+        $this->assertGreaterThan(0, $tenant['overdue_balance']);
+        $this->assertContains('overdue', $tenant['flags']);
+        // La recomendacion debe citar la mora, no ser genérica.
+        $reasons = implode(' ', array_column($reply->data['insights']['recommendations'], 'reason'));
+        $this->assertStringContainsString('días de atraso', $reasons);
+    }
+
+    #[Test]
+    public function business_insights_sin_historial_lo_dice_explicito(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'business_insights',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('predice mis ingresos del proximo mes', [], $this->user->id);
+
+        // Sin historial el pronostico debe ser cero y la bandera apagada:
+        // la tarjeta muestra el aviso de datos insuficientes.
+        $this->assertFalse($reply->data['insights']['forecast']['has_history']);
+        $this->assertEquals(0, $reply->data['insights']['forecast']['projected_next_month']);
+    }
+
+    #[Test]
+    public function business_insights_llega_por_matcher_local_sin_gemini(): void
+    {
+        config()->set('services.gemini.key', null);
+        Http::fake();
+
+        $reply = app(DataAssistantInterface::class)->ask('que puntos puedo mejorar de mi negocio', [], $this->user->id);
+
+        $this->assertNotNull($reply->data['insights'] ?? null);
+        Http::assertNothingSent();
+    }
+
+    #[Test]
+    public function business_insights_no_mezcla_datos_de_otro_usuario(): void
+    {
+        $other = User::factory()->create();
+        Payment::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $other->id,
+            'amount' => 999999,
+            'date' => today()->subMonth()->toDateString(),
+        ]);
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'business_insights',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('que pasaria si sigo asi', [], $this->user->id);
+
+        // El pago del otro usuario no debe infla el pronostico.
+        $this->assertFalse($reply->data['insights']['forecast']['has_history']);
+    }
+
+    #[Test]
+    public function las_actas_de_un_arriendo_solo_muestran_las_de_esa_entidad(): void
+    {
+        config()->set('services.gemini.key', null);
+        Http::fake();
+
+        // Segundo arriendo con su propio acta: el listado acotado no debe
+        // mezclarlo.
+        $otherRental = Rental::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Bodega sur',
+            'is_active' => true,
+        ]);
+
+        DeliveryAct::factory()->create([
+            'user_id' => $this->user->id,
+            'rental_id' => $this->rental->id,
+            'tenant_name' => (string) $this->rental->tenant->name,
+        ]);
+        DeliveryAct::factory()->create([
+            'user_id' => $this->user->id,
+            'rental_id' => $otherRental->id,
+            'tenant_name' => (string) $otherRental->tenant->name,
+        ]);
+
+        $reply = $this->assistant()->ask(
+            'muéstrame las actas del arriendo de '.$this->rental->tenant->name,
+            [],
+            $this->user->id,
+        );
+
+        $this->assertNotNull($reply->data['acts'] ?? null);
+        $this->assertCount(1, $reply->data['acts']);
+        $this->assertSame((string) $this->rental->tenant->name, $reply->data['acts'][0]['tenant']);
+        $this->assertStringContainsString(
+            (string) $this->rental->tenant->name,
+            (string) ($reply->data['_titles']['acts'] ?? ''),
+        );
+    }
+
+    #[Test]
+    public function cambiar_el_nombre_de_inquilino_propone_update_con_alias(): void
+    {
+        config()->set('services.gemini.key', null);
+        Http::fake();
+
+        $tenantName = (string) $this->rental->tenant->name;
+
+        $reply = $this->assistant()->ask("cambia el nombre de {$tenantName} a Nombre Nuevo", [], $this->user->id);
+
+        $this->assertSame('update_tenant', $reply->action['type'] ?? null);
+        $this->assertSame('Nombre Nuevo', $reply->action['params']['name'] ?? null);
+
+        $done = app(AssistantActionExecutor::class)->execute($reply->action, $this->user->id);
+
+        $this->assertSame('Nombre Nuevo', $this->rental->tenant->fresh()->name);
+        $this->assertStringContainsString('ahora es Nombre Nuevo', $done->text);
+    }
+
+    #[Test]
+    public function el_detalle_de_entidad_trae_titulo_contextual(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'entity_detail',
+            'params' => ['entity_type' => 'rental', 'name' => 'Local norte'],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('cuéntame del arriendo de Local norte', [], $this->user->id);
+
+        $this->assertSame('Local norte', $reply->data['_titles']['rental_detail'] ?? null
+            ? trim(str_replace('Arriendo: ', '', (string) $reply->data['_titles']['rental_detail']))
+            : null);
+    }
+
+    #[Test]
+    public function cancelar_el_pensamiento_descarta_la_respuesta(): void
+    {
+        $this->actingAs($this->user);
+        config()->set('services.gemini.key', null);
+        Http::fake();
+
+        Livewire::test(AssistantChat::class)
+            ->set('input', 'cuanto me deben')
+            ->call('send')
+            ->call('cancelPending')
+            ->assertSet('cancelPendingReply', true)
+            // Una cancelacion encolada tarde no debe descartar la
+            // siguiente respuesta: send() la resetea al empezar.
+            ->set('input', 'quienes son mis inquilinos')
+            ->call('send')
+            ->assertSet('cancelPendingReply', false);
+    }
+
+    #[Test]
+    public function update_sin_campo_abre_el_asistente_guiado_de_dos_pasos(): void
+    {
+        $tenantName = (string) $this->rental->tenant->name;
+
+        // Gemini clasifica el update con entidad pero sin campo: el
+        // sistema NO adivina, abre la clarificacion guiada.
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'update_tenant',
+            'params' => ['tenant_name' => $tenantName],
+            'confidence' => 0.9,
+        ]);
+
+        $first = $this->assistant()->ask("actualiza a {$tenantName}", [], $this->user->id);
+
+        $this->assertStringContainsString($tenantName, $first->text);
+        $this->assertNotNull($first->pendingForm);
+        $this->assertSame('update_clarify', session('assistant.form.'.$this->user->id)['form'] ?? null);
+
+        // Paso 1: el usuario nombra el campo con palabras naturales.
+        $second = $this->assistant()->ask('el nombre', [], $this->user->id);
+
+        $this->assertStringContainsString('nombre', \Illuminate\Support\Str::lower($second->text));
+        $this->assertSame('update_value', session('assistant.form.'.$this->user->id)['form'] ?? null);
+
+        // Paso 2: el mensaje ES el valor nuevo; sale la propuesta.
+        $third = $this->assistant()->ask('Nombre Guiado', [], $this->user->id);
+
+        $this->assertSame('update_tenant', $third->action['type'] ?? null);
+        $this->assertSame('Nombre Guiado', $third->action['params']['name'] ?? null);
+        $this->assertNull(session('assistant.form.'.$this->user->id));
+
+        app(AssistantActionExecutor::class)->execute($third->action, $this->user->id);
+        $this->assertSame('Nombre Guiado', $this->rental->tenant->fresh()->name);
+    }
+
+    #[Test]
+    public function update_guiado_sirve_para_cualquier_campo_de_cualquier_entidad(): void
+    {
+        // Mismo mecanismo para propiedad: campo direccion.
+        $property = \App\Models\Property::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Apto 301',
+        ]);
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'update_property',
+            'params' => ['property_name' => 'Apto 301'],
+            'confidence' => 0.9,
+        ]);
+
+        $this->assistant()->ask('actualiza la propiedad Apto 301', [], $this->user->id);
+        $this->assistant()->ask('la direccion', [], $this->user->id);
+        $reply = $this->assistant()->ask('Cra 7 #12-30', [], $this->user->id);
+
+        $this->assertSame('update_property', $reply->action['type'] ?? null);
+        $this->assertSame('Cra 7 #12-30', $reply->action['params']['address'] ?? null);
+    }
+
+    #[Test]
+    public function update_guiado_recolecta_varios_campos_en_una_sola_propuesta(): void
+    {
+        $tenantName = (string) $this->rental->tenant->name;
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'update_tenant',
+            'params' => ['tenant_name' => $tenantName],
+            'confidence' => 0.9,
+        ]);
+
+        $this->assistant()->ask("actualiza a {$tenantName}", [], $this->user->id);
+
+        // El usuario nombra DOS campos de una vez: ya no se pregunta cual,
+        // se encola y pide el primer valor.
+        $second = $this->assistant()->ask('nombre y teléfono', [], $this->user->id);
+
+        $this->assertSame('update_value', session('assistant.form.'.$this->user->id)['form'] ?? null);
+        $this->assertSame(1, $second->pendingForm['step'] ?? null);
+        $this->assertSame(2, $second->pendingForm['total_steps'] ?? null);
+        $this->assertSame('text', $second->pendingForm['input']['kind'] ?? null);
+
+        // Primer valor: falta el segundo campo.
+        $third = $this->assistant()->ask('Nombre Guiado', [], $this->user->id);
+
+        $this->assertSame(2, $third->pendingForm['step'] ?? null);
+        $this->assertSame(2, $third->pendingForm['total_steps'] ?? null);
+        $this->assertNull($third->action);
+
+        // Segundo valor: sale UNA propuesta con los dos cambios.
+        $fourth = $this->assistant()->ask('3009998877', [], $this->user->id);
+
+        $this->assertSame('update_tenant', $fourth->action['type'] ?? null);
+        $this->assertSame('Nombre Guiado', $fourth->action['params']['name'] ?? null);
+        $this->assertSame('3009998877', $fourth->action['params']['phone_number'] ?? null);
+        $this->assertNull(session('assistant.form.'.$this->user->id));
+    }
+
+    #[Test]
+    public function update_guiado_input_tipado_sale_del_kind_del_campo(): void
+    {
+        $tenantName = (string) $this->rental->tenant->name;
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'update_rental',
+            'params' => ['rental_name' => $this->rental->name],
+            'confidence' => 0.9,
+        ]);
+
+        $this->assistant()->ask("actualiza el arriendo {$this->rental->name}", [], $this->user->id);
+        $reply = $this->assistant()->ask('la fecha de inicio', [], $this->user->id);
+
+        $this->assertSame('date', $reply->pendingForm['input']['kind'] ?? null);
+    }
+
+    #[Test]
+    public function update_guiado_cancela_con_cancelar(): void
+    {
+        $tenantName = (string) $this->rental->tenant->name;
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'update_tenant',
+            'params' => ['tenant_name' => $tenantName],
+            'confidence' => 0.9,
+        ]);
+
+        $this->assistant()->ask("actualiza a {$tenantName}", [], $this->user->id);
+        $reply = $this->assistant()->ask('cancela', [], $this->user->id);
+
+        $this->assertNull(session('assistant.form.'.$this->user->id));
+        $this->assertNull($reply->action);
+    }
+
+    // ---------------------------------------------------------------
+    // Insights por foco, guia por tema y resultado en el mismo mensaje
+    // ---------------------------------------------------------------
+
+    #[Test]
+    public function business_insights_cambia_secciones_segun_el_foco(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'business_insights',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
+
+        $improve = $this->assistant()->ask('que puntos puedo mejorar de mi negocio', [], $this->user->id);
+        $risk = $this->assistant()->ask('analiza a fondo mi portafolio y dime que riesgos tengo', [], $this->user->id);
+        $income = $this->assistant()->ask('que pasaria si sigo asi con los mismos ingresos', [], $this->user->id);
+
+        $improveData = $improve->data['insights'];
+        $this->assertSame('improve', $improveData['focus']);
+        $this->assertFalse($improveData['sections']['forecast']);
+        $this->assertTrue($improveData['sections']['tenants']);
+        $this->assertTrue($improveData['sections']['recommendations']);
+
+        $riskData = $risk->data['insights'];
+        $this->assertSame('risk', $riskData['focus']);
+        $this->assertFalse($riskData['sections']['forecast']);
+
+        $incomeData = $income->data['insights'];
+        $this->assertSame('income', $incomeData['focus']);
+        $this->assertTrue($incomeData['sections']['forecast']);
+        $this->assertFalse($incomeData['sections']['tenants']);
+    }
+
+    #[Test]
+    public function business_insights_de_entidad_oculta_el_pronostico_del_portafolio(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'business_insights',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('vale la pena tener a '.$this->rental->tenant->name, [], $this->user->id);
+        $insights = $reply->data['insights'];
+
+        $this->assertSame('tenant', $insights['focus']);
+        $this->assertFalse($insights['sections']['forecast']);
+        $this->assertNotEmpty($insights['tenants']);
+    }
+
+    #[Test]
+    public function app_guide_infiere_el_tema_por_la_pregunta(): void
+    {
+        $setup = app(AssistantToolInvoker::class)->invoke('app_guide', [
+            'topic' => 'start',
+            '_question' => 'guíame para registrar mis propiedades e inquilinos',
+        ], $this->user->id);
+
+        $this->assertSame('Registrar propiedades e inquilinos', $setup->data['guide']['title']);
+        $this->assertCount(5, $setup->data['guide']['steps']);
+
+        $collections = app(AssistantToolInvoker::class)->invoke('app_guide', [
+            'topic' => '',
+            '_question' => 'guíame para cobrar a mis inquilinos',
+        ], $this->user->id);
+
+        $this->assertStringContainsString('Recaudo', $collections->data['guide']['title']);
+    }
+
+    #[Test]
+    public function app_guide_sin_tema_concreto_sigue_siendo_la_onboarding(): void
+    {
+        $reply = app(AssistantToolInvoker::class)->invoke('app_guide', [
+            'topic' => 'start',
+            '_question' => 'soy nuevo, ¿qué hago primero?',
+        ], $this->user->id);
+
+        $this->assertStringContainsString('Primeros pasos', $reply->data['guide']['title']);
+        $this->assertCount(10, $reply->data['guide']['steps']);
+    }
+
+    #[Test]
+    public function confirmar_tras_otro_mensaje_resuelve_en_el_mismo_burbuja(): void
+    {
+        $this->actingAs($this->user);
+        config()->set('services.gemini.key', null);
+
+        $component = Livewire::test(AssistantChat::class)
+            ->set('input', 'agrega un inquilino llamado Ana Ruiz CC 555 tel 3001112233')
+            ->call('send')
+            ->assertSee('Ana Ruiz')
+            ->set('input', 'mis inquilinos')
+            ->call('send');
+
+        $before = count($component->get('messages'));
+
+        $component->call('confirmAction', 1);
+
+        $messages = $component->get('messages');
+        $this->assertCount($before, $messages);
+        $this->assertNull($messages[1]['action']);
+        $this->assertNotNull($messages[1]['resolved_action']);
+        $this->assertStringNotContainsString('Voy a', $messages[1]['text']);
+        $this->assertDatabaseHas('tenants', [
+            'user_id' => $this->user->id,
+            'name' => 'Ana Ruiz',
+        ]);
+    }
+
+    #[Test]
+    public function documento_generado_queda_en_el_mismo_mensaje_que_lo_propuso(): void
+    {
+        $this->actingAs($this->user);
+
+        // El estado de cuenta exige facturas en el periodo: sin ellas la
+        // propuesta se bloquea para no entregar un documento vacio.
+        Invoice::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'number' => 'FV-TEST-0001',
+            'amount' => 800000,
+            'status' => InvoiceStatus::EMITIDA,
+            'issued_at' => today()->startOfMonth()->toDateString(),
+            'due_at' => today()->addDays(5)->toDateString(),
+            'period' => today()->format('Y-m'),
+        ]);
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'generate_document',
+            'params' => [
+                'document_type' => 'monthly_statement',
+                'rental_name' => $this->rental->name,
+                'period' => today()->format('Y-m'),
+            ],
+            'confidence' => 0.9,
+        ]);
+
+        $component = Livewire::test(AssistantChat::class)
+            ->set('input', 'genera el estado de cuenta del arriendo')
+            ->call('send')
+            ->set('input', 'mis inquilinos')
+            ->call('send');
+
+        $before = count($component->get('messages'));
+        $component->call('confirmAction', 1);
+
+        $messages = $component->get('messages');
+        $this->assertCount($before, $messages);
+        $this->assertNull($messages[1]['action']);
+        $this->assertNotNull($messages[1]['resolved_action']);
+        $this->assertNotNull($messages[1]['data']['file']['token'] ?? null);
+        $this->assertNotEmpty($messages[1]['data']['file']['filename'] ?? null);
+    }
+
+    #[Test]
+    public function update_sin_datos_muestra_el_formulario_vacio_con_todos_los_campos(): void
+    {
+        $tenantName = (string) $this->rental->tenant->name;
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'update_tenant',
+            'params' => ['tenant_name' => $tenantName],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask("actualiza a {$tenantName}", [], $this->user->id);
+
+        // El pendingForm trae TODOS los campos editables con su tipo:
+        // el usuario llena solo lo que quiere cambiar.
+        $fields = collect($reply->pendingForm['fields'] ?? [])->keyBy('key');
+
+        $this->assertSame('update_clarify', session('assistant.form.'.$this->user->id)['form'] ?? null);
+        $this->assertSame('form', session('assistant.form.'.$this->user->id)['data']['mode'] ?? null);
+        $this->assertTrue($fields->has('name'));
+        $this->assertTrue($fields->has('document'));
+        $this->assertTrue($fields->has('phone_number'));
+        $this->assertTrue($fields->has('email'));
+        $this->assertSame('text', $fields->get('name')['kind'] ?? null);
+
+        // Submit del form: solo viajan los campos diligenciados; el
+        // vacio no se toca y sale la propuesta con diff.
+        $proposal = app(AssistantToolInvoker::class)->submitUpdateForm([
+            'name' => '',
+            'document' => '',
+            'phone_number' => '3001112233',
+            'email' => 'nuevo@correo.com',
+        ], $this->user->id);
+
+        $this->assertSame('update_tenant', $proposal->action['type'] ?? null);
+        $this->assertSame('3001112233', $proposal->action['params']['phone_number'] ?? null);
+        $this->assertSame('nuevo@correo.com', $proposal->action['params']['email'] ?? null);
+        $this->assertArrayNotHasKey('name', $proposal->action['params']);
+        $this->assertNull(session('assistant.form.'.$this->user->id));
+    }
+
+    #[Test]
+    public function lookup_data_resuelve_la_referencia_antes_de_proponer_la_accion(): void
+    {
+        Invoice::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'number' => 'FV-2026-0001',
+            'amount' => 800000,
+            'status' => InvoiceStatus::EMITIDA,
+            'issued_at' => today()->startOfMonth()->toDateString(),
+            'due_at' => today()->addDays(5)->toDateString(),
+            'period' => today()->format('Y-m'),
+        ]);
+
+        config()->set('services.gemini.key', 'test-key');
+        config()->set('services.gemini.model', 'gemini-test');
+
+        // El modelo primero pide consultar la BD (lookup_data) y, con las
+        // filas reales, devuelve la accion ya resuelta.
+        $call = 0;
+        Http::fake(function () use (&$call) {
+            $call++;
+            $payload = $call === 1
+                ? [
+                    'domain' => 'app',
+                    'intent' => 'lookup_data',
+                    'confidence' => 0.9,
+                    'params' => ['sql' => 'SELECT i.number, i.due_at FROM invoices i WHERE i.user_id = '.((int) $this->user->id).' AND i.status IN (\'emitida\',\'vencida\') ORDER BY i.due_at LIMIT 5'],
+                ]
+                : [
+                    'domain' => 'app',
+                    'intent' => 'propose_record_payment',
+                    'confidence' => 0.9,
+                    'params' => ['invoice_number' => 'FV-2026-0001', 'amount' => 100000],
+                ];
+
+            return Http::response([
+                'candidates' => [['content' => ['parts' => [['text' => json_encode($payload)]]]]],
+            ]);
+        });
+
+        $reply = $this->assistant()->ask('registra un pago a la factura mas antigua', [], $this->user->id);
+
+        $this->assertSame('record_payment', $reply->action['type'] ?? null);
+        Http::assertSentCount(2);
+    }
+
+    #[Test]
+    public function el_digest_del_portafolio_incluye_las_facturas_pendientes(): void
+    {
+        Invoice::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'number' => 'FV-2026-0009',
+            'amount' => 800000,
+            'status' => InvoiceStatus::EMITIDA,
+            'issued_at' => today()->startOfMonth()->toDateString(),
+            'due_at' => today()->addDays(5)->toDateString(),
+            'period' => today()->format('Y-m'),
+        ]);
+
+        $digest = app(\App\Services\Assistant\PortfolioContextBuilder::class)->digestFor($this->user->id);
+        $pending = collect($digest->pendingInvoices)->keyBy('number');
+
+        $this->assertTrue($pending->has('FV-2026-0009'));
+        $this->assertSame(800000.0, $pending->get('FV-2026-0009')['balance']);
+        $this->assertSame($this->rental->name, $pending->get('FV-2026-0009')['rental']);
+    }
+
+    #[Test]
+    public function create_tenant_sin_datos_abre_el_formulario_dinamico(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_tenant',
+            'params' => ['name' => 'Beatriz Ríos'],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('registra un inquilino nuevo', [], $this->user->id);
+
+        $this->assertSame('create_tenant', $reply->pendingForm['form'] ?? null);
+
+        $fields = collect($reply->pendingForm['fields'] ?? [])->keyBy('key');
+
+        $this->assertSame(['name', 'document', 'phone_number', 'email'], $fields->keys()->all());
+        // Lo que Gemini ya extrajo llega pre-llenado; el resto vacio.
+        $this->assertSame('Beatriz Ríos', $fields->get('name')['value'] ?? null);
+        $this->assertSame('', $fields->get('document')['value'] ?? null);
+        $this->assertSame('tel', $fields->get('phone_number')['kind'] ?? null);
+        $this->assertSame('email', $fields->get('email')['kind'] ?? null);
+        $this->assertTrue($fields->get('name')['required'] ?? false);
+        $this->assertFalse($fields->get('email')['required'] ?? true);
+
+        $this->assertSame('tenant', session('assistant.createform.'.$this->user->id)['entity'] ?? null);
+    }
+
+    #[Test]
+    public function submit_create_form_completa_los_datos_y_propone_la_accion(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_tenant',
+            'params' => ['name' => 'Beatriz Ríos'],
+            'confidence' => 0.9,
+        ]);
+
+        $this->assistant()->ask('registra un inquilino nuevo', [], $this->user->id);
+
+        // El usuario diligencia el form: nombre ya venia, el resto lo escribe.
+        $proposal = app(AssistantToolInvoker::class)->submitForm([
+            'name' => 'Beatriz Ríos',
+            'document' => '1122334455',
+            'phone_number' => '3005556677',
+            'email' => '',
+        ], $this->user->id);
+
+        $this->assertSame('create_tenant', $proposal->action['type'] ?? null);
+        $this->assertSame('Beatriz Ríos', $proposal->action['params']['name'] ?? null);
+        $this->assertSame('1122334455', $proposal->action['params']['document'] ?? null);
+        $this->assertSame('3005556677', $proposal->action['params']['phone_number'] ?? null);
+        $this->assertNull(session('assistant.createform.'.$this->user->id));
+    }
+
+    #[Test]
+    public function create_rental_form_tiene_los_campos_con_sus_tipos_reales(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_rental',
+            'params' => ['tenant_name' => 'Beatriz Ríos'],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('agenda un arriendo nuevo', [], $this->user->id);
+
+        $this->assertSame('create_rental', $reply->pendingForm['form'] ?? null);
+
+        $fields = collect($reply->pendingForm['fields'] ?? [])->keyBy('key');
+
+        $this->assertSame('number', $fields->get('monthly_amount')['kind'] ?? null);
+        $this->assertSame('date', $fields->get('start_date')['kind'] ?? null);
+        $this->assertSame('select', $fields->get('billing_cadence')['kind'] ?? null);
+        $this->assertSame('select', $fields->get('rental_type')['kind'] ?? null);
+        $this->assertNotEmpty($fields->get('billing_cadence')['options'] ?? []);
+        $this->assertSame('Beatriz Ríos', $fields->get('tenant_name')['value'] ?? null);
     }
 }

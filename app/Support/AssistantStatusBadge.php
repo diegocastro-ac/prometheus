@@ -3,8 +3,13 @@
 namespace App\Support;
 
 use App\Enums\ActItemState;
+use App\Enums\AdjustmentState;
+use App\Enums\BillingCadence;
 use App\Enums\InvoiceStatus;
+use App\Enums\IpcBasis;
+use App\Enums\NotificationMethod;
 use App\Enums\PaymentStatus;
+use App\Enums\RentalType;
 use Illuminate\Support\Str;
 
 /**
@@ -25,7 +30,7 @@ final class AssistantStatusBadge
     ];
 
     /** Columnas booleanas: si/no se pintan como badge de exito/peligro. */
-    private const YES_NO_COLUMNS = ['is_active', 'pactado', 'active'];
+    private const YES_NO_COLUMNS = ['is_active', 'pactado', 'active', 'signed', 'overdue'];
 
     /**
      * ¿La columna puede mostrar un badge de estado? Lo usa el colorista
@@ -86,6 +91,25 @@ final class AssistantStatusBadge
 
         if ($item = ActItemState::tryFrom($key)) {
             return ['label' => $item->label(), 'classes' => self::classes(self::itemColor($item))];
+        }
+
+        // Estado del reajuste: llega como valor ('applied') o como etiqueta
+        // traducida ('Aplicado'). Cada estado del enum ya define su color.
+        foreach (AdjustmentState::cases() as $state) {
+            if ($key === $state->value || $key === Str::lower(Str::ascii($state->label()))) {
+                return ['label' => $state->label(), 'classes' => self::classes($state->color())];
+            }
+        }
+
+        // Catalogos categoricos sin carga de estado: badge informativo
+        // neutro para que la tabla se vea pareja. Se acepta el valor crudo
+        // y la etiqueta traducida.
+        foreach ([BillingCadence::class, RentalType::class, NotificationMethod::class, IpcBasis::class] as $enum) {
+            foreach ($enum::cases() as $case) {
+                if ($key === Str::lower($case->value) || $key === Str::lower(Str::ascii($case->label()))) {
+                    return ['label' => $case->label(), 'classes' => self::classes('info')];
+                }
+            }
         }
 
         // 'overdue' ya cayo en PaymentStatus; aqui quedan los tipos de alerta

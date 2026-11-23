@@ -6,10 +6,19 @@
 @if (is_array($data) && $data !== [])
     <div class="mt-3 space-y-2">
         @foreach ($data as $key => $rows)
-            @if (is_array($rows) && $rows !== [] && isset($rows[0]) && is_array($rows[0]))
+            {{-- 'candidates' y 'pending_resolution' no son tablas: los
+                 candidatos se pintan como chips y la resolucion es metadata
+                 interna para re-ejecutar la peticion. --}}
+            @if (! in_array($key, ['candidates', 'pending_resolution'], true) && is_array($rows) && $rows !== [] && isset($rows[0]) && is_array($rows[0]))
                 @php
+                    // `_titles` permite que la respuesta traiga un titulo
+                    // contextual ("Arriendo de X") que manda sobre el
+                    // titulo generico del idioma.
+                    $customTitle = $data['_titles'][$key] ?? null;
                     $titleKey = "assistant.data_titles.{$key}";
-                    $tableTitle = __($titleKey);
+                    $tableTitle = is_string($customTitle) && $customTitle !== ''
+                        ? $customTitle
+                        : __($titleKey);
                     if ($tableTitle === $titleKey) {
                         $columnKey = "assistant.columns.{$key}";
                         $tableTitle = __($columnKey) !== $columnKey ? __($columnKey) : ucfirst(str_replace('_', ' ', $key));

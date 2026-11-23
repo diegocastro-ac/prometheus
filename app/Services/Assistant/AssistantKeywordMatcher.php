@@ -30,13 +30,14 @@ class AssistantKeywordMatcher
     public function match(string $question): ?array
     {
         $this->source = trim($question);
-        $q = Str::lower($this->source);
+        $q = $this->synonyms(Str::lower($this->source));
 
         if ($q === '') {
             return null;
         }
 
-        return $this->matchDraft($q)
+        return $this->matchGuide($q)
+            ?? $this->matchDraft($q)
             ?? $this->matchActions($q)
             ?? $this->matchOverdue($q)
             // Documentos antes que balance: "genera el estado de cuenta"
@@ -46,6 +47,7 @@ class AssistantKeywordMatcher
             // Metricas antes que income/balance: "tasa de recaudo" y
             // "peores deudores" contienen palabras que esos matchers
             // genericos capturarian primero.
+            ?? $this->matchInsights($q)
             ?? $this->matchMetrics($q)
             ?? $this->matchIncome($q)
             ?? $this->matchAnalysis($q)
@@ -67,6 +69,59 @@ class AssistantKeywordMatcher
             ?? $this->matchNavigate($q)
             ?? $this->matchLists($q)
             ?? $this->matchGreeting($q);
+    }
+
+    /**
+     * Sinónimos del dominio que no aparecen en las listas de keywords:
+     * se canonicalizan sobre la pregunta en minusculas ($q) para que
+     * todos los matchers los reconozcan. La extraccion de nombres sigue
+     * usando $this->source (texto original), asi que "apartamento 301"
+     * se captura intacto aunque aqui diga "propiedad 301".
+     */
+    private function synonyms(string $q): string
+    {
+        return preg_replace(
+            [
+                '/\barrendamientos\b/u', '/\barrendamiento\b/u',
+                '/\blocatorios\b/u', '/\blocatario\b/u',
+                '/\bapartamentos\b/u', '/\bapartamento\b/u',
+            ],
+            ['arriendos', 'arriendo', 'inquilinos', 'inquilino', 'propiedades', 'propiedad'],
+            $q,
+        ) ?? $q;
+    }
+
+    /**
+     * Pedidos de guia/tutorial: "soy nuevo", "por donde empiezo",
+     * "como hago para facturar". Temas especificos por palabra clave;
+     * lo demas cae al onboarding completo (topic=start en el invoker).
+     *
+     * @return array{intent: string, params: array<string, mixed>}|null
+     */
+    private function matchGuide(string $q): ?array
+    {
+        // Solo frases inequivocas de guia: "como" suelto es demasiado
+        // ambiguo ("como van mis finanzas" es un analisis, no un tutorial).
+        $asksGuide = (bool) preg_match(
+            '/\b(guia\w*|guiame|guíame|tutorial|paso a paso|step by step|por donde (empiezo|comienzo|arranco)|por que no se|como (uso|utilizo|manejo|opero) (la|esta|prometheus)|getting started|how do i (use|start|set up)|onboarding|primera vez|soy nuevo|acabo de llegar|ayudame a empezar)\b/iu',
+            $q,
+        );
+
+        if (! $asksGuide) {
+            return null;
+        }
+
+        $topic = match (true) {
+            (bool) preg_match('/\b(factur\w+|billing|invoice)\b/iu', $q) => 'billing',
+            (bool) preg_match('/\b(cobr\w+|pago\w*|recaud\w+|deud\w+|payment|collect)\b/iu', $q) => 'collections',
+            (bool) preg_match('/\b(reajust\w+|ipc|incremento|canon)\b/iu', $q) => 'adjustments',
+            (bool) preg_match('/\b(acta\w*|entrega|inventario|delivery)\b/iu', $q) => 'delivery_acts',
+            (bool) preg_match('/\b(documento\w*|comprobante\w*|estado de cuenta|certificad\w+)\b/iu', $q) => 'documents',
+            (bool) preg_match('/\b(ajustes?|configur\w+|perfil|business settings)\b/iu', $q) => 'settings',
+            default => 'start',
+        };
+
+        return ['intent' => 'app_guide', 'params' => ['topic' => $topic]];
     }
 
     /**
@@ -115,7 +170,7 @@ class AssistantKeywordMatcher
             // Solo es bill_single si hay un arriendo explicito; "genera las
             // facturas de 2027-02" sigue siendo el barrido general.
             if ($rentalName !== null
-                && ! $this->hasAny($rentalName, ['todas', 'todos', 'mes', 'periodo', 'año', 'ano'])
+                && ! $this->hasAnyWord($rentalName, ['todas', 'todos', 'mes', 'periodo', 'año', 'ano'])
                 && preg_match('/^\d{4}(-\d{2})?$/', $rentalName) !== 1) {
                 $params = ['rental_name' => $rentalName];
                 $params += $this->extractPeriod($q);
@@ -177,6 +232,27 @@ class AssistantKeywordMatcher
     {
         return $this->hasAny($q, ['recaud', 'ingres', 'income', 'cuánto cobré', 'cuanto cobre', 'cuánto facturé', 'cuanto facture', 'ventas', 'revenue', 'how much did i earn'])
             ? ['intent' => 'income_period', 'params' => $this->extractPeriod($q)]
+            : null;
+    }
+
+    /**
+     * Pedidos predictivos/valorativos: pronostico, mejoras, si vale la
+     * pena un inquilino, riesgos. Distinto de financial_analysis (solo
+     * metricas del periodo): esto genera la tarjeta de insights.
+     *
+     * @return array{intent: string, params: array<string, mixed>}|null
+     */
+    private function matchInsights(string $q): ?array
+    {
+        return $this->hasAny($q, [
+            'predic', 'pronostic', 'proyect', 'forecast', 'futuro',
+            'que pasaria si', 'qué pasaría si', 'si sigo asi', 'si sigo así',
+            'puntos puedo mejorar', 'puntos a mejorar', 'como mejorar', 'cómo mejorar',
+            'que mejorar', 'qué mejorar', 'recomiend', 'sugerenc',
+            'vale la pena', 'valdria la pena', 'valdría la pena',
+            'buen pagador', 'mal pagador', 'riesgos', 'risk',
+            'conviene tener', 'mantener a', 'soltar a', 'echar a',
+        ]) ? ['intent' => 'business_insights', 'params' => []]
             : null;
     }
 
@@ -347,7 +423,7 @@ class AssistantKeywordMatcher
         if ($this->hasAny($q, ['estado de cuenta', 'statement'])) {
             $rental = $this->captureAfter($this->source ?? $q, '/\b(?:de|del|para)\s+(.+?)(?=\s+(?:del|de|en|por|para|del periodo|del período)\b|[.,;!?]|$)/iu');
 
-            if ($rental !== null && ! $this->hasAny($rental, ['estado', 'cuenta', 'periodo', 'mes'])) {
+            if ($rental !== null && ! $this->hasAnyWord($rental, ['estado', 'cuenta', 'periodo', 'mes'])) {
                 $params['rental_name'] = $rental;
             }
 
@@ -442,7 +518,7 @@ class AssistantKeywordMatcher
         // Sin nombre o con un sustantivo generico no es ficha de entidad:
         // "cuentame del portafolio" es portfolio_summary, no un rental.
         if ($name === null
-            || $this->hasAny($name, ['todo', 'todos', 'general', 'resumen', 'negocio', 'portafolio', 'portfolio', 'finanzas', 'sistema', 'cuenta', 'ajustes'])) {
+            || $this->hasAnyWord($name, ['todo', 'todos', 'general', 'resumen', 'negocio', 'portafolio', 'portfolio', 'finanzas', 'sistema', 'cuenta', 'ajustes'])) {
             return null;
         }
 
@@ -497,12 +573,28 @@ class AssistantKeywordMatcher
             return ['intent' => 'update_rental', 'params' => $params];
         }
 
-        // Inquilino: telefono, correo, documento.
+        // Nombre de persona ("cambia el nombre de X a Y"): no lleva la
+        // palabra "inquilino" y sin este caso caia en el limbo.
+        if ($this->hasAny($q, ['nombre', 'name'])
+            && ! $this->hasAny($q, ['propiedad', 'inmueble', 'arriendo', 'negocio', 'empresa', 'archivo', 'archivo', 'archivo'])) {
+            $name = $this->captureAfter($this->source ?? $q,
+                '/\b(?:de|del|para|de la)\s+(.+?)(?:\s+(?:a|por|en|con|que)\b|[.,;!?]|$)/iu');
+
+            if ($name !== null && $value !== null) {
+                return ['intent' => 'update_tenant', 'params' => [
+                    'tenant_name' => $name,
+                    'new_name' => $value,
+                ]];
+            }
+        }
+
+        // Inquilino: telefono, correo, documento, nombre.
         if ($this->hasAny($q, ['inquilino', 'inquilinos', 'tenant', 'arrendatario'])) {
             $field = match (true) {
                 $this->hasAny($q, ['telefono', 'teléfono', 'celular', 'phone', 'tel', 'whatsapp']) => 'phone_number',
                 $this->hasAny($q, ['correo', 'email', 'mail']) => 'email',
                 $this->hasAny($q, ['documento', 'cedula', 'cédula', 'cc', 'nit']) => 'document',
+                $this->hasAny($q, ['nombre', 'name']) => 'new_name',
                 default => null,
             };
 
@@ -521,18 +613,26 @@ class AssistantKeywordMatcher
             return ['intent' => 'update_tenant', 'params' => $params];
         }
 
-        // Propiedad: direccion.
-        if ($this->hasAny($q, ['propiedad', 'inmueble', 'property', 'apto', 'apartamento'])
-            && $this->hasAny($q, ['direccion', 'dirección', 'address', 'ubicacion', 'ubicación'])) {
-            $params = ['address' => $value ?? ''];
-            $name = $this->captureAfter($this->source ?? $q,
-                '/\b(?:propiedad|inmueble|apto|apartamento|local|oficina)\s+(?:de|del|para|de la)?\s*(.+?)(?:\s+(?:a|por|en|con)\b|[.,;!?]|$)/iu');
+        // Propiedad: direccion o nombre ("cambia el nombre de la
+        // propiedad X a Y").
+        if ($this->hasAny($q, ['propiedad', 'propiedades', 'inmueble', 'inmuebles', 'property', 'properties', 'apto', 'apartamento', 'local', 'oficina', 'bodega', 'consultorio'])) {
+            $field = match (true) {
+                $this->hasAny($q, ['direccion', 'dirección', 'address', 'ubicacion', 'ubicación']) => 'address',
+                $this->hasAny($q, ['nombre', 'name']) => 'name',
+                default => null,
+            };
 
-            if ($name !== null) {
-                $params['property_name'] = $name;
+            if ($field !== null && $value !== null) {
+                $params = [$field => $value];
+                $name = $this->captureAfter($this->source ?? $q,
+                    '/\b(?:propiedad|inmueble|apto|apartamento|local|oficina)\s+(?:de|del|para|de la)?\s*(.+?)(?:\s+(?:a|por|en|con)\b|[.,;!?]|$)/iu');
+
+                if ($name !== null) {
+                    $params['property_name'] = $name;
+                }
+
+                return ['intent' => 'update_property', 'params' => $params];
             }
-
-            return ['intent' => 'update_property', 'params' => $params];
         }
 
         return null;
@@ -558,7 +658,7 @@ class AssistantKeywordMatcher
         $rentalName = $this->captureAfter($this->source ?? $q,
             '/\b(?:de|del|para)\s+(.+?)(?=\s+(?:a|por|en|con|desde|el)\b|[.,;!?]|$)/iu');
 
-        if ($rentalName !== null && ! $this->hasAny($rentalName, ['reajuste', 'cadena', 'ipc'])) {
+        if ($rentalName !== null && ! $this->hasAnyWord($rentalName, ['reajuste', 'cadena', 'ipc'])) {
             $params['rental_name'] = $rentalName;
         }
 
@@ -618,7 +718,7 @@ class AssistantKeywordMatcher
     {
         $map = [
             ['inquilino', 'inquilinos', 'tenant', 'arrendatario', 'arrendatarios', 'list_tenants'],
-            ['propiedad', 'propiedades', 'inmueble', 'inmuebles', 'property', 'properties', 'list_properties'],
+            ['propiedad', 'propiedades', 'inmueble', 'inmuebles', 'property', 'properties', 'local', 'oficina', 'bodega', 'list_properties'],
             ['arriendo', 'arriendos', 'alquiler', 'alquileres', 'rental', 'rentals', 'list_rentals'],
             ['factura', 'facturas', 'invoice', 'invoices', 'list_invoices'],
             ['pago', 'pagos', 'payment', 'payments', 'abono', 'abonos', 'list_payments'],
@@ -718,7 +818,7 @@ class AssistantKeywordMatcher
             $rental = $this->extractAfter($q, '/\bpara\s+(.+?)(?:[.?!]|$)/u')
                 ?? $this->extractAfter($q, '/\b(?:del|de)\s+(?!entrega|recepci|recepción|inventario|acta)(.+?)(?:[.?!]|$)/u');
 
-            if ($rental !== null && ! $this->hasAny($rental, ['acta', 'entrega', 'recepción', 'recepcion', 'inventario'])) {
+            if ($rental !== null && ! $this->hasAnyWord($rental, ['acta', 'entrega', 'recepción', 'recepcion', 'inventario'])) {
                 $params['rental_name'] = $rental;
             }
 
@@ -729,7 +829,19 @@ class AssistantKeywordMatcher
             return ['intent' => 'navigate', 'params' => ['target' => 'delivery_acts']];
         }
 
-        return ['intent' => 'list_delivery_acts', 'params' => []];
+        // Listado acotado a una entidad: "el acta del arriendo de X",
+        // "las actas de Juan", "actas del inquilino Y".
+        $params = [];
+        $entity = $this->extractAfter($q, '/\b(?:del|de)\s+(?:arriendo|alquiler|rental|contrato|inquilino|inquilina|arrendatario)\s+(?:de|del)\s+(.+?)(?:[.?!]|$)/u')
+            ?? $this->extractAfter($q, '/\b(?:del|de)\s+(?!entrega|recepci|recepción|inventario|acta|arriendo|alquiler|rental|contrato|inquilino|inquilina|arrendatario)(.+?)(?:[.?!]|$)/u');
+
+        // Filtro de frases genericas con limites de palabra: un nombre
+        // como "Nicolas" contiene "las" y descartaba la entidad.
+        if ($entity !== null && ! $this->hasAnyWord($entity, ['acta', 'entrega', 'recepción', 'recepcion', 'inventario', 'todas', 'todos', 'mis', 'las', 'los', 'recientes'])) {
+            $params['rental_name'] = $entity;
+        }
+
+        return ['intent' => 'list_delivery_acts', 'params' => $params];
     }
 
     private function matchNavigate(string $q): ?array
@@ -820,6 +932,27 @@ class AssistantKeywordMatcher
     {
         foreach ($needles as $needle) {
             if (Str::contains($q, Str::lower($needle))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Variante de hasAny con limites de palabra, para filtrar nombres
+     * extraidos: hasAny() es substring y un nombre como "Nicolas"
+     * contiene "las" o "James" contiene "mes", lo que hacia que la
+     * entidad se descartara y el listado saliera sin filtrar.
+     *
+     * @param  list<string>  $needles
+     */
+    private function hasAnyWord(string $haystack, array $needles): bool
+    {
+        $lower = Str::lower($haystack);
+
+        foreach ($needles as $needle) {
+            if (preg_match('/\b'.preg_quote(Str::lower($needle), '/').'\b/iu', $lower) === 1) {
                 return true;
             }
         }

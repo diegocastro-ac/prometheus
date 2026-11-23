@@ -389,7 +389,7 @@ class RentalResource extends Resource
                                             ->label(__('rental.infolist.sections.main.monthly_amount'))
                                             ->numeric(),
                                         Components\TextEntry::make('billing_cadence')
-                                            ->label('Cadencia de cobro')
+                                            ->label(__('rental.form.sections.main.billing_cadence'))
                                             ->badge()
                                             ->formatStateUsing(function ($state) {
                                                 if ($state instanceof BillingCadence) {

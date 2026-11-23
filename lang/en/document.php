@@ -90,6 +90,7 @@ return [
     'invoices' => 'Invoices',
     'total_billed' => 'Total Billed',
     'statement_note' => 'Due dates are checked on each invoice. Annulled invoices are not billed and are shown for the record only.',
+    'statement_empty_period' => 'This period has no registered invoices: the statement shows zero because nothing was billed.',
     'concept' => 'Concept',
     'balance' => 'Balance',
     'status' => 'Status',

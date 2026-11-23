@@ -31,6 +31,7 @@ use App\Services\FinancialAnalysisService;
 use App\Services\RentalFacade;
 use App\Services\SettingsService;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 /**
@@ -70,9 +71,21 @@ class AssistantToolInvoker
         'show_settings',
         'ipc_status',
         'entity_detail',
+        'query_data',
+        'general_answer',
+        'app_guide',
+        'business_insights',
     ];
 
     private const ANALYSIS_INTENTS = ['financial_analysis'];
+
+    /**
+     * Acciones de escritura maximas por confirmacion en un batch grande.
+     * El resto queda en cola (form session 'batch_continue') y llega con
+     * el "continuar" del usuario: evita un request eterno y deja revisar
+     * cada grupo antes de ejecutarlo.
+     */
+    private const BATCH_CHUNK = 12;
 
     private const DRAFT_INTENTS = ['draft_reminder', 'draft_notice'];
 
@@ -102,12 +115,30 @@ class AssistantToolInvoker
         'export_csv',
     ];
 
+    /**
+     * Referencia interna "Modelo:id" elegida por el usuario en una lista de
+     * candidatos. Solo vive durante una llamada a invoke(): los resolvedores
+     * la consumen para devolver ESA entidad aunque el nombre siga siendo
+     * ambiguo (dos inquilinos "Camila"). Nunca se muestra en la UI.
+     */
+    private ?string $pendingEntityRef = null;
+
+    /**
+     * Ultimo error de `query_data` (validacion o ejecucion). El adapter lo
+     * lee para reintentar la clasificacion una vez con el error como
+     * contexto: el modelo corrige su propio SQL en vez de rendirse.
+     */
+    public ?string $lastQueryError = null;
+
     public function __construct(
         private readonly PortfolioContextBuilder $context,
         private readonly FinancialAnalysisService $analysis,
         private readonly AssistantFormSession $forms,
         private readonly RentalFacade $rentals,
         private readonly SettingsService $settings,
+        private readonly AppGuide $guide,
+        private readonly PortfolioInsightsService $insights,
+        private readonly DatabaseSchemaDigest $schema,
     ) {}
 
     /**
@@ -115,15 +146,26 @@ class AssistantToolInvoker
      */
     public function invoke(string $intent, array $params, int $userId): AssistantReply
     {
-        $reply = match (true) {
-            $intent === 'navigate' => $this->navigate($params, $userId),
-            in_array($intent, self::READ_INTENTS, true) => $this->read($intent, $params, $userId),
-            in_array($intent, self::ANALYSIS_INTENTS, true) => $this->financialAnalysis($userId),
-            in_array($intent, self::DRAFT_INTENTS, true) => $this->draft($intent, $params, $userId),
-            in_array($intent, self::FORM_INTENTS, true) => $this->handleForm($intent, $params, $userId),
-            in_array($intent, self::ACTION_INTENTS, true) => $this->propose($intent, $params, $userId),
-            default => AssistantReply::say(__('assistant.unknown')),
-        };
+        $this->pendingEntityRef = isset($params['_entity_ref']) && is_string($params['_entity_ref'])
+            ? $params['_entity_ref']
+            : null;
+
+        $this->lastQueryError = null;
+
+        try {
+            $reply = match (true) {
+                $intent === 'navigate' => $this->navigate($params, $userId),
+                $intent === 'continue_batch' => $this->continueBatch($params, $userId),
+                in_array($intent, self::READ_INTENTS, true) => $this->read($intent, $params, $userId),
+                in_array($intent, self::ANALYSIS_INTENTS, true) => $this->financialAnalysis($userId),
+                in_array($intent, self::DRAFT_INTENTS, true) => $this->draft($intent, $params, $userId),
+                in_array($intent, self::FORM_INTENTS, true) => $this->handleForm($intent, $params, $userId),
+                in_array($intent, self::ACTION_INTENTS, true) => $this->propose($intent, $params, $userId),
+                default => AssistantReply::say(__('assistant.unknown')),
+            };
+        } finally {
+            $this->pendingEntityRef = null;
+        }
 
         // El intent viaja en la respuesta para que el chat pueda repetir
         // los datos cuando el usuario pide "la tabla" como follow-up.
@@ -185,6 +227,19 @@ class AssistantToolInvoker
             }
         }
 
+        // Operacion grande: se proponen las primeras BATCH_CHUNK acciones
+        // y el resto queda en cola; el usuario pide "continuar" y llega el
+        // siguiente grupo. Sin cola si ya hay un wizard/formulario activo
+        // (una sola sescion de formulario por usuario).
+        $queued = 0;
+
+        if (count($actions) > self::BATCH_CHUNK
+            && ($this->forms->get($userId)['form'] ?? null) === null) {
+            $remaining = array_splice($actions, self::BATCH_CHUNK);
+            $queued = count($remaining);
+            $this->forms->put($userId, 'batch_continue', ['items' => $remaining]);
+        }
+
         $action = match (count($actions)) {
             0 => null,
             1 => $actions[0],
@@ -195,14 +250,72 @@ class AssistantToolInvoker
             ],
         };
 
+        $texts = array_filter($texts);
+
+        if ($queued > 0) {
+            $texts[] = __('assistant.replies.batch_chunk', ['count' => $queued]);
+            $suggestions[] = __('assistant.suggestions.batch_continue');
+        }
+
         return new AssistantReply(
-            text: $texts === [] ? __('assistant.unknown') : implode("\n\n", array_filter($texts)),
+            text: $texts === [] ? __('assistant.unknown') : implode("\n\n", $texts),
             data: $data === [] ? null : $data,
             action: $action,
             redirect: $redirect,
-            suggestions: array_slice($suggestions, 0, 4),
+            suggestions: array_slice(array_values(array_unique($suggestions)), 0, 4),
             intent: 'batch',
             sections: $sections === [] ? null : $sections,
+        );
+    }
+
+    /**
+     * Siguiente grupo de un batch grande en cola ("continuar"). Propone el
+     * chunk, vuelve a encolar el resto y libera la sesion al terminar.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function continueBatch(array $params, int $userId): AssistantReply
+    {
+        $session = $this->forms->get($userId);
+        $items = $session['data']['items'] ?? null;
+
+        if (($session['form'] ?? null) !== 'batch_continue' || ! is_array($items) || $items === []) {
+            return AssistantReply::say(__('assistant.replies.batch_continue_none'), [
+                __('assistant.suggestions.portfolio'),
+            ]);
+        }
+
+        $chunk = array_splice($items, 0, self::BATCH_CHUNK);
+        $remaining = $items;
+
+        if ($remaining === []) {
+            $this->forms->clear($userId);
+        } else {
+            $this->forms->put($userId, 'batch_continue', ['items' => $remaining]);
+        }
+
+        $action = match (count($chunk)) {
+            1 => $chunk[0],
+            default => [
+                'type' => 'batch',
+                'items' => $chunk,
+                'summary' => $this->batchSummary($chunk),
+            ],
+        };
+
+        $text = __('assistant.replies.batch_continue_next', ['count' => count($chunk)]);
+        $suggestions = [];
+
+        if ($remaining !== []) {
+            $text .= "\n\n".__('assistant.replies.batch_continue_more', ['count' => count($remaining)]);
+            $suggestions[] = __('assistant.suggestions.batch_continue');
+        }
+
+        return new AssistantReply(
+            text: $text,
+            action: $action,
+            suggestions: $suggestions,
+            intent: 'batch_continue',
         );
     }
 
@@ -353,7 +466,7 @@ class AssistantToolInvoker
             'pending_balance' => $this->pendingBalance($params, $userId),
             'overdue_invoices' => $this->overdueInvoices($userId),
             'income_period' => $this->incomePeriod($params, $userId),
-            'next_adjustments' => $this->nextAdjustments($userId),
+            'next_adjustments' => $this->nextAdjustments($params, $userId),
             'expiring_contracts' => $this->expiringContracts($userId),
             'list_tenants' => $this->listTenants($params, $userId),
             'list_properties' => $this->listProperties($params, $userId),
@@ -373,6 +486,10 @@ class AssistantToolInvoker
             'show_settings' => $this->showSettings($userId),
             'ipc_status' => $this->ipcStatus($userId),
             'entity_detail' => $this->entityDetail($params, $userId),
+            'query_data' => $this->freeQuery($params, $userId),
+            'general_answer' => $this->generalAnswer($params),
+            'app_guide' => $this->appGuide($params),
+            'business_insights' => $this->businessInsights($params, $userId),
             default => AssistantReply::say(__('assistant.unknown')),
         };
     }
@@ -538,12 +655,34 @@ class AssistantToolInvoker
         );
     }
 
-    private function nextAdjustments(int $userId): AssistantReply
+    private function nextAdjustments(array $params, int $userId): AssistantReply
     {
-        $rentals = Rental::query()
+        $query = Rental::query()
             ->where('user_id', $userId)
             ->where('is_active', true)
-            ->with('tenant:id,name')
+            ->with('tenant:id,name');
+
+        // Si la pregunta nombra un arriendo/inquilino, la respuesta es
+        // SOLO de ese: "cuando toca el reajuste de X" no es "dame todos".
+        $named = $this->param($params, ['rental_name', 'tenant', 'entity', 'name']);
+        $scopedRental = null;
+
+        if ($named !== null) {
+            $resolved = $this->resolveRentalCandidates($named, $userId);
+
+            if (($resolved['entity'] ?? null) instanceof Rental) {
+                $scopedRental = $resolved['entity'];
+            } elseif (! empty($resolved['candidates'])) {
+                return $this->ambiguousReply($named, $resolved['candidates'], 'adjustments', [
+                    'intent' => 'next_adjustments',
+                    'params' => ['rental_name' => $named],
+                    'name_key' => 'rental_name',
+                ]);
+            }
+        }
+
+        $rentals = $query
+            ->when($scopedRental !== null, fn ($q) => $q->whereKey($scopedRental->id))
             ->get()
             ->map(fn (Rental $rental): array => [
                 'rental' => $rental,
@@ -553,22 +692,35 @@ class AssistantToolInvoker
             ->take(10);
 
         if ($rentals->isEmpty()) {
-            return AssistantReply::say(__('assistant.replies.no_rentals'), [
-                __('assistant.suggestions.portfolio'),
-            ]);
+            return AssistantReply::say(
+                $named !== null
+                    ? __('assistant.replies.no_adjustment_for', ['entity' => $named])
+                    : __('assistant.replies.no_rentals'),
+                [__('assistant.suggestions.portfolio')],
+            );
         }
 
+        // Dias siempre positivos + bandera de vencido: un "-288" en la
+        // tabla no le dice nada al usuario; "vencido hace 288 dias" si.
+        $rows = $rentals->map(fn (array $row): array => [
+            'rental' => $row['rental']->name,
+            'tenant' => $row['rental']->tenant?->name ?? '—',
+            'due_date' => $row['due']->toDateString(),
+            'days' => (int) abs($row['due']->startOfDay()->diffInDays(today()->startOfDay())),
+            'overdue' => $row['due']->isBefore(today()->startOfDay()) ? __('assistant.yes') : __('assistant.no'),
+        ])->all();
+
+        $text = $rentals->count() === 1
+            ? __('assistant.replies.next_adjustment_single', [
+                'rental' => $rows[0]['rental'],
+                'tenant' => $rows[0]['tenant'],
+                'date' => $rows[0]['due_date'],
+            ])
+            : __('assistant.replies.next_adjustments', ['count' => $rentals->count()]);
+
         return new AssistantReply(
-            text: __('assistant.replies.next_adjustments', ['count' => $rentals->count()]),
-            data: [
-                'adjustments' => $rentals->map(fn (array $row): array => [
-                    'rental' => $row['rental']->name,
-                    'tenant' => $row['rental']->tenant?->name ?? '—',
-                    'due_date' => $row['due']->toDateString(),
-                    'days' => (int) $row['due']->startOfDay()->diffInDays(today()->startOfDay()),
-                    'overdue' => $row['rental']->isDueForAdjustment(),
-                ])->all(),
-            ],
+            text: $text,
+            data: ['adjustments' => $rows],
             redirect: RentAdjustmentResource::getUrl('index'),
             suggestions: [__('assistant.suggestions.analysis'), __('assistant.suggestions.portfolio')],
         );
@@ -823,14 +975,29 @@ class AssistantToolInvoker
     {
         $search = $this->searchTerm($params);
 
+        // Scope por entidad ("el acta del arriendo de X", "actas de Juan"):
+        // si la pregunta nombra un arriendo o inquilino, el listado se
+        // acota a ese — nunca se devuelven actas ajenas a lo pedido.
+        $rental = $this->param($params, ['rental_name', 'tenant_name', 'tenant', 'entity', 'name']) !== null
+            ? $this->findRental($params, $userId)
+            : null;
+
+        $query = DeliveryAct::query()
+            ->where('user_id', $userId)
+            ->withCount('items')
+            ->orderByDesc('occurred_at')
+            ->orderByDesc('id')
+            ->limit(50);
+
+        if ($rental !== null) {
+            $tenantName = (string) ($rental->tenant?->name ?? '');
+            $query->where(fn ($q) => $q
+                ->where('rental_id', $rental->id)
+                ->when($tenantName !== '', fn ($qq) => $qq->orWhere('tenant_name', $tenantName)));
+        }
+
         $acts = $this->filterModels(
-            DeliveryAct::query()
-                ->where('user_id', $userId)
-                ->withCount('items')
-                ->orderByDesc('occurred_at')
-                ->orderByDesc('id')
-                ->limit(50)
-                ->get(),
+            $query->get(),
             $search,
             fn (DeliveryAct $act): string => implode(' ', array_filter([
                 $act->tenant_name, $act->landlord_name, $act->type,
@@ -838,6 +1005,14 @@ class AssistantToolInvoker
         )->take(10)->values();
 
         if ($acts->isEmpty()) {
+            if ($rental !== null) {
+                return AssistantReply::say(__('assistant.replies.no_acts_for', [
+                    'name' => (string) ($rental->tenant?->name ?: $rental->name),
+                ]), [
+                    __('assistant.suggestions.delivery_act'),
+                ]);
+            }
+
             return $this->emptyListReply($search, 'acts');
         }
 
@@ -847,21 +1022,38 @@ class AssistantToolInvoker
                 ActItemState::POR_REEMPLAZAR,
                 ActItemState::DESTRUIDO,
             ])
-            ->whereHas('deliveryAct', fn ($query) => $query->where('user_id', $userId))
+            ->whereHas('deliveryAct', fn ($query) => $query->where('user_id', $userId)
+                ->when($rental !== null, fn ($q) => $q->where(fn ($qq) => $qq
+                    ->where('rental_id', $rental->id)
+                    ->when((string) ($rental->tenant?->name ?? '') !== '',
+                        fn ($qqq) => $qqq->orWhere('tenant_name', (string) $rental->tenant?->name)))))
             ->with('deliveryAct:id,tenant_name')
             ->orderByDesc('id')
             ->limit(10)
             ->get();
 
         $unsigned = $acts->filter(fn (DeliveryAct $act): bool => ! $act->isSigned())->count();
+        $scopeName = $rental !== null
+            ? (string) ($rental->tenant?->name ?: $rental->name)
+            : null;
 
         return new AssistantReply(
-            text: __('assistant.replies.list_delivery_acts', [
-                'count' => $acts->count(),
-                'unsigned' => $unsigned,
-                'attention' => $attention->count(),
-            ]),
+            text: $scopeName !== null
+                ? __('assistant.replies.list_delivery_acts_scoped', [
+                    'name' => $scopeName,
+                    'count' => $acts->count(),
+                    'unsigned' => $unsigned,
+                    'attention' => $attention->count(),
+                ])
+                : __('assistant.replies.list_delivery_acts', [
+                    'count' => $acts->count(),
+                    'unsigned' => $unsigned,
+                    'attention' => $attention->count(),
+                ]),
             data: [
+                ...(is_string($scopeName) ? ['_titles' => [
+                    'acts' => __('assistant.data_titles.acts_named', ['name' => $scopeName]),
+                ]] : []),
                 'acts' => $acts->map(fn (DeliveryAct $act): array => [
                     'type' => __("act.types.{$act->type}"),
                     'tenant' => $act->tenant_name ?? '—',
@@ -992,6 +1184,72 @@ class AssistantToolInvoker
                 __('assistant.suggestions.adjustments'),
             ],
         );
+    }
+
+    /**
+     * Analisis predictivo de corto plazo. Los numeros los computa
+     * PortfolioInsightsService de forma determinista; la IA solo narra
+     * el resultado via draft para que distinga hechos de proyecciones.
+     */
+    private function businessInsights(array $params, int $userId): AssistantReply
+    {
+        // La pregunta original y el foco viajan en params: sin ellos el
+        // analisis era siempre el mismo panorama completo.
+        $question = is_string($params['_question'] ?? null) ? $params['_question'] : null;
+
+        $insights = $this->insights->insightsFor($userId, [
+            'focus' => isset($params['focus']) && is_string($params['focus']) ? $params['focus'] : null,
+            'entity' => $this->param($params, ['entity', 'entity_name', 'tenant', 'rental_name', 'name']),
+            'question' => $question,
+        ]);
+        $forecast = $insights['forecast'];
+
+        $text = $forecast['has_history']
+            ? __('assistant.insights.rec_project_title', [
+                'amount' => $this->moneyShortText((float) $forecast['projected_next_month']),
+            ])
+            : __('assistant.insights.no_history');
+
+        // El draft recibe una version compacta: suficiente para narrar
+        // sin inflar el contexto. La pregunta original va incluida para
+        // que la narrativa responda lo que se pidio, no un texto generico.
+        $draftContext = [
+            'user_question' => $question,
+            'focus' => $insights['focus'] ?? null,
+            'forecast' => $forecast,
+            'risky_tenants' => collect($insights['tenants'])
+                ->filter(fn (array $t): bool => $t['risk_score'] >= 20)
+                ->sortByDesc('risk_score')
+                ->take(5)
+                ->values()
+                ->all(),
+            'recommendations' => collect($insights['recommendations'])
+                ->map(fn (array $r): array => ['title' => $r['title'], 'reason' => $r['reason']])
+                ->all(),
+        ];
+
+        return new AssistantReply(
+            text: $text.' '.__('assistant.insights.disclaimer'),
+            draft: [
+                'instruction' => __('assistant.insights.draft_instruction'),
+                'context' => $draftContext,
+            ],
+            data: ['insights' => $insights],
+            suggestions: [
+                __('assistant.insights.rec_see_debtors'),
+                __('assistant.suggestions.overdue'),
+                __('assistant.suggestions.portfolio'),
+            ],
+        );
+    }
+
+    private function moneyShortText(float $amount): string
+    {
+        if (abs($amount) >= 1_000_000) {
+            return '$'.rtrim(rtrim(number_format($amount / 1_000_000, 1, ',', '.'), '0'), ',').'M';
+        }
+
+        return '$'.number_format($amount, 0, ',', '.');
     }
 
     /**
@@ -1277,14 +1535,7 @@ class AssistantToolInvoker
         }
 
         if ($missing !== []) {
-            return AssistantReply::say(__('assistant.replies.need_tenant_details', [
-                'missing' => implode(', ', array_map(
-                    fn (string $field): string => __('assistant.fields.'.$field),
-                    $missing,
-                )),
-            ]), [
-                __('assistant.suggestions.tenants'),
-            ]);
+            return $this->startCreateForm('tenant', $params, $userId);
         }
 
         $exists = Tenant::query()
@@ -1298,6 +1549,8 @@ class AssistantToolInvoker
                 __('assistant.suggestions.portfolio'),
             ]);
         }
+
+        $this->forms->clearCreate($userId);
 
         return new AssistantReply(
             text: __('assistant.replies.propose_create_tenant', ['name' => $name]),
@@ -1331,14 +1584,7 @@ class AssistantToolInvoker
         }
 
         if ($missing !== []) {
-            return AssistantReply::say(__('assistant.replies.need_property_details', [
-                'missing' => implode(', ', array_map(
-                    fn (string $field): string => __('assistant.fields.'.$field),
-                    $missing,
-                )),
-            ]), [
-                __('assistant.suggestions.properties'),
-            ]);
+            return $this->startCreateForm('property', $params, $userId);
         }
 
         $exists = Property::query()
@@ -1352,6 +1598,8 @@ class AssistantToolInvoker
                 __('assistant.suggestions.portfolio'),
             ]);
         }
+
+        $this->forms->clearCreate($userId);
 
         return new AssistantReply(
             text: __('assistant.replies.propose_create_property', ['name' => $name]),
@@ -1468,15 +1716,7 @@ class AssistantToolInvoker
         }
 
         if ($missing !== []) {
-            return AssistantReply::say(__('assistant.replies.need_rental_details', [
-                'missing' => implode(', ', array_map(
-                    fn (string $field): string => __('assistant.fields.'.$field),
-                    $missing,
-                )),
-            ]), [
-                __('assistant.suggestions.portfolio'),
-                __('assistant.suggestions.tenants'),
-            ]);
+            return $this->startCreateForm('rental', $params, $userId);
         }
 
         $monthsRaw = $params['months'] ?? $params['total_months'] ?? $params['duracion'] ?? null;
@@ -1491,6 +1731,8 @@ class AssistantToolInvoker
 
         $tenant = $this->findEntity(Tenant::class, $userId, $tenantName);
         $property = $this->findEntity(Property::class, $userId, $propertyName);
+
+        $this->forms->clearCreate($userId);
 
         return new AssistantReply(
             text: __('assistant.replies.propose_create_rental', [
@@ -1736,7 +1978,17 @@ class AssistantToolInvoker
      */
     private function findRental(array $params, int $userId): ?Rental
     {
-        $name = trim((string) ($params['rental_name'] ?? $params['tenant'] ?? ''));
+        // Eleccion desde la lista de candidatos: manda sobre el nombre.
+        $byRef = $this->entityFromRef(Rental::class, $userId);
+
+        if ($byRef !== null) {
+            return $byRef;
+        }
+
+        $name = trim((string) ($this->param($params, [
+            'rental_name', 'tenant', 'name', 'entity', 'arriendo',
+            'alquiler', 'contrato', 'inquilino', 'rental', 'property_name',
+        ]) ?? ''));
 
         if ($name === '') {
             return null;
@@ -1744,20 +1996,71 @@ class AssistantToolInvoker
 
         $needle = Str::lower($name);
 
-        $matches = Rental::query()
+        // Se cargan TODOS los arriendos (activos e inactivos): documentos,
+        // actas y estados de cuenta de periodos pasados son validos sobre
+        // arriendos finalizados. La preferencia por activos se aplica al
+        // elegir entre coincidencias, no al buscar.
+        $all = Rental::query()
             ->where('user_id', $userId)
-            ->where('is_active', true)
             ->with('tenant:id,name')
             ->get()
             ->filter(fn (Rental $rental): bool => Str::contains(Str::lower($rental->name), $needle)
                 || Str::contains(Str::lower((string) $rental->tenant?->name), $needle))
             ->values();
 
+        $matches = $all->where('is_active', true)->values();
+        if ($matches->isEmpty()) {
+            $matches = $all;
+        }
+
         // Match exacto primero: "apto 302" no debe resolver al "apto 3020"
-        // solo porque aparecio antes en la tabla.
-        return $matches->first(fn (Rental $rental): bool => Str::lower($rental->name) === $needle
-            || Str::lower((string) $rental->tenant?->name) === $needle)
-            ?? $matches->first();
+        // solo porque aparecio antes en la tabla. Solo gana si es UNICO:
+        // dos arriendos de inquilinos homonimos no se desempatan solos.
+        $exacts = $matches->filter(fn (Rental $rental): bool => Str::lower($rental->name) === $needle
+            || Str::lower((string) $rental->tenant?->name) === $needle)->values();
+
+        if ($exacts->count() === 1) {
+            return $exacts->first();
+        }
+
+        if ($exacts->count() > 1) {
+            $matches = $exacts;
+        }
+
+        if ($matches->isNotEmpty()) {
+            // Varias coincidencias: si todas son del mismo inquilino, el
+            // usuario probablemente hablo del inquilino — se toma el
+            // arriendo mas reciente en vez de preguntar de nuevo.
+            $tenantIds = $matches->pluck('tenant_id')->unique();
+
+            if ($tenantIds->count() === 1) {
+                return $matches->sortByDesc('id')->first();
+            }
+
+            return $matches->first();
+        }
+
+        // Ultimo recurso: el nombre puede ser el del INQUILINO y su
+        // arriendo tener un nombre que no lo contiene ("el de Camila").
+        // Se filtra en PHP como el resto del metodo: `ilike` no existe
+        // en SQLite/MySQL y rompia la consulta entera.
+        $tenant = Tenant::query()
+            ->where('user_id', $userId)
+            ->get()
+            ->first(fn (Tenant $t): bool => Str::contains(Str::lower($t->name), Str::lower($name)));
+
+        if ($tenant !== null) {
+            $tenantRentals = Rental::query()
+                ->where('user_id', $userId)
+                ->where('tenant_id', $tenant->id)
+                ->orderByDesc('is_active')
+                ->orderByDesc('id')
+                ->get();
+
+            return $tenantRentals->firstWhere('is_active', true) ?? $tenantRentals->first();
+        }
+
+        return null;
     }
 
     /**
@@ -1857,6 +2160,260 @@ class AssistantToolInvoker
     }
 
     // ---------------------------------------------------------------
+    // Vias libres: consulta SQL y respuesta general
+    // ---------------------------------------------------------------
+
+    /**
+     * Consulta de solo lectura escrita por el modelo (intent query_data).
+     *
+     * Es la escotilla de escape para CUALQUIER pregunta de datos que las
+     * herramientas especificas no cubran: cruces raros, comparaciones,
+     * periodos personalizados. El SQL se valida antes de ejecutar
+     * (verifyFreeSql) y el resultado se pinta como tabla normal; el texto
+     * lo redacta la IA via draft con los datos reales.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function freeQuery(array $params, int $userId): AssistantReply
+    {
+        $lookup = $this->lookupData($params, $userId);
+
+        if (isset($lookup['error'])) {
+            $this->lastQueryError = $lookup['error'];
+
+            return AssistantReply::say(__('assistant.replies.query_failed'));
+        }
+
+        $clean = $lookup['rows'];
+
+        if ($clean === []) {
+            $question = trim((string) ($params['question'] ?? ''));
+
+            return AssistantReply::say($question !== ''
+                ? __('assistant.replies.query_empty_scoped', ['question' => $question])
+                : __('assistant.replies.query_empty'), [
+                    __('assistant.suggestions.portfolio'),
+                ]);
+        }
+
+        return new AssistantReply(
+            text: __('assistant.replies.query_results', ['count' => count($clean)]),
+            data: ['results' => $clean],
+            suggestions: $this->defaultSuggestions(),
+            draft: [
+                'instruction' => 'Resume en 2-4 frases, en el idioma del usuario, lo que muestran estos resultados de una consulta a la base de datos del negocio. Menciona los datos clave (nombres, montos, fechas) tal cual vienen; no inventes cifras ni conclusiones que los datos no soporten. Si la lista es larga, destaca lo mas relevante.',
+                'context' => ['pregunta' => $params['question'] ?? '', 'resultados' => array_slice($clean, 0, 30)],
+            ],
+        );
+    }
+
+    /**
+     * Guia de uso de la app (intent app_guide): pasos ordenados con
+     * acciones clicables (navegar a la seccion o lanzar la accion por
+     * chat). El tema lo elige el modelo segun la pregunta; sin tema
+     * valido cae al onboarding completo.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function appGuide(array $params): AssistantReply
+    {
+        $topic = strtolower(trim((string) ($params['topic'] ?? '')));
+        $question = (string) ($params['_question'] ?? '');
+
+        // El modelo a veces devuelve 'start' o nada aunque la pregunta
+        // sea de un flujo concreto ("registrar propiedades e
+        // inquilinos"): se infiere el tema por palabras clave para no
+        // responder siempre la onboarding completa.
+        if ($topic === '' || $topic === 'start' || ! in_array($topic, AppGuide::TOPICS, true)) {
+            $topic = ($question !== '' ? $this->guide->topicForQuestion($question) : null) ?? 'start';
+        }
+
+        $guide = $this->guide->for($topic);
+
+        if ($guide === null) {
+            return AssistantReply::say(__('assistant.unknown'), $this->defaultSuggestions());
+        }
+
+        return new AssistantReply(
+            text: $guide['intro'] !== '' ? $guide['intro'] : $guide['title'],
+            data: ['guide' => $guide],
+            suggestions: [
+                __('assistant.suggestions.portfolio'),
+                __('assistant.suggestions.overdue'),
+            ],
+        );
+    }
+
+    /**
+     * Respuesta en texto libre redactada por el propio modelo en la
+     * clasificacion (intent general_answer): preguntas conceptuales,
+     * de uso de la app o conversacion del dominio que no piden datos.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function generalAnswer(array $params): AssistantReply
+    {
+        $answer = trim((string) ($params['answer'] ?? ''));
+
+        if ($answer === '') {
+            return AssistantReply::say(__('assistant.unknown'), $this->defaultSuggestions());
+        }
+
+        return AssistantReply::say(mb_substr($answer, 0, 2000), $this->defaultSuggestions());
+    }
+
+    /**
+     * Ejecuta una consulta de apoyo del modelo (intent lookup_data):
+     * el SQL lo escribe la IA para resolver una referencia que el
+     * contexto del prompt no cubre ("la factura mas antigua de X").
+     * Devuelve las filas crudas para que el modelo razone con ellas;
+     * NUNCA se muestran al usuario directamente.
+     *
+     * @param  array<string, mixed>  $params
+     * @return array{rows?: list<array<string, mixed>>, error?: string}
+     */
+    public function lookupData(array $params, int $userId): array
+    {
+        // Modo exploracion de esquema: el modelo pide la ficha completa
+        // de una tabla (columnas, enums, relaciones, volumen) cuando
+        // duda de su estructura a mitad del razonamiento.
+        $table = strtolower(trim((string) ($params['table'] ?? '')));
+
+        if ($table !== '') {
+            $description = $this->schema->describe($table, $userId);
+
+            if ($description === null) {
+                return ['error' => 'La tabla "'.$table.'" no existe en el esquema del negocio. Tablas validas: '.implode(', ', DatabaseSchemaDigest::domainTables())];
+            }
+
+            return ['rows' => [$description]];
+        }
+
+        $sql = trim((string) ($params['sql'] ?? $params['query'] ?? ''));
+        $sql = rtrim($sql, "; \t\n\r");
+
+        if ($sql === '') {
+            return ['error' => 'Debes enviar params.sql (una consulta SELECT) o params.table (la ficha de una tabla).'];
+        }
+
+        $rejection = $this->validateFreeSql($sql, $userId);
+
+        if ($rejection !== null) {
+            return ['error' => $rejection];
+        }
+
+        try {
+            // Subconsulta + LIMIT externo: acota memoria sin importar si
+            // el SQL del modelo ya traia LIMIT u ORDER BY.
+            $rows = DB::select('SELECT * FROM ('.$sql.') AS assistant_rows LIMIT '.self::FREE_QUERY_MAX_ROWS);
+        } catch (\Throwable $exception) {
+            return ['error' => 'SQL error: '.$exception->getMessage()];
+        }
+
+        $clean = [];
+
+        foreach ($rows as $row) {
+            $assoc = (array) $row;
+
+            // Columnas sensibles: nunca salen del servidor aunque el
+            // modelo las haya pedido por descuido.
+            unset($assoc['password'], $assoc['remember_token'], $assoc['api_token'], $assoc['secret']);
+
+            $clean[] = $assoc;
+        }
+
+        return ['rows' => $clean];
+    }
+
+    /**
+     * Validacion del SQL libre. Devuelve null si es ejecutable o el
+     * motivo del rechazo (alimenta el reintento del modelo).
+     */
+    private function validateFreeSql(string $sql, int $userId): ?string
+    {
+        if ($sql === '') {
+            return 'La consulta esta vacia.';
+        }
+
+        if (str_contains($sql, ';')) {
+            return 'Solo se permite UNA sentencia SQL; quita los punto y coma.';
+        }
+
+        if (! preg_match('/^\s*(select|with)\b/i', $sql)) {
+            return 'Solo se permiten consultas SELECT de lectura.';
+        }
+
+        // Palabras que convierten la consulta en escritura o en acceso al
+        // sistema de archivos/servidor. \b evita falsos positivos con
+        // columnas como updated_at o nombres compuestos.
+        if (preg_match('/\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|exec|execute|replace|merge|call|do|pragma|attach|detach|vacuum|reindex|checkpoint|listen|notify|unlisten|discard|prepare|declare|fetch|move|copy|lock|unlock|set|show|use|into|outfile|dumpfile|load_extension)\b/i', $sql)) {
+            return 'La consulta contiene operaciones no permitidas (escritura, DDL o acceso al sistema).';
+        }
+
+        $tables = $this->extractSqlTables($sql);
+
+        if ($tables === []) {
+            return 'No se encontro ninguna tabla en la consulta.';
+        }
+
+        $blocked = array_intersect($tables, self::FREE_QUERY_BLOCKED_TABLES);
+
+        if ($blocked !== []) {
+            return 'Las tablas '.implode(', ', $blocked).' no son consultables.';
+        }
+
+        // Scope por usuario: si toca datos del arrendador debe filtrar
+        // user_id = {$userId}; las tablas globales (IPC, geo, ajustes)
+        // no lo llevan. `users` es la tabla del propio arrendador: se
+        // exige id = userId.
+        $needsUserScope = array_intersect($tables, self::FREE_QUERY_USER_TABLES) !== []
+            || in_array('users', $tables, true);
+
+        if ($needsUserScope && ! str_contains(strtolower($sql), 'user_id') && ! str_contains(strtolower($sql), 'users.id')) {
+            return 'Toda consulta a datos del usuario debe filtrar por user_id = '.$userId.' (o users.id = '.$userId.' para la tabla users).';
+        }
+
+        return null;
+    }
+
+    /**
+     * Tablas referenciadas en FROM/JOIN del SQL (minusculas).
+     *
+     * @return list<string>
+     */
+    private function extractSqlTables(string $sql): array
+    {
+        preg_match_all('/\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)/i', $sql, $matches);
+
+        return array_values(array_unique(array_map('strtolower', $matches[1])));
+    }
+
+    /**
+     * Tablas de infraestructura/secretos: jamas consultables.
+     *
+     * @var list<string>
+     */
+    private const FREE_QUERY_BLOCKED_TABLES = [
+        'cache', 'cache_locks', 'jobs', 'job_batches', 'failed_jobs',
+        'migrations', 'password_reset_tokens', 'sessions', 'personal_access_tokens',
+    ];
+
+    /**
+     * Tablas con datos del arrendador: el SQL debe filtrar user_id.
+     *
+     * @var list<string>
+     */
+    private const FREE_QUERY_USER_TABLES = [
+        'tenants', 'properties', 'spaces', 'master_inventory_items',
+        'rentals', 'invoices', 'invoice_sequences', 'payments',
+        'rent_adjustments', 'delivery_acts', 'act_items',
+        'document_accesses', 'assistant_chats', 'assistant_messages',
+    ];
+
+    /** Filas maximas que devuelve una consulta libre. */
+    private const FREE_QUERY_MAX_ROWS = 200;
+
+    // ---------------------------------------------------------------
     // Formularios guiados (wizard multi-turno)
     // ---------------------------------------------------------------
 
@@ -1871,11 +2428,13 @@ class AssistantToolInvoker
         $session = $this->forms->get($userId);
 
         if ($session === null) {
-            return AssistantReply::say(__('assistant.form_none'));
+            return AssistantReply::say(__('assistant.replies.form_none'));
         }
 
         return match ($session['form']) {
             'delivery_act' => $this->deliveryActStep($question, $session['data'], $userId),
+            'update_clarify' => $this->updateClarifyStep($question, $session['data'], $userId),
+            'update_value' => $this->updateValueStep($question, $session['data'], $userId),
             default => $this->cancelActiveForm($userId),
         };
     }
@@ -1905,7 +2464,7 @@ class AssistantToolInvoker
         $session = $this->forms->get($userId);
 
         if ($session === null) {
-            return AssistantReply::say(__('assistant.form_none'));
+            return AssistantReply::say(__('assistant.replies.form_none'));
         }
 
         if ($session['form'] === 'delivery_act') {
@@ -1918,8 +2477,9 @@ class AssistantToolInvoker
     private function cancelActiveForm(int $userId): AssistantReply
     {
         $this->forms->clear($userId);
+        $this->forms->clearCreate($userId);
 
-        return AssistantReply::say(__('assistant.form_cancelled'), [
+        return AssistantReply::say(__('assistant.replies.form_cancelled'), [
             __('assistant.suggestions.portfolio'),
         ]);
     }
@@ -2001,7 +2561,12 @@ class AssistantToolInvoker
             $rentalName = trim((string) ($data['rental_name_hint'] ?? $data['rental_name'] ?? $question));
 
             if ($rentalName !== '') {
-                $resolved = $this->resolveRentalCandidates($rentalName, $userId);
+                // "cualquiera"/"una aleatoria": se toma un arriendo al
+                // azar y el acta se arma sobre el; el usuario lo ve en
+                // la revision final antes de confirmar.
+                $resolved = $this->isRandomPick($rentalName)
+                    ? ['entity' => Rental::query()->where('user_id', $userId)->where('is_active', true)->inRandomOrder()->first(), 'candidates' => []]
+                    : $this->resolveRentalCandidates($rentalName, $userId);
 
                 if ($resolved['entity'] !== null) {
                     $rental = $resolved['entity'];
@@ -2748,22 +3313,47 @@ class AssistantToolInvoker
      */
     private function resolveRentalCandidates(string $name, int $userId): array
     {
+        // Eleccion desde la lista de candidatos: manda sobre el nombre.
+        $byRef = $this->entityFromRef(Rental::class, $userId);
+
+        if ($byRef !== null) {
+            return ['entity' => $byRef, 'candidates' => []];
+        }
+
         $needle = Str::lower(trim($name));
 
         if ($needle === '') {
             return ['entity' => null, 'candidates' => []];
         }
 
-        $matches = Rental::query()
+        // Activos primero; si ninguno matchea se consideran los
+        // inactivos (documentos/actas de periodos pasados).
+        $all = Rental::query()
             ->where('user_id', $userId)
-            ->where('is_active', true)
-            ->with('tenant:id,name')
+            ->with('tenant:id,name', 'property:id,name,address')
             ->get()
             ->filter(fn (Rental $rental): bool => Str::contains(Str::lower($rental->name), $needle)
                 || Str::contains(Str::lower((string) $rental->tenant?->name), $needle))
             ->values();
 
-        if ($matches->count() === 1) {
+        $matches = $all->where('is_active', true)->values();
+        if ($matches->isEmpty()) {
+            $matches = $all;
+        }
+
+        // Match exacto antes que substring (igual que findRental), pero
+        // solo cuando es UNICO: dos arriendos de inquilinos homonimos
+        // siguen siendo ambiguos y deben listarse como candidatos.
+        $exacts = $matches->filter(fn (Rental $rental): bool => Str::lower($rental->name) === $needle
+            || Str::lower((string) $rental->tenant?->name) === $needle)->values();
+
+        if ($exacts->count() === 1) {
+            return ['entity' => $exacts->first(), 'candidates' => []];
+        }
+
+        if ($exacts->count() > 1) {
+            $matches = $exacts;
+        } elseif ($matches->count() === 1) {
             return ['entity' => $matches->first(), 'candidates' => []];
         }
 
@@ -2773,11 +3363,27 @@ class AssistantToolInvoker
                 'candidates' => $matches->take(5)->map(fn (Rental $rental): array => [
                     'name' => $rental->name,
                     'tenant' => $rental->tenant?->name ?? '—',
+                    'token' => class_basename($rental).':'.$rental->id,
+                    'detail' => collect([$rental->property?->name, $rental->property?->address])
+                        ->filter()->implode(' · '),
                 ])->all(),
             ];
         }
 
         return ['entity' => null, 'candidates' => []];
+    }
+
+    /**
+     * "cualquiera", "una aleatoria", "la primera", "da igual": el usuario
+     * delega la eleccion de la entidad. Solo aplica cuando lo dice
+     * explicitamente — nunca se adivina un registro al azar por defecto.
+     */
+    private function isRandomPick(?string $name): bool
+    {
+        return $name !== null && $name !== '' && preg_match(
+            '/\b(cualquiera|cualquier|cual sea|cualquie|aleatori\w*|la primera|el primero|la que sea|el que sea|da igual|lo que sea|any|random|dont care|don\'t care)\b/iu',
+            $name,
+        ) === 1;
     }
 
     private function isCancelCommand(string $question): bool
@@ -2860,8 +3466,8 @@ class AssistantToolInvoker
             'tenant' => [
                 'name' => ['aliases' => ['name', 'nombre', 'new_name'], 'label' => __('assistant.fields.name'), 'kind' => 'text'],
                 'document' => ['aliases' => ['document', 'documento', 'cedula', 'cc'], 'label' => __('assistant.fields.document'), 'kind' => 'text'],
-                'phone_number' => ['aliases' => ['phone_number', 'phone', 'telefono', 'celular', 'tel'], 'label' => __('assistant.fields.phone'), 'kind' => 'text'],
-                'email' => ['aliases' => ['email', 'correo'], 'label' => __('assistant.fields.email'), 'kind' => 'text'],
+                'phone_number' => ['aliases' => ['phone_number', 'phone', 'telefono', 'celular', 'tel'], 'label' => __('assistant.fields.phone'), 'kind' => 'tel'],
+                'email' => ['aliases' => ['email', 'correo'], 'label' => __('assistant.fields.email'), 'kind' => 'email'],
             ],
             'property' => [
                 'name' => ['aliases' => ['name', 'nombre', 'new_name'], 'label' => __('assistant.fields.name'), 'kind' => 'text'],
@@ -2883,8 +3489,8 @@ class AssistantToolInvoker
                 'business_name' => ['aliases' => ['business_name', 'nombre_negocio', 'empresa'], 'label' => __('assistant.fields.business_name'), 'kind' => 'text'],
                 'tax_id' => ['aliases' => ['tax_id', 'nit'], 'label' => __('assistant.fields.tax_id'), 'kind' => 'text'],
                 'address' => ['aliases' => ['address', 'direccion'], 'label' => __('assistant.fields.address'), 'kind' => 'text'],
-                'email' => ['aliases' => ['email', 'correo'], 'label' => __('assistant.fields.email'), 'kind' => 'text'],
-                'phone' => ['aliases' => ['phone', 'telefono'], 'label' => __('assistant.fields.phone'), 'kind' => 'text'],
+                'email' => ['aliases' => ['email', 'correo'], 'label' => __('assistant.fields.email'), 'kind' => 'email'],
+                'phone' => ['aliases' => ['phone', 'telefono'], 'label' => __('assistant.fields.phone'), 'kind' => 'tel'],
                 'currency' => ['aliases' => ['currency', 'moneda'], 'label' => __('assistant.fields.currency'), 'kind' => 'text'],
                 'invoice_due_days' => ['aliases' => ['invoice_due_days', 'dias_factura', 'vencimiento'], 'label' => __('assistant.fields.invoice_due_days'), 'kind' => 'number'],
                 'legal_footer' => ['aliases' => ['legal_footer', 'pie_legal', 'footer'], 'label' => __('assistant.fields.legal_footer'), 'kind' => 'textarea'],
@@ -2945,17 +3551,56 @@ class AssistantToolInvoker
 
             $out['params'][$field] = $value;
             $out['changes'][] = $this->changeRow($field, $meta['label'], $beforeStr, $afterStr, $meta['kind']);
-            $out['editable'][] = [
-                'key' => $field,
-                'param' => $field,
-                'label' => $meta['label'],
-                'kind' => in_array($meta['kind'], ['money', 'number'], true) ? 'number' : ($meta['kind'] === 'textarea' ? 'textarea' : ($meta['kind'] === 'date' ? 'date' : 'text')),
-                'value' => $value === null ? '' : (string) $value,
-            ];
+            $out['editable'][] = $this->editableField($field, $meta, $value);
             $out['labels'][] = $meta['label'];
         }
 
         return $out;
+    }
+
+    /**
+     * Entrada del campo editable para el modal: conserva el tipo real
+     * (bool, select con opciones, number, date, textarea) para que el
+     * input se pinte adecuado en vez de un texto generico.
+     *
+     * @param  array{aliases: list<string>, label: string, kind: string}  $meta
+     * @return array<string, mixed>
+     */
+    private function editableField(string $field, array $meta, mixed $value): array
+    {
+        $kind = match (true) {
+            in_array($meta['kind'], ['money', 'number'], true) => 'number',
+            $meta['kind'] === 'textarea' => 'textarea',
+            $meta['kind'] === 'date' => 'date',
+            $meta['kind'] === 'bool' => 'bool',
+            $meta['kind'] === 'enum' => 'select',
+            in_array($meta['kind'], ['email', 'tel', 'password', 'range', 'datetime'], true) => $meta['kind'],
+            default => 'text',
+        };
+
+        $entry = [
+            'key' => $field,
+            'param' => $field,
+            'label' => $meta['label'],
+            'kind' => $kind,
+            'value' => match (true) {
+                $kind === 'bool' => ($value ? '1' : '0'),
+                $kind === 'select' && is_string($value) => $value,
+                default => $value === null ? '' : (string) $value,
+            },
+        ];
+
+        // Selects con opciones reales del enum para que el usuario elija
+        // en vez de escribir el valor a mano.
+        if ($kind === 'select') {
+            $entry['options'] = match ($field) {
+                'billing_cadence' => \App\Enums\BillingCadence::options(),
+                'rental_type' => \App\Enums\RentalType::options(),
+                default => [],
+            };
+        }
+
+        return $entry;
     }
 
     /**
@@ -3030,12 +3675,836 @@ class AssistantToolInvoker
         ]);
     }
 
+    // ---------------------------------------------------------------
+    // Actualizacion guiada: entidad resuelta -> campo -> valor
+    // ---------------------------------------------------------------
+    //
+    // Cuando el update llega con entidad pero sin campo ("cambia el
+    // nombre de X" sin valor, o "actualiza a Juan"), no se adivina: se
+    // abre un mini-wizard de dos pasos que funciona IGUAL para cualquier
+    // campo de tenant/property/rental. La entidad ya quedo resuelta por
+    // id, asi que no hay ambiguedad de nombres en los turnos siguientes
+    // y el valor nuevo nunca se confunde con el nombre de la entidad.
+
+    /**
+     * @param  array{kind: string, label: string, options?: list<string>}|null  $input
+     * @return array{form: string, step: int, total_steps: int, field: string, prompt: string, input?: array<string, mixed>}|null
+     */
+    private function updatePendingForm(
+        string $stage,
+        string $entityName,
+        string $fieldLabel = '',
+        int $step = 1,
+        int $total = 2,
+        ?array $input = null,
+    ): ?array {
+        $form = [
+            'form' => 'update',
+            'form_label' => __('assistant.form_names.update'),
+            'step' => $stage === 'field' ? 1 : $step,
+            'total_steps' => $stage === 'field' ? 2 : $total,
+            'field' => $stage,
+            'prompt' => $stage === 'field'
+                ? __('assistant.replies.choose_update_field_prompt', ['entity' => $entityName])
+                : __('assistant.replies.update_value_prompt', ['field' => $fieldLabel, 'entity' => $entityName]),
+        ];
+
+        if ($input !== null) {
+            $form['input'] = $input;
+        }
+
+        return $form;
+    }
+
+    /**
+     * Descriptor del input que la barra del wizard debe pintar para el
+     * campo actual: el tipo sale del `kind` real del campo editable para
+     * que una fecha sea date picker, un bool un switch y un enum un
+     * select con las opciones del dominio.
+     *
+     * @return array{kind: string, label: string, options?: list<string>}|null
+     */
+    private function updateFieldInput(string $entity, string $field, string $fieldLabel): ?array
+    {
+        $meta = $this->editableFields($entity)[$field] ?? null;
+
+        if ($meta === null) {
+            return null;
+        }
+
+        $kind = match ($meta['kind']) {
+            'money' => 'number',
+            'enum' => 'select',
+            'textarea' => 'textarea',
+            'date' => 'date',
+            'number' => 'number',
+            'bool' => 'bool',
+            'email', 'tel', 'password', 'range', 'datetime' => $meta['kind'],
+            default => 'text',
+        };
+
+        $input = ['kind' => $kind, 'label' => $fieldLabel];
+
+        if ($kind === 'select') {
+            $input['options'] = match ($field) {
+                'billing_cadence' => array_map(
+                    fn ($case): string => $case->value,
+                    \App\Enums\BillingCadence::cases(),
+                ),
+                'rental_type' => array_map(
+                    fn ($case): string => $case->value,
+                    \App\Enums\RentalType::cases(),
+                ),
+                default => [],
+            };
+        }
+
+        return $input;
+    }
+
+    /**
+     * Abre el paso 1 del update guiado: el usuario elige que campo
+     * cambiar de la lista real de campos editables de la entidad.
+     */
+    private function startUpdateClarify(string $entity, object $record, int $userId): AssistantReply
+    {
+        $idKey = $this->updateIdKey($entity);
+
+        if ($idKey === null) {
+            return $this->needChangesReply($entity);
+        }
+
+        $this->forms->put($userId, 'update_clarify', [
+            'entity_type' => $entity,
+            'entity_id' => (int) $record->getKey(),
+            'entity_name' => $this->updateEntityLabel($entity, $record),
+            'mode' => 'form',
+        ]);
+
+        $name = $this->updateEntityLabel($entity, $record);
+
+        // Form dinamico: TODOS los campos editables de la entidad, cada
+        // uno con su tipo real (fecha, numero, switch, select, textarea).
+        // El usuario llena solo lo que quiere cambiar; lo vacio no se
+        // toca. Si prefiere escribir, el texto sigue yendo al wizard
+        // conversacional (update_clarify) como antes.
+        $pending = $this->updatePendingForm('field', $name);
+        $pending['fields'] = $this->updateFormFields($entity, $record);
+        $pending['prompt'] = __('assistant.replies.update_form_prompt', ['entity' => $name]);
+        $pending['step'] = 1;
+        $pending['total_steps'] = 1;
+
+        return new AssistantReply(
+            text: __('assistant.replies.update_form_prompt', ['entity' => $name]),
+            suggestions: [],
+            pendingForm: $pending,
+        );
+    }
+
+    /**
+     * Descriptores de TODOS los campos editables de la entidad para el
+     * formulario vacio: mismo formato que `editable` de una propuesta
+     * (key/label/kind/options), con el valor actual solo en bool y
+     * select — el resto arranca vacio porque no tienen "vacio"
+     * significativo y el usuario debe escribir el cambio.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function updateFormFields(string $entity, object $record): array
+    {
+        $fields = [];
+
+        foreach ($this->editableFields($entity) as $field => $meta) {
+            $raw = $record->{$field} ?? null;
+            $current = $raw instanceof \BackedEnum ? $raw->value : $raw;
+
+            $kind = match ($meta['kind']) {
+                'money', 'number' => 'number',
+                'enum' => 'select',
+                'textarea' => 'textarea',
+                'date' => 'date',
+                'bool' => 'bool',
+                'email', 'tel', 'password', 'range', 'datetime' => $meta['kind'],
+                default => 'text',
+            };
+
+            $fields[] = $this->editableField(
+                $field,
+                $meta,
+                in_array($kind, ['bool', 'select'], true) ? $current : '',
+            );
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Recibe el formulario vacio ya diligenciado por el usuario (cada
+     * campo con su tipo correcto) y arma la propuesta de update con
+     * diff — el mismo camino que un update directo de la IA.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function submitUpdateForm(array $values, int $userId): AssistantReply
+    {
+        $session = $this->forms->get($userId);
+
+        if ($session === null || $session['form'] !== 'update_clarify') {
+            return AssistantReply::say(__('assistant.replies.form_none'));
+        }
+
+        $entity = (string) ($session['data']['entity_type'] ?? '');
+        $record = $this->loadUpdateRecord($entity, (int) ($session['data']['entity_id'] ?? 0), $userId);
+
+        $this->forms->clear($userId);
+
+        if ($record === null) {
+            return AssistantReply::say(__('assistant.actions.entity_missing'));
+        }
+
+        $editable = $this->editableFields($entity);
+        $params = [];
+
+        foreach ($values as $field => $value) {
+            if (! isset($editable[$field]) || is_array($value)) {
+                continue;
+            }
+
+            $v = is_bool($value) ? $value : trim((string) $value);
+
+            // Vacio = "no cambiar": el usuario lleno solo lo que queria.
+            if ($v === '') {
+                continue;
+            }
+
+            $params[$field] = $v;
+        }
+
+        $collected = $this->collectChanges($params, $entity, $record);
+
+        if ($collected['params'] === []) {
+            return AssistantReply::say(__('assistant.actions.no_changes'), [
+                __('assistant.suggestions.portfolio'),
+            ]);
+        }
+
+        return $this->updateProposalReply($entity, $record, $collected);
+    }
+
+    /**
+     * Paso 1: el mensaje debe nombrar uno de los campos editables de la
+     * entidad (por alias, etiqueta o nombre canonico). Si no matchea se
+     * repite la lista — nunca se inventa un campo.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function updateClarifyStep(string $question, array $data, int $userId): AssistantReply
+    {
+        if (preg_match('/\b(cancela\w*|cancelar|olvida\w*|stop|cancel)\b/iu', $question)) {
+            return $this->cancelActiveForm($userId);
+        }
+
+        $entity = (string) ($data['entity_type'] ?? '');
+        $entityName = (string) ($data['entity_name'] ?? '');
+        $fieldMatches = $this->matchEditableFields($question, $entity);
+
+        if ($fieldMatches === []) {
+            $fields = collect($this->editableFields($entity))
+                ->map(fn (array $meta): string => $meta['label'])
+                ->implode(', ');
+
+            return new AssistantReply(
+                text: __('assistant.replies.choose_update_field', [
+                    'entity' => $entityName,
+                    'fields' => $fields,
+                ]),
+                suggestions: [],
+                pendingForm: $this->updatePendingForm('field', $entityName),
+            );
+        }
+
+        // El usuario ya dijo QUE campos quiere ("nombre y teléfono"):
+        // no se vuelve a preguntar el campo, se arma la cola de valores.
+        // Uno o varios da igual — el mismo mecanismo los recorre.
+        $editable = $this->editableFields($entity);
+        $queue = [];
+
+        foreach (array_keys($fieldMatches) as $field) {
+            $queue[$field] = $editable[$field]['label'] ?? $field;
+        }
+
+        $data['queue'] = $queue;
+        $data['changes'] = [];
+        unset($data['field'], $data['field_label']);
+
+        return $this->updateNextValueStep($data, $entityName, $entity, $userId);
+    }
+
+    /**
+     * Paso 2: el mensaje ES el valor nuevo. Se carga el registro por id
+     * (ya resuelto, sin ambiguedad), se arma el diff con collectChanges
+     * y se propone la accion con preview editable — igual que un update
+     * directo, pero sin que el modelo tuviera que adivinar nada.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function updateValueStep(string $question, array $data, int $userId): AssistantReply
+    {
+        if (preg_match('/\b(cancela\w*|cancelar|olvida\w*|stop|cancel)\b/iu', $question)) {
+            return $this->cancelActiveForm($userId);
+        }
+
+        $entity = (string) ($data['entity_type'] ?? '');
+        $record = $this->loadUpdateRecord($entity, (int) ($data['entity_id'] ?? 0), $userId);
+
+        // Cola de campos pendientes: "nombre y teléfono" deja dos; un
+        // update simple deja uno. El campo actual es el primero.
+        $queue = is_array($data['queue'] ?? null) && $data['queue'] !== []
+            ? $data['queue']
+            : (isset($data['field']) && $data['field'] !== ''
+                ? [$data['field'] => (string) ($data['field_label'] ?? $data['field'])]
+                : []);
+
+        if ($record === null || $queue === []) {
+            $this->forms->clear($userId);
+
+            return AssistantReply::say(__('assistant.actions.entity_missing'));
+        }
+
+        $field = (string) array_key_first($queue);
+        $fieldLabel = (string) $queue[$field];
+        $value = $this->cleanUpdateValue($question, $entity, $field);
+
+        if ($value === '') {
+            return $this->updateNextValuePrompt($data, $entity, $field, $fieldLabel, $userId);
+        }
+
+        $changes = is_array($data['changes'] ?? null) ? $data['changes'] : [];
+        $changes[$field] = $value;
+        unset($queue[$field]);
+
+        if ($queue !== []) {
+            $data['queue'] = $queue;
+            $data['changes'] = $changes;
+            $this->forms->put($userId, 'update_value', $data);
+
+            return $this->updateNextValueStep($data, (string) ($data['entity_name'] ?? ''), $entity, $userId);
+        }
+
+        $this->forms->clear($userId);
+
+        $collected = $this->collectChanges($changes, $entity, $record);
+
+        if ($collected['params'] === []) {
+            return AssistantReply::say(__('assistant.actions.no_changes'), [
+                __('assistant.suggestions.portfolio'),
+            ]);
+        }
+
+        return $this->updateProposalReply($entity, $record, $collected);
+    }
+
+    /**
+     * Pide el valor del siguiente campo de la cola. El paso/total del
+     * pendingForm reflejan cuantos valores faltan de verdad.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function updateNextValueStep(array $data, string $entityName, string $entity, int $userId): AssistantReply
+    {
+        $queue = is_array($data['queue'] ?? null) ? $data['queue'] : [];
+        $changes = is_array($data['changes'] ?? null) ? $data['changes'] : [];
+
+        if ($queue === []) {
+            return AssistantReply::say(__('assistant.actions.no_changes'));
+        }
+
+        $this->forms->put($userId, 'update_value', $data);
+
+        $total = count($queue) + count($changes);
+        $done = count($changes);
+        $next = (string) array_key_first($queue);
+        $fieldLabel = (string) $queue[$next];
+
+        return new AssistantReply(
+            text: $total > 1
+                ? __('assistant.replies.update_value_prompt_step', [
+                    'field' => $fieldLabel,
+                    'entity' => $entityName,
+                    'step' => $done + 1,
+                    'total' => $total,
+                ])
+                : __('assistant.replies.update_value_prompt_full', [
+                    'field' => $fieldLabel,
+                    'entity' => $entityName,
+                ]),
+            suggestions: [],
+            pendingForm: $this->updatePendingForm(
+                'value',
+                $entityName,
+                $fieldLabel,
+                $done + 1,
+                $total,
+                $this->updateFieldInput($entity, $next, $fieldLabel),
+            ),
+        );
+    }
+
+    /**
+     * Repregunta el valor del campo actual cuando el mensaje llego vacio
+     * o no se pudo interpretar.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function updateNextValuePrompt(array $data, string $entity, string $field, string $fieldLabel, int $userId): AssistantReply
+    {
+        $queue = is_array($data['queue'] ?? null) ? $data['queue'] : [];
+        $changes = is_array($data['changes'] ?? null) ? $data['changes'] : [];
+        $total = count($queue) + count($changes);
+        $done = count($changes);
+
+        $this->forms->put($userId, 'update_value', $data);
+
+        return new AssistantReply(
+            text: __('assistant.replies.update_value_empty', [
+                'field' => $fieldLabel,
+            ]),
+            suggestions: [],
+            pendingForm: $this->updatePendingForm(
+                'value',
+                (string) ($data['entity_name'] ?? ''),
+                $fieldLabel,
+                $done + 1,
+                max($total, 1),
+                $this->updateFieldInput($entity, $field, $fieldLabel),
+            ),
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Formularios de creacion (tenant/property/rental)
+    // ---------------------------------------------------------------
+    //
+    // Cuando un create llega incompleto no se pide el dato por texto:
+    // se abre el MISMO formulario dinamico del update pero vacio, con
+    // los campos ya dados pre-llenados. A diferencia del wizard, este
+    // form NO intercepta el chat: la IA sigue clasificando mensajes
+    // normales y el formulario es una via paralela de diligenciar.
+
+    /**
+     * Abre el formulario de creacion con los campos que el modelo ya
+     * extrajo pre-llenados; los faltantes quedan vacios.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function startCreateForm(string $entity, array $params, int $userId): AssistantReply
+    {
+        $fields = $this->createFields($entity);
+
+        if ($fields === []) {
+            return AssistantReply::say(__('assistant.unknown'));
+        }
+
+        // Conserva lo ya diligenciado en envios anteriores del form:
+        // cada intento de creacion vuelve a abrirlo con lo acumulado.
+        $previous = $this->forms->getCreate($userId);
+        $known = array_merge(
+            $previous !== null && $previous['entity'] === $entity ? $previous['values'] : [],
+            $this->normalizeCreateValues($entity, $params),
+        );
+
+        $this->forms->putCreate($userId, $entity, $known);
+
+        if ($entity === 'rental') {
+            $this->applyRentalFieldRequirements($fields, $known, $userId);
+        }
+
+        foreach ($fields as &$field) {
+            $field['value'] = (string) ($known[$field['key']] ?? '');
+        }
+        unset($field);
+
+        $entityLabel = __('assistant.fields.'.$entity);
+
+        return new AssistantReply(
+            text: __('assistant.replies.create_form_prompt', ['entity' => $entityLabel]),
+            suggestions: [],
+            pendingForm: [
+                'form' => 'create_'.$entity,
+                'form_label' => __('assistant.form_names.create_'.$entity),
+                'step' => 1,
+                'total_steps' => 1,
+                'prompt' => __('assistant.replies.create_form_prompt', ['entity' => $entityLabel]),
+                'fields' => $fields,
+            ],
+        );
+    }
+
+    /**
+     * Campos del formulario de creacion por entidad: tipos reales y
+     * opciones de enum, en el orden en que tiene sentido diligenciar.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function createFields(string $entity): array
+    {
+        return match ($entity) {
+            'tenant' => [
+                ['key' => 'name', 'label' => __('assistant.fields.name'), 'kind' => 'text', 'required' => true],
+                ['key' => 'document', 'label' => __('assistant.fields.document'), 'kind' => 'text', 'required' => true],
+                ['key' => 'phone_number', 'label' => __('assistant.fields.phone'), 'kind' => 'tel', 'required' => true],
+                ['key' => 'email', 'label' => __('assistant.fields.email'), 'kind' => 'email', 'required' => false],
+            ],
+            'property' => [
+                ['key' => 'name', 'label' => __('assistant.fields.name'), 'kind' => 'text', 'required' => true],
+                ['key' => 'address', 'label' => __('assistant.fields.address'), 'kind' => 'text', 'required' => true],
+            ],
+            'rental' => [
+                ['key' => 'tenant_name', 'label' => __('assistant.fields.tenant'), 'kind' => 'text', 'required' => true],
+                ['key' => 'property_name', 'label' => __('assistant.fields.property'), 'kind' => 'text', 'required' => true],
+                ['key' => 'monthly_amount', 'label' => __('assistant.fields.monthly_amount'), 'kind' => 'number', 'required' => true, 'min' => 0],
+                ['key' => 'total_months', 'label' => __('assistant.fields.total_months'), 'kind' => 'number', 'required' => false, 'min' => 1, 'max' => 120],
+                ['key' => 'start_date', 'label' => __('assistant.fields.start_date'), 'kind' => 'date', 'required' => false],
+                ['key' => 'billing_cadence', 'label' => __('assistant.fields.billing_cadence'), 'kind' => 'select', 'required' => false, 'options' => \App\Enums\BillingCadence::options()],
+                ['key' => 'rental_type', 'label' => __('assistant.fields.rental_type'), 'kind' => 'select', 'required' => false, 'options' => \App\Enums\RentalType::options()],
+                ['key' => 'tenant_document', 'label' => __('assistant.fields.tenant_document'), 'kind' => 'text', 'required' => false],
+                ['key' => 'tenant_phone', 'label' => __('assistant.fields.phone'), 'kind' => 'tel', 'required' => false],
+                ['key' => 'property_address', 'label' => __('assistant.fields.address'), 'kind' => 'text', 'required' => false],
+            ],
+            default => [],
+        };
+    }
+
+    /**
+     * En el form de arriendo, los datos del inquilino/propiedad solo son
+     * obligatorios cuando la entidad NO existe y habra que crearla:
+     * si ya esta registrada esos campos son opcionales (se ignoran).
+     *
+     * @param  list<array<string, mixed>>  $fields
+     * @param  array<string, mixed>  $known
+     */
+    private function applyRentalFieldRequirements(array &$fields, array $known, int $userId): void
+    {
+        $tenantName = trim((string) ($known['tenant_name'] ?? ''));
+        $propertyName = trim((string) ($known['property_name'] ?? ''));
+
+        $needsTenant = $tenantName !== ''
+            && $this->findEntity(Tenant::class, $userId, $tenantName) === null;
+        $needsProperty = $propertyName !== ''
+            && $this->findEntity(Property::class, $userId, $propertyName) === null;
+
+        foreach ($fields as &$field) {
+            $field['required'] = match ($field['key']) {
+                'tenant_name', 'property_name', 'monthly_amount' => true,
+                'tenant_document', 'tenant_phone' => $needsTenant,
+                'property_address' => $needsProperty,
+                default => false,
+            };
+        }
+        unset($field);
+    }
+
+    /**
+     * Traduce los params crudos del modelo a las llaves canonicas del
+     * formulario de creacion (las mismas que leen los propose_*).
+     *
+     * @param  array<string, mixed>  $params
+     * @return array<string, mixed>
+     */
+    private function normalizeCreateValues(string $entity, array $params): array
+    {
+        $map = match ($entity) {
+            'tenant' => [
+                'name' => ['name', 'tenant_name'],
+                'document' => ['document', 'tenant_document', 'cedula'],
+                'phone_number' => ['phone_number', 'phone', 'tenant_phone', 'telefono', 'celular'],
+                'email' => ['email', 'correo'],
+            ],
+            'property' => [
+                'name' => ['name', 'property_name'],
+                'address' => ['address', 'property_address', 'direccion'],
+            ],
+            'rental' => [
+                'tenant_name' => ['tenant_name', 'tenant', 'inquilino'],
+                'property_name' => ['property_name', 'property', 'propiedad'],
+                'monthly_amount' => ['monthly_amount', 'amount', 'canon'],
+                'total_months' => ['total_months', 'months', 'duracion'],
+                'start_date' => ['start_date', 'fecha_inicio'],
+                'billing_cadence' => ['billing_cadence', 'cadence', 'frecuencia'],
+                'rental_type' => ['rental_type', 'tipo_arriendo'],
+                'tenant_document' => ['tenant_document', 'document', 'cedula'],
+                'tenant_phone' => ['tenant_phone', 'phone', 'phone_number', 'telefono'],
+                'property_address' => ['property_address', 'address', 'direccion'],
+            ],
+            default => [],
+        };
+
+        $values = [];
+
+        foreach ($map as $key => $aliases) {
+            foreach ($aliases as $alias) {
+                $raw = $params[$alias] ?? null;
+
+                if ($raw !== null && ! is_array($raw) && trim((string) $raw) !== '') {
+                    $values[$key] = is_bool($raw) ? $raw : trim((string) $raw);
+
+                    break;
+                }
+            }
+        }
+
+        return $values;
+    }
+
+    /**
+     * Punto de entrada del formulario dinamico: decide si el envio es
+     * del form de creacion o del de actualizacion.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function submitForm(array $values, int $userId): AssistantReply
+    {
+        if ($this->forms->getCreate($userId) !== null) {
+            return $this->submitCreateForm($values, $userId);
+        }
+
+        return $this->submitUpdateForm($values, $userId);
+    }
+
+    /**
+     * Recibe el formulario de creacion diligenciado, fusiona con lo ya
+     * guardado y re-ejecuta la propuesta: si aun falta algo, el form se
+     * re-abre con lo acumulado; si esta completo, sale la accion.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function submitCreateForm(array $values, int $userId): AssistantReply
+    {
+        $session = $this->forms->getCreate($userId);
+
+        if ($session === null) {
+            return AssistantReply::say(__('assistant.replies.form_none'));
+        }
+
+        $entity = $session['entity'];
+        $merged = $session['values'];
+        $keys = array_column($this->createFields($entity), 'key');
+
+        foreach ($values as $key => $value) {
+            if (! in_array($key, $keys, true) || is_array($value)) {
+                continue;
+            }
+
+            $v = trim((string) $value);
+
+            if ($v !== '') {
+                $merged[$key] = $v;
+            }
+        }
+
+        $this->forms->clearCreate($userId);
+
+        return match ($entity) {
+            'tenant' => $this->proposeCreateTenant($merged, $userId),
+            'property' => $this->proposeCreateProperty($merged, $userId),
+            'rental' => $this->proposeCreateRental($merged, $userId),
+            default => AssistantReply::say(__('assistant.unknown')),
+        };
+    }
+
+    /**
+     * Busca en el texto del usuario un campo editable de la entidad:
+     * por nombre canonico, alias o etiqueta traducida. Gana el alias
+     * mas largo para que "correo electronico" no pierda contra "correo".
+     */
+    private function matchEditableField(string $question, string $entity): ?string
+    {
+        $matches = $this->matchEditableFields($question, $entity);
+
+        return $matches === [] ? null : array_key_first($matches);
+    }
+
+    /**
+     * TODOS los campos editables que el usuario nombro en el texto, en el
+     * orden en que aparecen ("nombre y teléfono" -> [name, phone_number]).
+     * Es lo que permite que el wizard pida varios valores en una sola
+     * actualizacion en vez de quedarse con el primero.
+     *
+     * @return array<string, int> field => posicion del alias en el texto
+     */
+    private function matchEditableFields(string $question, string $entity): array
+    {
+        $haystack = ' '.preg_replace('/\s+/u', ' ', Str::lower(Str::ascii($question))).' ';
+        $matches = [];
+
+        foreach ($this->editableFields($entity) as $field => $meta) {
+            $bestPos = null;
+
+            foreach (array_merge($meta['aliases'], [$field, Str::lower(Str::ascii($meta['label']))]) as $candidate) {
+                $needle = Str::lower(Str::ascii((string) $candidate));
+
+                if (mb_strlen($needle) < 3 || $needle === '') {
+                    continue;
+                }
+
+                $pos = $this->aliasPosition($haystack, $needle);
+
+                if ($pos !== null && ($bestPos === null || $pos < $bestPos)) {
+                    $bestPos = $pos;
+                }
+            }
+
+            if ($bestPos !== null) {
+                $matches[$field] = $bestPos;
+            }
+        }
+
+        asort($matches);
+
+        return $matches;
+    }
+
+    /**
+     * Posicion del alias dentro del texto (palabra completa), o null.
+     */
+    private function aliasPosition(string $haystack, string $needle): ?int
+    {
+        if (str_contains($haystack, ' '.$needle.' ')
+            || str_contains($haystack, ' '.$needle.',')
+            || str_contains($haystack, ' '.$needle.'.')) {
+            $pos = strpos($haystack, ' '.$needle);
+
+            return $pos === false ? null : $pos;
+        }
+
+        if (preg_match('/(?<!\w)'.preg_quote($needle, '/').'(?!\w)/u', $haystack, $m, PREG_OFFSET_CAPTURE) === 1) {
+            return (int) $m[0][1];
+        }
+
+        return null;
+    }
+
+    /**
+     * Limpia el valor nuevo de muletillas: "el nombre es Juan",
+     * "telefono: 300...", "el nuevo canon a $1.200.000" -> el valor.
+     */
+    private function cleanUpdateValue(string $question, string $entity, string $field): string
+    {
+        $value = trim($question);
+
+        $aliases = $this->editableFields($entity)[$field]['aliases'] ?? [$field];
+        $aliasGroup = implode('|', array_map(
+            fn (string $a): string => preg_quote(Str::lower(Str::ascii($a)), '/'),
+            $aliases,
+        ));
+
+        // "<alias> <es|a|:|=>": separador obligatorio para no comerse
+        // valores que casualmente empiezan con el nombre del campo
+        // ("Nombre Guiado" no pierde su primera palabra). Se opera
+        // sobre el original para conservar mayusculas y tildes.
+        $aliasLed = preg_replace(
+            '/^(?:'.$aliasGroup.')\s*(?:[:=]\s*|\b(?:es|sea|seria|será|a)\b\s+)/iu',
+            '',
+            $value,
+            1,
+        );
+
+        if (is_string($aliasLed) && trim($aliasLed) !== '' && $aliasLed !== $value) {
+            return trim($aliasLed);
+        }
+
+        // Articulo/muletillas opcionales + alias opcional + copula:
+        // "el nombre es Juan", "el nuevo telefono es 3001234567".
+        return trim((string) preg_replace(
+            '/^(?:(?:el|la|los|las|un|una)\s+)?(?:(?:'.$aliasGroup.'|nuevo|nueva|valor|cambio)\s+)*(?:es|sea|seria|será|a|=|:)\s*/iu',
+            '',
+            $value,
+        ));
+    }
+
+    private function updateIdKey(string $entity): ?string
+    {
+        return match ($entity) {
+            'tenant' => 'tenant_id',
+            'property' => 'property_id',
+            'rental' => 'rental_id',
+            default => null,
+        };
+    }
+
+    private function loadUpdateRecord(string $entity, int $id, int $userId): ?object
+    {
+        if ($id <= 0) {
+            return null;
+        }
+
+        return match ($entity) {
+            'tenant' => Tenant::query()->where('user_id', $userId)->find($id),
+            'property' => Property::query()->where('user_id', $userId)->find($id),
+            'rental' => Rental::query()->where('user_id', $userId)->find($id),
+            default => null,
+        };
+    }
+
+    private function updateEntityLabel(string $entity, object $record): string
+    {
+        return (string) ($record->name ?? $record->business_name ?? '');
+    }
+
+    /**
+     * Tarjeta de propuesta identica a la de un update directo: la
+     * confirmacion y la edicion inline funcionan igual.
+     *
+     * @param  array{params: array<string, mixed>, changes: list<array<string, mixed>>, editable: list<array<string, mixed>>, labels: list<string>}  $collected
+     */
+    private function updateProposalReply(string $entity, object $record, array $collected): AssistantReply
+    {
+        $idKey = $this->updateIdKey($entity);
+        $name = $this->updateEntityLabel($entity, $record);
+        $type = 'update_'.$entity;
+
+        $textKey = match ($entity) {
+            'tenant' => 'propose_update_tenant',
+            'property' => 'propose_update_property',
+            'rental' => 'propose_update_rental',
+            default => 'propose_update_tenant',
+        };
+
+        $paramKey = match ($entity) {
+            'tenant' => 'tenant',
+            'property' => 'property',
+            'rental' => 'rental',
+            default => 'tenant',
+        };
+
+        return new AssistantReply(
+            text: __("assistant.replies.{$textKey}", [
+                $paramKey => $name,
+                'fields' => implode(', ', $collected['labels']),
+            ]),
+            action: [
+                'type' => $type,
+                'params' => [$idKey => (int) $record->getKey()] + $collected['params'],
+                'changes' => $collected['changes'],
+                'editable' => $collected['editable'],
+                'warnings' => [],
+                'summary' => __("assistant.actions.update_{$entity}_summary", [$paramKey => $name]),
+            ],
+            suggestions: [],
+        );
+    }
+
     /**
      * @param  array<string, mixed>  $params
      */
     private function proposeUpdateTenant(array $params, int $userId): AssistantReply
     {
-        $name = trim((string) ($params['tenant_name'] ?? $params['name'] ?? $params['inquilino'] ?? ''));
+        // Claves dedicadas primero; "name" queda al final porque tambien
+        // es alias del campo nombre — si hay tenant_name/entity_name el
+        // "name" se interpreta como valor nuevo, no como entidad.
+        $name = trim((string) ($this->param($params, [
+            'tenant_name', 'entity_name', 'entity', 'inquilino', 'inquilina', 'arrendatario', 'name',
+        ]) ?? ''));
 
         if ($name === '') {
             return AssistantReply::say(__('assistant.replies.need_tenant_name'), [
@@ -3043,19 +4512,34 @@ class AssistantToolInvoker
             ]);
         }
 
-        $resolved = $this->resolveEntity(Tenant::class, $userId, $name, ['name', 'document', 'phone_number', 'email']);
+        // "cualquiera", "una aleatoria", "la primera": el usuario delega
+        // la eleccion — se toma una al azar y la advertencia queda en el
+        // preview para que confirme a sabiendas.
+        $randomPick = $this->isRandomPick($name);
+        $tenant = $randomPick
+            ? Tenant::query()->where('user_id', $userId)->inRandomOrder()->first()
+            : null;
 
-        if ($resolved['entity'] === null) {
-            return $resolved['candidates'] !== []
-                ? $this->ambiguousReply($name, $resolved['candidates'], 'tenants')
-                : AssistantReply::say(__('assistant.replies.entity_not_found', ['name' => $name]));
+        if ($tenant === null) {
+            $resolved = $this->resolveEntity(Tenant::class, $userId, $name, ['name', 'document', 'phone_number', 'email']);
+
+            if ($resolved['entity'] === null) {
+                return $resolved['candidates'] !== []
+                    ? $this->ambiguousReply($name, $resolved['candidates'], 'tenants', [
+                        'intent' => 'update_tenant',
+                        'params' => $params,
+                        'name_key' => 'tenant_name',
+                    ])
+                    : AssistantReply::say(__('assistant.replies.entity_not_found', ['name' => $name]));
+            }
+
+            $tenant = $resolved['entity'];
         }
 
-        $tenant = $resolved['entity'];
         $collected = $this->collectChanges($params, 'tenant', $tenant);
 
         if ($collected['params'] === []) {
-            return $this->needChangesReply('tenant');
+            return $this->startUpdateClarify('tenant', $tenant, $userId);
         }
 
         return new AssistantReply(
@@ -3068,6 +4552,7 @@ class AssistantToolInvoker
                 'params' => ['tenant_id' => (int) $tenant->id] + $collected['params'],
                 'changes' => $collected['changes'],
                 'editable' => $collected['editable'],
+                'warnings' => $randomPick ? [__('assistant.warnings.random_pick')] : [],
                 'summary' => __('assistant.actions.update_tenant_summary', ['tenant' => $tenant->name]),
             ],
             suggestions: [],
@@ -3079,7 +4564,9 @@ class AssistantToolInvoker
      */
     private function proposeUpdateProperty(array $params, int $userId): AssistantReply
     {
-        $name = trim((string) ($params['property_name'] ?? $params['name'] ?? $params['propiedad'] ?? ''));
+        $name = trim((string) ($this->param($params, [
+            'property_name', 'entity_name', 'entity', 'propiedad', 'inmueble', 'name',
+        ]) ?? ''));
 
         if ($name === '') {
             return AssistantReply::say(__('assistant.replies.need_property_name'), [
@@ -3087,19 +4574,31 @@ class AssistantToolInvoker
             ]);
         }
 
-        $resolved = $this->resolveEntity(Property::class, $userId, $name, ['name', 'address']);
+        $randomPick = $this->isRandomPick($name);
+        $property = $randomPick
+            ? Property::query()->where('user_id', $userId)->inRandomOrder()->first()
+            : null;
 
-        if ($resolved['entity'] === null) {
-            return $resolved['candidates'] !== []
-                ? $this->ambiguousReply($name, $resolved['candidates'], 'properties')
-                : AssistantReply::say(__('assistant.replies.entity_not_found', ['name' => $name]));
+        if ($property === null) {
+            $resolved = $this->resolveEntity(Property::class, $userId, $name, ['name', 'address']);
+
+            if ($resolved['entity'] === null) {
+                return $resolved['candidates'] !== []
+                    ? $this->ambiguousReply($name, $resolved['candidates'], 'properties', [
+                        'intent' => 'update_property',
+                        'params' => $params,
+                        'name_key' => 'property_name',
+                    ])
+                    : AssistantReply::say(__('assistant.replies.entity_not_found', ['name' => $name]));
+            }
+
+            $property = $resolved['entity'];
         }
 
-        $property = $resolved['entity'];
         $collected = $this->collectChanges($params, 'property', $property);
 
         if ($collected['params'] === []) {
-            return $this->needChangesReply('property');
+            return $this->startUpdateClarify('property', $property, $userId);
         }
 
         return new AssistantReply(
@@ -3112,6 +4611,7 @@ class AssistantToolInvoker
                 'params' => ['property_id' => (int) $property->id] + $collected['params'],
                 'changes' => $collected['changes'],
                 'editable' => $collected['editable'],
+                'warnings' => $randomPick ? [__('assistant.warnings.random_pick')] : [],
                 'summary' => __('assistant.actions.update_property_summary', ['property' => $property->name]),
             ],
             suggestions: [],
@@ -3123,7 +4623,33 @@ class AssistantToolInvoker
      */
     private function proposeUpdateRental(array $params, int $userId): AssistantReply
     {
-        $rental = $this->findRental($params, $userId);
+        // "cualquiera"/"una aleatoria": se toma un arriendo al azar y la
+        // advertencia queda visible en el preview antes de confirmar.
+        $randomPickName = trim((string) ($this->param($params, [
+            'rental_name', 'tenant', 'name', 'entity', 'arriendo', 'alquiler', 'contrato',
+        ]) ?? ''));
+        $randomPick = $this->isRandomPick($randomPickName);
+
+        $resolved = ['entity' => null, 'candidates' => []];
+
+        if ($randomPick) {
+            $resolved['entity'] = Rental::query()->where('user_id', $userId)->where('is_active', true)->inRandomOrder()->first();
+        } elseif ($randomPickName !== '') {
+            // Candidatos antes que findRental: con homonimos (dos Camila)
+            // el update NO debe elegir en silencio — se listan y el
+            // usuario elige con el chip.
+            $resolved = $this->resolveRentalCandidates($randomPickName, $userId);
+        }
+
+        $rental = $resolved['entity'] ?? $this->findRental($params, $userId);
+
+        if ($resolved['candidates'] !== []) {
+            return $this->ambiguousReply($randomPickName, $resolved['candidates'], 'rentals', [
+                'intent' => 'update_rental',
+                'params' => $params,
+                'name_key' => 'rental_name',
+            ]);
+        }
 
         if ($rental === null) {
             $name = trim((string) ($params['rental_name'] ?? $params['tenant'] ?? ''));
@@ -3132,7 +4658,11 @@ class AssistantToolInvoker
                 $resolved = $this->resolveRentalCandidates($name, $userId);
 
                 if ($resolved['candidates'] !== []) {
-                    return $this->ambiguousReply($name, $resolved['candidates'], 'rentals');
+                    return $this->ambiguousReply($name, $resolved['candidates'], 'rentals', [
+                        'intent' => 'update_rental',
+                        'params' => $params,
+                        'name_key' => 'rental_name',
+                    ]);
                 }
             }
 
@@ -3144,7 +4674,7 @@ class AssistantToolInvoker
         $collected = $this->collectChanges($params, 'rental', $rental);
 
         if ($collected['params'] === []) {
-            return $this->needChangesReply('rental');
+            return $this->startUpdateClarify('rental', $rental, $userId);
         }
 
         // Cambiar el canon o las fechas afecta la cadena de reajustes:
@@ -3153,6 +4683,10 @@ class AssistantToolInvoker
 
         if (isset($collected['params']['monthly_amount']) || isset($collected['params']['start_date']) || isset($collected['params']['end_date'])) {
             $warnings[] = __('assistant.warnings.rental_dates');
+        }
+
+        if ($randomPick) {
+            $warnings[] = __('assistant.warnings.random_pick');
         }
 
         if (isset($collected['params']['is_active']) && $collected['params']['is_active'] === false) {
@@ -3185,7 +4719,21 @@ class AssistantToolInvoker
      */
     private function proposeRecordAdjustment(array $params, int $userId): AssistantReply
     {
-        $rental = $this->findRental($params, $userId);
+        $name = trim((string) ($this->param($params, [
+            'rental_name', 'tenant', 'name', 'entity', 'arriendo',
+            'alquiler', 'contrato', 'inquilino', 'rental', 'property_name',
+        ]) ?? ''));
+
+        $resolved = $name !== '' ? $this->resolveRentalCandidates($name, $userId) : ['entity' => null, 'candidates' => []];
+        $rental = $resolved['entity'] ?? $this->findRental($params, $userId);
+
+        if ($resolved['candidates'] !== []) {
+            return $this->ambiguousReply($name, $resolved['candidates'], 'adjustments', [
+                'intent' => 'record_adjustment',
+                'params' => $params,
+                'name_key' => 'rental_name',
+            ]);
+        }
 
         if ($rental === null) {
             return AssistantReply::say(__('assistant.replies.need_rental_name'), [
@@ -3531,6 +5079,13 @@ class AssistantToolInvoker
      */
     private function findInvoice(array $params, int $userId): ?Invoice
     {
+        // Eleccion desde la lista de candidatos: manda sobre el numero.
+        $byRef = $this->entityFromRef(Invoice::class, $userId);
+
+        if ($byRef !== null) {
+            return $byRef;
+        }
+
         $id = (int) ($params['invoice_id'] ?? 0);
 
         if ($id > 0) {
@@ -3594,7 +5149,7 @@ class AssistantToolInvoker
 
         return new AssistantReply(
             text: __('assistant.replies.propose_document', [
-                'document' => $kind,
+                'document' => __('assistant.doc_types.'.$kind),
                 'target' => $target['label'],
                 'format' => $format,
             ]),
@@ -3609,7 +5164,7 @@ class AssistantToolInvoker
                     'period' => $target['period'] ?? null,
                 ],
                 'summary' => __('assistant.actions.document_summary', [
-                    'document' => $kind,
+                    'document' => __('assistant.doc_types.'.$kind),
                     'target' => $target['label'],
                 ]),
             ],
@@ -3648,11 +5203,21 @@ class AssistantToolInvoker
             }
 
             $period = trim((string) ($params['period'] ?? $params['periodo'] ?? ''));
+            $periodKey = $period !== '' ? $period : today()->format('Y-m');
+
+            // Un estado de cuenta sin facturas en el periodo es un papel en
+            // cero: mejor decirlo aqui que generar un documento vacio.
+            if (! $rental->invoicesForPeriod($periodKey)->exists()) {
+                return ['error' => __('assistant.replies.no_statement_data', [
+                    'rental' => $rental->name,
+                    'period' => $periodKey,
+                ])];
+            }
 
             return ['target' => [
                 'rental_id' => (int) $rental->id,
-                'period' => $period !== '' ? $period : today()->format('Y-m'),
-                'label' => $rental->name.' '.$period,
+                'period' => $periodKey,
+                'label' => $rental->name.' '.$periodKey,
             ]];
         }
 
@@ -3933,8 +5498,42 @@ class AssistantToolInvoker
      * @param  list<string>  $columns  Atributos/relaciones a buscar.
      * @return array{entity: ?T, candidates: list<array<string, mixed>>}
      */
+    /**
+     * Entidad elegida explicitamente en una lista de candidatos
+     * ("_entity_ref" = "App\Models\Tenant:5"). Devuelve null si la ref no
+     * corresponde a este modelo o el registro no pertenece al usuario.
+     */
+    private function entityFromRef(string $model, int $userId): ?object
+    {
+        $ref = $this->pendingEntityRef;
+
+        if ($ref === null) {
+            return null;
+        }
+
+        $separator = strrpos($ref, ':');
+
+        // El token usa el basename de la clase ("Tenant:5") para no llevar
+        // backslashes por el cableado de Livewire.
+        if ($separator === false || substr($ref, 0, $separator) !== class_basename($model)) {
+            return null;
+        }
+
+        return $model::query()
+            ->where('user_id', $userId)
+            ->find((int) substr($ref, $separator + 1));
+    }
+
     private function resolveEntity(string $model, int $userId, string $name, array $columns = ['name']): array
     {
+        // Eleccion explicita desde la lista de candidatos: manda sobre
+        // cualquier coincidencia por nombre.
+        $byRef = $this->entityFromRef($model, $userId);
+
+        if ($byRef !== null) {
+            return ['entity' => $byRef, 'candidates' => []];
+        }
+
         $needle = Str::lower(trim($name));
 
         if ($needle === '') {
@@ -3957,14 +5556,41 @@ class AssistantToolInvoker
             })
             ->values();
 
-        if ($matches->count() === 1) {
+        // Match exacto antes que substring, pero solo cuando es UNICO:
+        // dos inquilinos llamados igual siguen siendo ambiguos.
+        $exacts = $matches->filter(function ($entity) use ($needle, $columns): bool {
+            foreach ($columns as $column) {
+                $value = data_get($entity, $column);
+
+                if ($value !== null && Str::lower(trim((string) $value)) === $needle) {
+                    return true;
+                }
+            }
+
+            return false;
+        })->values();
+
+        if ($exacts->count() === 1) {
+            return ['entity' => $exacts->first(), 'candidates' => []];
+        }
+
+        if ($exacts->count() > 1) {
+            $matches = $exacts;
+        } elseif ($matches->count() === 1) {
             return ['entity' => $matches->first(), 'candidates' => []];
         }
 
         return [
             'entity' => null,
             'candidates' => $matches->take(5)->map(fn ($entity): array => [
-                'name' => (string) ($entity->name ?? $entity->number ?? '#'.$entity->id),
+                'name' => (string) ($entity->name ?? $entity->number ?? '—'),
+                // token interno para re-elegir la fila desde la UI; no se
+                // muestra nunca (chips usan name/detail).
+                'token' => class_basename($entity).':'.$entity->id,
+                'detail' => implode(' · ', collect($columns)
+                    ->reject(fn (string $column): bool => in_array($column, ['name', 'number'], true))
+                    ->map(fn (string $column): string => (string) (data_get($entity, $column) ?? ''))
+                    ->filter()->unique()->values()->all()),
             ])->all(),
         ];
     }
@@ -3975,11 +5601,20 @@ class AssistantToolInvoker
      *
      * @param  list<array<string, mixed>>  $candidates
      */
-    private function ambiguousReply(string $term, array $candidates, string $sectionKey): AssistantReply
+    private function ambiguousReply(string $term, array $candidates, string $sectionKey, ?array $resolution = null): AssistantReply
     {
+        $data = ['candidates' => $candidates];
+
+        // Contexto para re-ejecutar la peticion cuando el usuario elige un
+        // candidato en la UI: intent + params originales + la clave donde
+        // va el nombre. El token interno (_entity_ref) lo agrega el chat.
+        if ($resolution !== null) {
+            $data['pending_resolution'] = $resolution;
+        }
+
         return new AssistantReply(
             text: __('assistant.replies.entity_ambiguous', ['term' => $term]),
-            data: ['candidates' => $candidates],
+            data: $data,
             suggestions: [__('assistant.suggestions.'.$sectionKey)],
         );
     }
@@ -4023,7 +5658,7 @@ class AssistantToolInvoker
                 'adjustments' => $adjustments->map(fn (RentAdjustment $adjustment): array => [
                     'rental' => $adjustment->rental?->name ?? '—',
                     'tenant' => $adjustment->rental?->tenant?->name ?? '—',
-                    'previous' => $this->money((float) $adjustment->previous_rent),
+                    'previous_rent' => $this->money((float) $adjustment->previous_rent),
                     'new' => $this->money((float) $adjustment->new_rent),
                     'pct' => $adjustment->appliedPercentage().' %',
                     'ipc' => $adjustment->ipc_year !== null
@@ -4046,17 +5681,21 @@ class AssistantToolInvoker
      */
     private function adjustmentDetail(array $params, int $userId): AssistantReply
     {
-        $rental = $this->findRental($params, $userId);
+        $name = trim((string) ($this->param($params, [
+            'rental_name', 'tenant', 'name', 'entity', 'arriendo',
+            'alquiler', 'contrato', 'inquilino', 'rental', 'property_name',
+        ]) ?? ''));
+
+        $resolved = $name !== '' ? $this->resolveRentalCandidates($name, $userId) : ['entity' => null, 'candidates' => []];
+        $rental = $resolved['entity'] ?? $this->findRental($params, $userId);
 
         if ($rental === null) {
-            $name = trim((string) ($params['rental_name'] ?? $params['tenant'] ?? ''));
-
-            if ($name !== '') {
-                $resolved = $this->resolveRentalCandidates($name, $userId);
-
-                if ($resolved['candidates'] !== []) {
-                    return $this->ambiguousReply($name, $resolved['candidates'], 'adjustments');
-                }
+            if ($resolved['candidates'] !== []) {
+                return $this->ambiguousReply($name, $resolved['candidates'], 'adjustments', [
+                    'intent' => 'adjustment_detail',
+                    'params' => $params,
+                    'name_key' => 'rental_name',
+                ]);
             }
 
             return AssistantReply::say(__('assistant.replies.need_rental_name'), [
@@ -4096,7 +5735,7 @@ class AssistantToolInvoker
                 ]],
                 'adjustments' => $adjustments->map(fn (RentAdjustment $adjustment): array => [
                     'effective_from' => $adjustment->effective_from?->toDateString() ?? '—',
-                    'previous' => $this->money((float) $adjustment->previous_rent),
+                    'previous_rent' => $this->money((float) $adjustment->previous_rent),
                     'new' => $this->money((float) $adjustment->new_rent),
                     'pct' => $adjustment->appliedPercentage().' %',
                     'legal_pct' => $adjustment->legalPercentage().' %',
@@ -4118,9 +5757,27 @@ class AssistantToolInvoker
      */
     private function previewAdjustmentIpc(array $params, int $userId): AssistantReply
     {
-        $rental = $this->findRental($params, $userId);
+        // "el IPC de Camila" llega como nombre de inquilino: los
+        // candidatos resuelven arriendo por nombre O por inquilino, y si
+        // hay varios (dos Camila, o un inquilino con dos arriendos) se
+        // listan para elegir en vez de adivinar.
+        $name = trim((string) ($this->param($params, [
+            'rental_name', 'tenant', 'name', 'entity', 'arriendo',
+            'alquiler', 'contrato', 'inquilino', 'rental', 'property_name',
+        ]) ?? ''));
+
+        $resolved = $name !== '' ? $this->resolveRentalCandidates($name, $userId) : ['entity' => null, 'candidates' => []];
+        $rental = $resolved['entity'];
 
         if ($rental === null) {
+            if ($resolved['candidates'] !== []) {
+                return $this->ambiguousReply($name, $resolved['candidates'], 'adjustments', [
+                    'intent' => 'preview_adjustment_ipc',
+                    'params' => $params,
+                    'name_key' => 'rental_name',
+                ]);
+            }
+
             return AssistantReply::say(__('assistant.replies.need_rental_name'), [
                 __('assistant.suggestions.adjustments'),
             ]);
@@ -4412,7 +6069,11 @@ class AssistantToolInvoker
 
         if ($resolved['entity'] === null) {
             return $resolved['candidates'] !== []
-                ? $this->ambiguousReply($name, $resolved['candidates'], 'rentals')
+                ? $this->ambiguousReply($name, $resolved['candidates'], 'rentals', [
+                    'intent' => 'entity_detail',
+                    'params' => ['name' => $name, 'entity_type' => 'rental'],
+                    'name_key' => 'name',
+                ])
                 : AssistantReply::say(__('assistant.replies.entity_not_found', ['name' => $name]));
         }
 
@@ -4436,6 +6097,9 @@ class AssistantToolInvoker
                 'next' => $nextDue->toDateString(),
             ]),
             data: [
+                '_titles' => [
+                    'rental_detail' => __('assistant.data_titles.rental_detail_named', ['name' => $rental->name]),
+                ],
                 'rental_detail' => [[
                     'name' => $rental->name,
                     'tenant' => $rental->tenant?->name ?? '—',
@@ -4465,7 +6129,11 @@ class AssistantToolInvoker
 
         if ($resolved['entity'] === null) {
             return $resolved['candidates'] !== []
-                ? $this->ambiguousReply($name, $resolved['candidates'], 'tenants')
+                ? $this->ambiguousReply($name, $resolved['candidates'], 'tenants', [
+                    'intent' => 'entity_detail',
+                    'params' => ['name' => $name, 'entity_type' => 'tenant'],
+                    'name_key' => 'name',
+                ])
                 : AssistantReply::say(__('assistant.replies.entity_not_found', ['name' => $name]));
         }
 
@@ -4486,6 +6154,9 @@ class AssistantToolInvoker
                 'balance' => $this->money($balance),
             ]),
             data: [
+                '_titles' => [
+                    'tenant_detail' => __('assistant.data_titles.tenant_detail_named', ['name' => $tenant->name]),
+                ],
                 'tenant_detail' => [[
                     'name' => $tenant->name,
                     'document' => $tenant->document ?? '—',
@@ -4512,7 +6183,11 @@ class AssistantToolInvoker
 
         if ($resolved['entity'] === null) {
             return $resolved['candidates'] !== []
-                ? $this->ambiguousReply($name, $resolved['candidates'], 'properties')
+                ? $this->ambiguousReply($name, $resolved['candidates'], 'properties', [
+                    'intent' => 'entity_detail',
+                    'params' => ['name' => $name, 'entity_type' => 'property'],
+                    'name_key' => 'name',
+                ])
                 : AssistantReply::say(__('assistant.replies.entity_not_found', ['name' => $name]));
         }
 
@@ -4525,6 +6200,9 @@ class AssistantToolInvoker
                 'rentals' => $property->rentals->count(),
             ]),
             data: [
+                '_titles' => [
+                    'property_detail' => __('assistant.data_titles.property_detail_named', ['name' => $property->name]),
+                ],
                 'property_detail' => [[
                     'name' => $property->name,
                     'address' => $property->address ?? '—',
@@ -4549,7 +6227,11 @@ class AssistantToolInvoker
 
         if ($resolved['entity'] === null) {
             return $resolved['candidates'] !== []
-                ? $this->ambiguousReply($name, $resolved['candidates'], 'invoices')
+                ? $this->ambiguousReply($name, $resolved['candidates'], 'invoices', [
+                    'intent' => 'entity_detail',
+                    'params' => ['name' => $name, 'entity_type' => 'invoice'],
+                    'name_key' => 'name',
+                ])
                 : AssistantReply::say(__('assistant.replies.entity_not_found', ['name' => $name]));
         }
 
@@ -4565,6 +6247,9 @@ class AssistantToolInvoker
                 'status' => $invoice->status->label(),
             ]),
             data: [
+                '_titles' => [
+                    'invoice_detail' => __('assistant.data_titles.invoice_detail_named', ['name' => $invoice->number]),
+                ],
                 'invoice_detail' => [[
                     'number' => $invoice->number,
                     'tenant' => $invoice->rental?->tenant?->name ?? '—',

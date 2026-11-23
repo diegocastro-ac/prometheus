@@ -33,6 +33,28 @@
         resizing: false,
         resizeStartX: 0,
         resizeStartWidth: 0,
+        // Indicador de pensamiento: rota frases mientras `sending` este
+        // activo y muestra el boton cancelar solo tras 10 segundos.
+        thinkingSteps: @js(__('assistant.thinking_steps')),
+        thinkingStep: 0,
+        thinkingSince: 0,
+        thinkingNow: 0,
+        thinkingTimer: null,
+        thinkingText() {
+            return this.thinkingSteps[this.thinkingStep % this.thinkingSteps.length];
+        },
+        thinkingElapsed() {
+            return this.thinkingNow - this.thinkingSince;
+        },
+        canCancelThinking() {
+            return this.sending && this.thinkingElapsed() > 10000;
+        },
+        cancelThinking() {
+            this.$wire.cancelPending();
+            this.sending = false;
+            this.pendingMsgs = [];
+            this.scrollToBottom();
+        },
         startResize(event) {
             if (window.innerWidth < 1024) return;
             this.resizing = true;
@@ -53,6 +75,11 @@
             if (! this.resizing) return;
             this.resizing = false;
             document.body.style.userSelect = '';
+            // El ancho elegido persiste por dispositivo: cada pantalla
+            // recuerda su preferencia y no hay que reajustarlo.
+            try {
+                localStorage.setItem('assistant.drawerWidth', String(this.drawerWidth));
+            } catch (e) { /* storage lleno/bloqueado: el resize sigue funcionando en sesion */ }
         },
         toggleSuggest() {
             this.suggestOpen = ! this.suggestOpen;
@@ -151,6 +178,8 @@
         async echoAndSend(text, call, restoreInput = null) {
             if (this.sending || ! text.trim()) return;
             this.sending = true;
+            this.thinkingSince = Date.now();
+            this.thinkingStep = 0;
             this.pendingMsgs.push(text.trim());
             this.atBottom = true;
             this.scrollToBottom();
@@ -214,6 +243,23 @@
             });
             // La rueda fuera del drawer sigue moviendo el scroll del chat.
             window.addEventListener('wheel', (event) => this.forwardWheel(event), { passive: false });
+            // Ancho guardado del dispositivo (solo escritorio: en movil el
+            // drawer ocupa todo el ancho y el valor se ignora).
+            try {
+                const savedWidth = parseInt(localStorage.getItem('assistant.drawerWidth') || '', 10);
+                if (savedWidth >= 340 && savedWidth <= window.innerWidth * 0.75) {
+                    this.drawerWidth = savedWidth;
+                }
+            } catch (e) { /* sin storage: ancho por defecto */ }
+            // Rota el texto del indicador de pensamiento mientras haya
+            // una respuesta en curso; un solo intervalo para toda la vida
+            // del componente.
+            this.thinkingTimer = setInterval(() => {
+                this.thinkingNow = Date.now();
+                if (this.sending) {
+                    this.thinkingStep = (this.thinkingStep + 1) % this.thinkingSteps.length;
+                }
+            }, 2200);
         },
     }"
     x-on:keydown.escape.window="drawerOpen && closeDrawer()"
@@ -309,7 +355,7 @@
                             <svg class="h-3 w-3 shrink-0 animate-pulse" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
                             </svg>
-                            {{ $pendingForm['form'] === 'delivery_act' ? __('act.navigation_label') : $pendingForm['form'] }}
+                            {{ $pendingForm['form_label'] ?? ($pendingForm['form'] === 'delivery_act' ? __('act.navigation_label') : $pendingForm['form']) }}
                             · {{ __('assistant.wizard.step_of', ['step' => $pendingForm['step'], 'total' => $pendingForm['total_steps']]) }}
                         </p>
                     @endif
@@ -606,30 +652,105 @@
                                     @include('livewire.partials.assistant-tables', ['data' => $message['data'] ?? null, 'messageIndex' => $index, 'badgeColors' => $message['badge_colors'] ?? []])
                                 @endif
 
+                                {{-- Guia de uso (app_guide): resumen en la
+                                     burbuja; la guia completa se abre en el
+                                     modal de preview con pasos accionables. --}}
+                                @include('livewire.partials.assistant-guide', ['data' => $message['data'] ?? null, 'compact' => true, 'messageIndex' => $index])
+                                @if (! empty($message['data']['guide']['steps']))
+                                    <button
+                                        type="button"
+                                        wire:click="previewBusy = true; $wire.previewGuide({{ $index }}).finally(() => previewBusy = false)"
+                                        class="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-sky-700 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-sky-50 dark:bg-gray-800 dark:text-sky-300 dark:ring-white/10 dark:hover:bg-sky-500/10"
+                                    >
+                                        {{ __('assistant.guide.view_full') }}
+                                        <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
+                                    </button>
+                                @endif
+
+                                {{-- Respuesta ambigua: chips clicables con
+                                     los candidatos. Elegir uno re-ejecuta
+                                     la peticion original sobre esa entidad. --}}
+                                {{-- Analisis predictivo (business_insights):
+                                     resumen en la burbuja; la tarjeta
+                                     completa se abre en el modal. --}}
+                                @include('livewire.partials.assistant-insights', ['data' => $message['data'] ?? null, 'compact' => true])
+                                @if (! empty($message['data']['insights']))
+                                    <button
+                                        type="button"
+                                        wire:click="previewBusy = true; $wire.previewInsights({{ $index }}).finally(() => previewBusy = false)"
+                                        class="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-indigo-700 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-indigo-50 dark:bg-gray-800 dark:text-indigo-300 dark:ring-white/10 dark:hover:bg-indigo-500/10"
+                                    >
+                                        {{ __('assistant.insights.view_full') }}
+                                        <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
+                                    </button>
+                                @endif
+
+                                @php $candidates = $message['data']['candidates'] ?? null; @endphp
+                                @if (is_array($candidates) && $candidates !== [])
+                                    <div class="mt-3">
+                                        <p class="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">{{ __('assistant.candidates.pick_one') }}</p>
+                                        <div class="flex flex-wrap gap-1.5">
+                                            @foreach ($candidates as $candidate)
+                                                <button
+                                                    type="button"
+                                                    wire:click="pickCandidate({{ $index }}, '{{ $candidate['token'] ?? '' }}')"
+                                                    wire:loading.attr="disabled"
+                                                    class="group inline-flex max-w-full items-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-left text-xs font-medium text-gray-700 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-primary-50 hover:ring-primary-300 dark:bg-gray-800 dark:text-gray-200 dark:ring-white/10 dark:hover:bg-primary-500/10"
+                                                >
+                                                    <svg class="h-3.5 w-3.5 shrink-0 text-gray-400 transition group-hover:text-primary-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
+                                                    </svg>
+                                                    <span class="min-w-0">
+                                                        <span class="block truncate">{{ $candidate['name'] ?? '—' }}</span>
+                                                        @php $candidateDetail = trim(implode(' · ', array_filter([$candidate['tenant'] ?? null, $candidate['detail'] ?? null]))); @endphp
+                                                        @if ($candidateDetail !== '')
+                                                            <span class="block truncate text-[10px] font-normal text-gray-400 dark:text-gray-500">{{ $candidateDetail }}</span>
+                                                        @endif
+                                                    </span>
+                                                </button>
+                                            @endforeach
+                                        </div>
+                                    </div>
+                                @endif
+
                                 {{-- Archivo generado por una accion (documento
                                      o CSV): tarjeta con descarga directa. --}}
                                 @if (! empty($message['data']['file']['token']))
                                     @php $file = $message['data']['file']; @endphp
                                     <div class="mt-3 overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-950/10 dark:bg-gray-800 dark:ring-white/10">
-                                        <button
-                                            type="button"
-                                            wire:click="downloadFile('{{ $file['token'] }}')"
-                                            wire:loading.attr="disabled"
-                                            class="flex w-full items-center gap-3 px-3.5 py-3 text-left transition hover:bg-cyan-50 dark:hover:bg-cyan-500/10"
-                                        >
-                                            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-100 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300">
+                                        <div class="flex items-stretch">
+                                            <button
+                                                type="button"
+                                                wire:click="previewFile({{ $index }})"
+                                                wire:loading.attr="disabled"
+                                                title="{{ __('assistant.preview.view_file') }}"
+                                                class="flex items-center justify-center px-3 text-gray-400 transition hover:bg-cyan-50 hover:text-cyan-600 dark:hover:bg-cyan-500/10 dark:hover:text-cyan-300"
+                                            >
                                                 <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                                                </svg>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                wire:click="downloadFile('{{ $file['token'] }}')"
+                                                wire:loading.attr="disabled"
+                                                class="flex w-full items-center gap-3 px-3.5 py-3 text-left transition hover:bg-cyan-50 dark:hover:bg-cyan-500/10"
+                                            >
+                                                <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-100 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300">
+                                                    <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                                    </svg>
+                                                </span>
+                                                <span class="min-w-0 flex-1">
+                                                    <span class="block truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{{ $file['filename'] }}</span>
+                                                    <span class="block text-[10px] text-gray-500 dark:text-gray-400">{{ __('assistant.download_file') }}</span>
+                                                </span>
+                                                <svg class="h-4 w-4 shrink-0 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
                                                     <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
                                                 </svg>
-                                            </span>
-                                            <span class="min-w-0 flex-1">
-                                                <span class="block truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{{ $file['filename'] }}</span>
-                                                <span class="block text-[10px] text-gray-500 dark:text-gray-400">{{ __('assistant.download_file') }}</span>
-                                            </span>
-                                            <svg class="h-4 w-4 shrink-0 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                                            </svg>
-                                        </button>
+                                            </button>
+                                        </div>
                                         @if (! empty($file['preview']))
                                             <pre class="max-h-48 overflow-auto border-t border-gray-950/5 bg-gray-50 p-3 text-[11px] leading-relaxed text-gray-600 [overscroll-behavior:contain] dark:border-white/5 dark:bg-black/20 dark:text-gray-300">{{ $file['preview'] }}</pre>
                                         @endif
@@ -691,27 +812,89 @@
                                                 @endforeach
                                             </ul>
                                         @endif
-                                        <div class="mt-2.5">
-                                            <button
-                                                type="button"
-                                                x-on:click="previewBusy = true; $wire.previewAction({{ $index }}).finally(() => previewBusy = false)"
-                                                class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:ring-white/15 dark:hover:bg-gray-700"
-                                            >
-                                                <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
-                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-                                                </svg>
-                                                {{ __('assistant.preview.action_title') }}
-                                            </button>
+                                        <div class="mt-2.5 flex flex-wrap items-center gap-2">
+                                            @if (empty($message['action']['editable']))
+                                                {{-- Sin campos editables no hace falta modal:
+                                                     la confirmacion va directo en el mensaje. --}}
+                                                <button
+                                                    type="button"
+                                                    wire:click="confirmAction({{ $index }})"
+                                                    wire:loading.attr="disabled"
+                                                    wire:target="confirmAction,confirmPreview"
+                                                    class="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-primary-500 disabled:opacity-50"
+                                                >
+                                                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                                    </svg>
+                                                    {{ __('assistant.confirm') }}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    wire:click="cancelAction({{ $index }})"
+                                                    class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-gray-700"
+                                                >
+                                                    {{ __('assistant.cancel') }}
+                                                </button>
+                                            @else
+                                                <button
+                                                    type="button"
+                                                    x-on:click="previewBusy = true; $wire.previewAction({{ $index }}).finally(() => previewBusy = false)"
+                                                    class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:ring-white/15 dark:hover:bg-gray-700"
+                                                >
+                                                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                                                    </svg>
+                                                    {{ __('assistant.preview.action_title') }}
+                                                </button>
+                                            @endif
                                         </div>
                                     </div>
                                 @elseif (($message['action_resolved'] ?? false) === true)
-                                    <p class="mt-2 flex items-center gap-1 text-xs italic text-gray-400 dark:text-gray-500">
-                                        <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                                        </svg>
-                                        {{ __('assistant.action_resolved') }}
-                                    </p>
+                                    @php
+                                        $resolvedAction = $message['resolved_action'] ?? null;
+                                        $resolvedType = is_array($resolvedAction) ? (string) ($resolvedAction['type'] ?? '') : '';
+                                        $resolvedSummaryKey = 'assistant.actions.'.$resolvedType.'_summary';
+                                        $resolvedSummary = __($resolvedSummaryKey);
+                                        $resolvedLabel = $resolvedSummary === $resolvedSummaryKey
+                                            ? ucfirst(str_replace('_', ' ', $resolvedType))
+                                            : $resolvedSummary;
+                                        $resolvedChanges = is_array($resolvedAction['changes'] ?? null) ? $resolvedAction['changes'] : [];
+                                    @endphp
+                                    <div class="mt-3 overflow-hidden rounded-xl border border-emerald-300 bg-emerald-50/70 dark:border-emerald-500/40 dark:bg-emerald-500/10">
+                                        <div class="flex items-center gap-2 px-3 py-2">
+                                            <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                                                <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" aria-hidden="true">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                                </svg>
+                                            </span>
+                                            <div class="min-w-0 flex-1">
+                                                <p class="text-[10px] font-bold uppercase tracking-wider text-emerald-700/80 dark:text-emerald-400/80">{{ __('assistant.action_done') }}</p>
+                                                <p class="truncate text-xs font-semibold text-emerald-900 dark:text-emerald-200">{{ $resolvedLabel !== '' ? $resolvedLabel : __('assistant.action_resolved') }}</p>
+                                            </div>
+                                        </div>
+                                        @if ($resolvedChanges !== [])
+                                            <dl class="divide-y divide-emerald-900/5 border-t border-emerald-900/10 dark:divide-white/5 dark:border-white/10">
+                                                @foreach (array_slice($resolvedChanges, 0, 6) as $change)
+                                                    @php
+                                                        // Labels de campo: sin articulo y con
+                                                        // mayuscula inicial, igual que en el preview.
+                                                        $cl = trim((string) preg_replace('/^(?:el|la|los|las|the)\s+/iu', '', (string) ($change['label'] ?? '')));
+                                                        $cl = $cl === '' ? '' : mb_strtoupper(mb_substr($cl, 0, 1)).mb_substr($cl, 1);
+                                                    @endphp
+                                                    <div class="flex items-center justify-between gap-3 px-3 py-1.5 text-[11px]">
+                                                        <dt class="shrink-0 text-emerald-900/60 dark:text-emerald-200/60">{{ $cl }}</dt>
+                                                        <dd class="flex min-w-0 items-center gap-1.5 text-right">
+                                                            @if (($change['before'] ?? null) !== null && ($change['before'] ?? '') !== '')
+                                                                <span class="truncate text-emerald-900/40 line-through dark:text-emerald-200/40">{{ $change['before'] }}</span>
+                                                            @endif
+                                                            <span class="font-semibold text-emerald-900 dark:text-emerald-100">{{ ($change['after'] ?? null) ?: '—' }}</span>
+                                                        </dd>
+                                                    </div>
+                                                @endforeach
+                                            </dl>
+                                        @endif
+                                    </div>
                                 @endif
 
                                 {{-- Acciones del mensaje: "ver todas las tablas"
@@ -831,10 +1014,24 @@
                         x-cloak
                         class="flex justify-start"
                     >
-                        <div class="flex items-center gap-1.5 rounded-2xl rounded-bl-md bg-white px-4 py-3.5 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-800 dark:ring-white/10">
-                            <span class="assistant-dot h-1.5 w-1.5 rounded-full bg-primary-500"></span>
-                            <span class="assistant-dot h-1.5 w-1.5 rounded-full bg-primary-500" style="animation-delay: 0.15s"></span>
-                            <span class="assistant-dot h-1.5 w-1.5 rounded-full bg-primary-500" style="animation-delay: 0.3s"></span>
+                        <div class="flex items-center gap-2 rounded-2xl rounded-bl-md bg-white px-4 py-3 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-800 dark:ring-white/10">
+                            <span class="flex gap-1">
+                                <span class="assistant-dot h-1.5 w-1.5 rounded-full bg-primary-500"></span>
+                                <span class="assistant-dot h-1.5 w-1.5 rounded-full bg-primary-500" style="animation-delay: 0.15s"></span>
+                                <span class="assistant-dot h-1.5 w-1.5 rounded-full bg-primary-500" style="animation-delay: 0.3s"></span>
+                            </span>
+                            <span
+                                x-text="thinkingText()"
+                                class="text-xs font-medium text-gray-500 dark:text-gray-400"
+                            ></span>
+                            <button
+                                type="button"
+                                x-show="canCancelThinking()"
+                                x-cloak
+                                x-on:click="cancelThinking()"
+                                class="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-danger-600 ring-1 ring-danger-600/30 transition hover:bg-danger-50 dark:text-danger-400 dark:hover:bg-danger-500/10"
+                                x-text="@js(__('assistant.cancel'))"
+                            ></button>
                         </div>
                     </div>
                 @endif
@@ -1009,7 +1206,6 @@
                     @php
                         $wizardStep = max(1, min((int) ($pendingForm['step'] ?? 1), (int) ($pendingForm['total_steps'] ?? 1)));
                         $wizardTotal = max(1, (int) ($pendingForm['total_steps'] ?? 1));
-                        $wizardPct = (int) round((($wizardStep - 1) / $wizardTotal) * 100);
                     @endphp
                     <div class="mb-2 rounded-xl bg-primary-50 p-3 ring-1 ring-primary-600/15 dark:bg-primary-500/10 dark:ring-primary-400/25">
                         <div class="flex items-center justify-between gap-2">
@@ -1018,7 +1214,7 @@
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
                                 </svg>
                                 <span class="truncate">
-                                    {{ $pendingForm['form'] === 'delivery_act' ? __('act.navigation_label') : $pendingForm['form'] }}
+                                    {{ $pendingForm['form_label'] ?? ($pendingForm['form'] === 'delivery_act' ? __('act.navigation_label') : $pendingForm['form']) }}
                                     · {{ __('assistant.wizard.step_of', ['step' => $wizardStep, 'total' => $wizardTotal]) }}
                                 </span>
                             </p>
@@ -1030,10 +1226,139 @@
                                 {{ __('assistant.wizard.cancel') }}
                             </button>
                         </div>
-                        <div class="mt-2 h-1 overflow-hidden rounded-full bg-primary-600/10 dark:bg-white/10">
-                            <div class="h-full rounded-full bg-primary-600 transition-all duration-300 dark:bg-primary-400" style="width: {{ $wizardPct }}%"></div>
+                        <div class="mt-2 flex items-center gap-1">
+                            @for ($stepIndex = 1; $stepIndex <= $wizardTotal; $stepIndex++)
+                                <span
+                                    class="h-1.5 flex-1 rounded-full transition-colors {{ $stepIndex <= $wizardStep ? 'bg-primary-600 dark:bg-primary-400' : 'bg-primary-600/15 dark:bg-white/10' }}"
+                                    title="{{ __('assistant.wizard.step_of', ['step' => $stepIndex, 'total' => $wizardTotal]) }}"
+                                ></span>
+                            @endfor
                         </div>
                         <p class="mt-2 text-xs font-medium text-gray-700 dark:text-gray-200">{{ $pendingForm['prompt'] ?? '' }}</p>
+
+                        {{-- Input tipado del campo actual: el tipo sale del
+                             kind real del campo (fecha, numero, switch,
+                             select de enum, textarea), no un input generico. --}}
+                        @php $wfInput = $pendingForm['input'] ?? null; @endphp
+                        {{-- Formulario vacio del update guiado: TODOS los
+                             campos editables de la entidad, cada uno con su
+                             tipo real (fecha, numero, switch, select, textarea).
+                             Se envian por FormData — los vacios no se tocan. --}}
+                        @php $wfFields = $pendingForm['fields'] ?? null; @endphp
+                        @if (is_array($wfFields) && $wfFields !== [])
+                            <form
+                                x-on:submit.prevent="$wire.submitForm(Object.fromEntries(new FormData($el).entries()))"
+                                class="mt-2 grid gap-2 sm:grid-cols-2"
+                            >
+                                @foreach ($wfFields as $wfField)
+                                    @php
+                                        $fk = (string) ($wfField['key'] ?? '');
+                                        $fkind = (string) ($wfField['kind'] ?? 'text');
+                                        $fval = (string) ($wfField['value'] ?? '');
+                                        // Los labels vienen pensados para frases ("el
+                                        // telefono"); en el formulario van limpios:
+                                        // sin articulo y con mayuscula inicial.
+                                        $flabel = trim((string) preg_replace('/^(?:el|la|los|las|the)\s+/iu', '', (string) ($wfField['label'] ?? $fk)));
+                                        $flabel = $flabel === '' || $flabel === $fk ? $fk : mb_strtoupper(mb_substr($flabel, 0, 1)).mb_substr($flabel, 1);
+                                        $freq = ! empty($wfField['required']);
+                                        $fClass = 'w-full rounded-lg bg-white px-2.5 py-1.5 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-gray-100 dark:ring-white/10';
+                                    @endphp
+                                    <label class="block text-[11px] {{ $fkind === 'textarea' ? 'sm:col-span-2' : '' }}">
+                                        <span class="mb-0.5 block font-medium text-gray-500 dark:text-gray-400">{{ $flabel }}@if ($freq)<span class="ml-0.5 text-red-500" aria-hidden="true">*</span>@endif</span>
+                                        @if ($fkind === 'textarea')
+                                            <textarea name="{{ $fk }}" rows="2" @if ($freq) required @endif class="{{ $fClass }}"></textarea>
+                                        @elseif ($fkind === 'date')
+                                            <input type="date" name="{{ $fk }}" value="{{ $fval }}" @if ($freq) required @endif class="{{ $fClass }}">
+                                        @elseif ($fkind === 'datetime')
+                                            <input type="datetime-local" name="{{ $fk }}" value="{{ $fval }}" @if ($freq) required @endif class="{{ $fClass }}">
+                                        @elseif ($fkind === 'number')
+                                            <input type="number" name="{{ $fk }}" step="{{ $wfField['step'] ?? 'any' }}" inputmode="decimal" value="{{ $fval }}" @if (isset($wfField['min'])) min="{{ $wfField['min'] }}" @endif @if (isset($wfField['max'])) max="{{ $wfField['max'] }}" @endif @if ($freq) required @endif class="{{ $fClass }}">
+                                        @elseif ($fkind === 'range')
+                                            <input type="range" name="{{ $fk }}" value="{{ $fval !== '' ? $fval : ($wfField['min'] ?? 0) }}" min="{{ $wfField['min'] ?? 0 }}" max="{{ $wfField['max'] ?? 100 }}" step="{{ $wfField['step'] ?? 1 }}" class="{{ $fClass }} py-1">
+                                        @elseif ($fkind === 'email')
+                                            <input type="email" name="{{ $fk }}" value="{{ $fval }}" @if ($freq) required @endif class="{{ $fClass }}">
+                                        @elseif ($fkind === 'tel')
+                                            <input type="tel" name="{{ $fk }}" value="{{ $fval }}" @if ($freq) required @endif class="{{ $fClass }}">
+                                        @elseif ($fkind === 'password')
+                                            <input type="password" name="{{ $fk }}" value="" autocomplete="new-password" class="{{ $fClass }}">
+                                        @elseif ($fkind === 'bool')
+                                            <select name="{{ $fk }}" class="{{ $fClass }}">
+                                                <option value="1" @selected($fval === '1')>{{ __('assistant.wizard.yes') }}</option>
+                                                <option value="0" @selected($fval === '0')>{{ __('assistant.wizard.no') }}</option>
+                                            </select>
+                                        @elseif ($fkind === 'select' && is_array($wfField['options'] ?? null) && $wfField['options'] !== [])
+                                            <select name="{{ $fk }}" class="{{ $fClass }}">
+                                                <option value="">{{ str_starts_with($pendingForm['form'] ?? '', 'create_') ? __('assistant.fields.optional') : __('assistant.update_form.keep') }}</option>
+                                                @foreach ($wfField['options'] as $optValue => $optLabel)
+                                                    @if (is_array($optLabel))
+                                                        <option value="{{ $optLabel['value'] ?? '' }}" @selected($fval === (string) ($optLabel['value'] ?? ''))>{{ $optLabel['label'] ?? '' }}</option>
+                                                    @else
+                                                        <option value="{{ is_int($optValue) ? $optLabel : $optValue }}" @selected($fval === (string) $optValue)>{{ $optLabel }}</option>
+                                                    @endif
+                                                @endforeach
+                                            </select>
+                                        @else
+                                            <input type="text" name="{{ $fk }}" value="{{ $fval }}" autocomplete="off" @if ($freq) required @endif class="{{ $fClass }}">
+                                        @endif
+                                    </label>
+                                @endforeach
+                                <div class="flex justify-end sm:col-span-2">
+                                    <button
+                                        type="submit"
+                                        class="rounded-lg bg-primary-600 px-3.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-primary-500"
+                                    >
+                                        {{ str_starts_with($pendingForm['form'] ?? '', 'create_') ? __('assistant.create_form.submit') : __('assistant.update_form.submit') }}
+                                    </button>
+                                </div>
+                            </form>
+                        @elseif (is_array($wfInput))
+                            <form
+                                x-on:submit.prevent="const v = new FormData($el).get('fv'); if (v !== null && String(v).trim() !== '') { $wire.answerFormField(String(v).trim()); }"
+                                class="mt-2 flex flex-wrap items-center gap-2"
+                            >
+                                @php
+                                    $wfKind = (string) ($wfInput['kind'] ?? 'text');
+                                    $wfClass = 'w-full rounded-lg bg-white px-2.5 py-1.5 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-gray-100 dark:ring-white/10';
+                                @endphp
+                                @if ($wfKind === 'date')
+                                    <input type="date" name="fv" class="{{ $wfClass }} sm:w-44">
+                                @elseif ($wfKind === 'datetime')
+                                    <input type="datetime-local" name="fv" class="{{ $wfClass }} sm:w-52">
+                                @elseif ($wfKind === 'number')
+                                    <input type="number" name="fv" step="any" inputmode="decimal" class="{{ $wfClass }} sm:w-40">
+                                @elseif ($wfKind === 'range')
+                                    <input type="range" name="fv" min="{{ $wfInput['min'] ?? 0 }}" max="{{ $wfInput['max'] ?? 100 }}" step="{{ $wfInput['step'] ?? 1 }}" class="{{ $wfClass }} sm:w-40">
+                                @elseif ($wfKind === 'email')
+                                    <input type="email" name="fv" autocomplete="email" class="{{ $wfClass }} sm:w-48">
+                                @elseif ($wfKind === 'tel')
+                                    <input type="tel" name="fv" autocomplete="tel" class="{{ $wfClass }} sm:w-40">
+                                @elseif ($wfKind === 'password')
+                                    <input type="password" name="fv" autocomplete="new-password" class="{{ $wfClass }} sm:w-44">
+                                @elseif ($wfKind === 'bool')
+                                    <select name="fv" class="{{ $wfClass }} sm:w-32">
+                                        <option value="sí">{{ __('assistant.wizard.yes') }}</option>
+                                        <option value="no">{{ __('assistant.wizard.no') }}</option>
+                                    </select>
+                                @elseif ($wfKind === 'select' && ! empty($wfInput['options']))
+                                    <select name="fv" class="{{ $wfClass }} sm:w-48">
+                                        @foreach ($wfInput['options'] as $opt)
+                                            <option value="{{ $opt }}">{{ $opt }}</option>
+                                        @endforeach
+                                    </select>
+                                @elseif ($wfKind === 'textarea')
+                                    <textarea name="fv" rows="2" class="{{ $wfClass }}"></textarea>
+                                @else
+                                    <input type="text" name="fv" autocomplete="off" class="{{ $wfClass }}">
+                                @endif
+                                <button
+                                    type="submit"
+                                    class="shrink-0 rounded-lg bg-primary-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-primary-500"
+                                >
+                                    {{ __('assistant.wizard.send') }}
+                                </button>
+                            </form>
+                        @endif
+
                         @if (! empty($pendingForm['quick_replies']))
                             <div class="mt-2 flex flex-wrap gap-1.5">
                                 @foreach ($pendingForm['quick_replies'] as $reply)
@@ -1120,6 +1445,15 @@
                                 $preview['rows'],
                                 fn (array $row): bool => ! array_key_exists('before', $row) && ! array_key_exists('after', $row),
                             ));
+                            // Las etiquetas de campo vienen con articulo
+                            // ("el teléfono") porque tambien se usan en
+                            // frases; en tablas se ven mejor capitalizadas
+                            // y sin articulo.
+                            $fieldTitle = function (string $label): string {
+                                $label = trim((string) preg_replace('/^(?:el|la|los|las|the)\s+/iu', '', $label));
+
+                                return $label === '' ? $label : mb_strtoupper(mb_substr($label, 0, 1)).mb_substr($label, 1);
+                            };
                         @endphp
                         <p class="mb-3 text-sm font-medium text-gray-700 dark:text-gray-300">{{ $preview['title'] }}</p>
 
@@ -1147,7 +1481,7 @@
                                 <dl class="divide-y divide-gray-950/5 dark:divide-white/5">
                                     @foreach ($previewDiffs as $row)
                                         <div class="flex items-center justify-between gap-3 px-3 py-2 text-sm">
-                                            <dt class="shrink-0 text-gray-500 dark:text-gray-400">{{ $row['label'] }}</dt>
+                                            <dt class="shrink-0 text-gray-500 dark:text-gray-400">{{ $fieldTitle((string) $row['label']) }}</dt>
                                             <dd class="flex min-w-0 items-center gap-1.5 text-right">
                                                 @if (($row['before'] ?? null) !== null)
                                                     <span class="truncate text-gray-400 line-through dark:text-gray-500">{{ $row['before'] }}</span>
@@ -1173,7 +1507,7 @@
                                         <div class="pt-2 text-[11px] font-bold uppercase tracking-wider text-primary-600 first:pt-0 dark:text-primary-400">{{ $row['label'] }}</div>
                                     @else
                                         <div class="flex items-start justify-between gap-3 text-sm {{ ($row['item'] ?? false) ? 'pl-3' : '' }}">
-                                            <dt class="shrink-0 {{ ($row['item'] ?? false) ? 'text-gray-400 dark:text-gray-500' : 'text-gray-500 dark:text-gray-400' }}">{{ $row['label'] }}</dt>
+                                            <dt class="shrink-0 {{ ($row['item'] ?? false) ? 'text-gray-400 dark:text-gray-500' : 'text-gray-500 dark:text-gray-400' }}">{{ $fieldTitle((string) $row['label']) }}</dt>
                                             <dd class="text-right font-medium text-gray-900 dark:text-white">{{ $row['value'] }}</dd>
                                         </div>
                                     @endif
@@ -1192,25 +1526,38 @@
                                     @foreach ($previewEditable as $field)
                                         @php $editKey = (string) ($field['key'] ?? ''); @endphp
                                         <label class="block text-xs">
-                                            <span class="mb-0.5 block font-medium text-gray-500 dark:text-gray-400">{{ $field['label'] ?? $editKey }}</span>
+                                            <span class="mb-0.5 block font-medium text-gray-500 dark:text-gray-400">{{ $fieldTitle((string) ($field['label'] ?? $editKey)) }}</span>
                                             @if (($field['kind'] ?? 'text') === 'textarea')
                                                 <textarea
                                                     wire:model.blur="previewEdits.{{ $editKey }}"
                                                     rows="2"
                                                     class="w-full rounded-lg border-0 bg-white px-2.5 py-1.5 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10"
                                                 ></textarea>
+                                            @elseif (($field['kind'] ?? 'text') === 'bool')
+                                                <select
+                                                    wire:model.blur="previewEdits.{{ $editKey }}"
+                                                    class="w-full rounded-lg border-0 bg-white px-2.5 py-1.5 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10"
+                                                >
+                                                    <option value="1">{{ __('assistant.yes') }}</option>
+                                                    <option value="0">{{ __('assistant.no') }}</option>
+                                                </select>
                                             @elseif (($field['kind'] ?? 'text') === 'select' && is_array($field['options'] ?? null) && $field['options'] !== [])
                                                 <select
                                                     wire:model.blur="previewEdits.{{ $editKey }}"
                                                     class="w-full rounded-lg border-0 bg-white px-2.5 py-1.5 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10"
                                                 >
-                                                    @foreach ($field['options'] as $option)
-                                                        <option value="{{ $option['value'] ?? $option }}">{{ $option['label'] ?? $option }}</option>
+                                                    @foreach ($field['options'] as $optionValue => $optionLabel)
+                                                        @if (is_array($optionLabel))
+                                                            <option value="{{ $optionLabel['value'] ?? '' }}">{{ $optionLabel['label'] ?? '' }}</option>
+                                                        @else
+                                                            <option value="{{ is_int($optionValue) ? $optionLabel : $optionValue }}">{{ $optionLabel }}</option>
+                                                        @endif
                                                     @endforeach
                                                 </select>
                                             @else
                                                 <input
-                                                    type="{{ in_array($field['kind'] ?? 'text', ['number', 'date'], true) ? $field['kind'] : 'text' }}"
+                                                    type="{{ in_array($field['kind'] ?? 'text', ['number', 'date', 'email', 'tel', 'datetime'], true) ? $field['kind'] : 'text' }}"
+                                                    @if (($field['kind'] ?? 'text') === 'number') inputmode="decimal" @endif
                                                     wire:model.blur="previewEdits.{{ $editKey }}"
                                                     class="w-full rounded-lg border-0 bg-white px-2.5 py-1.5 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10"
                                                 >
@@ -1227,6 +1574,34 @@
                             </svg>
                             {{ __('assistant.preview.confirm_note') }}
                         </p>
+                    @elseif ($preview['kind'] === 'insights')
+                        {{-- Analisis predictivo completo. Las acciones prompt
+                             usan askFromPreview: cierran el modal y envian el
+                             mensaje al chat con scroll al final. --}}
+                        @include('livewire.partials.assistant-insights', ['data' => ['insights' => $preview['payload'] ?? null], 'compact' => false, 'fromPreview' => true])
+                    @elseif ($preview['kind'] === 'guide')
+                        {{-- Guia de uso completa: mismos botones, mismo cierre
+                             de modal antes de preguntar al chat. --}}
+                        @include('livewire.partials.assistant-guide', ['data' => ['guide' => $preview['payload'] ?? null], 'compact' => false, 'fromPreview' => true])
+                    @elseif ($preview['kind'] === 'file')
+                        {{-- Documento generado: se embebe por la ruta con
+                             control de acceso; la descarga sigue por token. --}}
+                        <div class="flex h-full min-h-0 flex-col gap-3">
+                            <iframe
+                                src="{{ $preview['file_url'] }}"
+                                title="{{ $preview['title'] }}"
+                                class="h-[65vh] w-full rounded-xl bg-white ring-1 ring-gray-950/10 dark:bg-gray-900 dark:ring-white/10"
+                            ></iframe>
+                            <div class="flex justify-end">
+                                <button
+                                    type="button"
+                                    wire:click="downloadFile('{{ $preview['file_token'] }}')"
+                                    class="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-primary-500"
+                                >
+                                    {{ __('assistant.download_file') }}
+                                </button>
+                            </div>
+                        </div>
                     @else
                         {{-- data / data_all: una o varias tablas. Las celdas con
                              listas de filas se despliegan igual que en las

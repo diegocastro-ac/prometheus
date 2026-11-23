@@ -37,7 +37,7 @@ class CreateRentAdjustment extends CreateRecord
         if ($rental === null) {
             Notification::make()
                 ->danger()
-                ->title('El alquiler seleccionado no existe.')
+                ->title(__('rent_adjustment.notifications.rental_missing'))
                 ->send();
 
             $this->halt();
@@ -107,13 +107,12 @@ class CreateRentAdjustment extends CreateRecord
         if ($adjustment?->hasPactadoCap() === true) {
             Notification::make()
                 ->info()
-                ->title('Se aplicó el porcentaje pactado, no el IPC completo.')
-                ->body(sprintf(
-                    'El IPC del %s fue %s %% y se aplicó %s %%.',
-                    $adjustment->ipc_year,
-                    number_format((float) $adjustment->legal_pct, 2, ',', '.'),
-                    number_format((float) $adjustment->applied_pct, 2, ',', '.'),
-                ))
+                ->title(__('rent_adjustment.notifications.pactado_cap_title'))
+                ->body(__('rent_adjustment.notifications.pactado_cap_body', [
+                    'year' => $adjustment->ipc_year,
+                    'legal' => number_format((float) $adjustment->legal_pct, 2, ',', '.'),
+                    'applied' => number_format((float) $adjustment->applied_pct, 2, ',', '.'),
+                ]))
                 ->send();
 
             return;

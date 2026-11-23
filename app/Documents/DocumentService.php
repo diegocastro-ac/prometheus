@@ -101,7 +101,7 @@ class DocumentService
         return $this->proxy(
             type: 'monthly_statement',
             format: $factory->format(),
-            reference: 'ALQUILER-'.$rental->id.' · '.$period,
+            reference: 'ESTADO-'.$rental->name.' · '.$period,
             context: [
                 'rental_id' => $rental->id,
                 'period' => $period,
@@ -109,6 +109,7 @@ class DocumentService
             builder: fn (): Document => $factory->monthlyStatement(
                 $period,
                 array_values($rental->invoicesForPeriod($period)->get()->all()),
+                $rental,
             ),
         );
     }

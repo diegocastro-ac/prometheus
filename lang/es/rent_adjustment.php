@@ -139,5 +139,9 @@ return [
         'needs_agreement' => 'El incremento supera lo que da el IPC. Queda registrado el motivo en las observaciones.',
         'recalculated' => 'Cadena recalculada',
         'missing_ipc' => 'Falta el IPC de diciembre del año anterior. El dato oficial aún no ha sido cargado en el sistema.',
+        'notified' => 'Reajuste notificado al inquilino',
+        'rental_missing' => 'El alquiler seleccionado no existe.',
+        'pactado_cap_title' => 'Se aplicó el porcentaje pactado, no el IPC completo.',
+        'pactado_cap_body' => 'El IPC del :year fue :legal % y se aplicó :applied %.',
     ],
 ];

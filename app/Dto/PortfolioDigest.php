@@ -16,12 +16,15 @@ final class PortfolioDigest
      * @param  list<array<string, mixed>>  $rentals
      * @param  array<string, float>  $totals
      * @param  list<array<string, mixed>>  $alerts
+     * @param  list<array<string, mixed>>  $pendingInvoices
      */
     public function __construct(
         public readonly int $userId,
         public readonly array $rentals,
         public readonly array $totals,
         public readonly array $alerts,
+        public readonly array $pendingInvoices = [],
+        public readonly array $catalog = [],
     ) {}
 
     /**
@@ -33,6 +36,8 @@ final class PortfolioDigest
             'rentals' => $this->rentals,
             'totals' => $this->totals,
             'alerts' => $this->alerts,
+            'pending_invoices' => $this->pendingInvoices,
+            'catalog' => $this->catalog,
         ];
     }
 }

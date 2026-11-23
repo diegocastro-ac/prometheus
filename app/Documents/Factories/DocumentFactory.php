@@ -8,6 +8,7 @@ use App\Documents\PaymentReceipt;
 use App\Documents\RentInvoice;
 use App\Models\Invoice;
 use App\Models\RentAdjustment;
+use App\Models\Rental;
 
 /**
  * Abstract Factory: la fabrica de documentos.
@@ -44,9 +45,13 @@ interface DocumentFactory
     /**
      * Estado de cuenta de un periodo, con todas sus facturas.
      *
+     * El alquiler viaja aparte de las facturas para que la cabecera
+     * (inquilino, propiedad, arriendo) siempre este completa aunque el
+     * periodo no tenga movimientos.
+     *
      * @param  list<Invoice>  $invoices
      */
-    public function monthlyStatement(string $period, array $invoices): MonthlyStatement;
+    public function monthlyStatement(string $period, array $invoices, ?Rental $rental = null): MonthlyStatement;
 
     /**
      * Factura de arrendamiento.

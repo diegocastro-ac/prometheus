@@ -23,6 +23,11 @@ return [
         'commercial' => 'Local comercial',
     ],
 
+    'plan_warning' => [
+        'title' => 'Atención',
+        'body' => 'Las fechas o los meses cambiaron, pero el plan de pagos NO se actualizará automáticamente.',
+    ],
+
     'form' => [
         'sections' => [
             'main' => [

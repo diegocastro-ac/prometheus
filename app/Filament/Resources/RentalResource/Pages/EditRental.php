@@ -49,8 +49,8 @@ class EditRental extends EditRecord
         if (count(array_intersect(array_keys($changes), $fieldsToCheck)) > 0) {
             Notification::make()
                 ->warning()
-                ->title('Attention')
-                ->body('The dates or months have changed, but the payment plan will NOT be automatically updated.')
+                ->title(__('rental.plan_warning.title'))
+                ->body(__('rental.plan_warning.body'))
                 ->send();
         }
     }

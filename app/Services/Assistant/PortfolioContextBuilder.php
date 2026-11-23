@@ -3,7 +3,12 @@
 namespace App\Services\Assistant;
 
 use App\Dto\PortfolioDigest;
+use App\Enums\InvoiceStatus;
+use App\Models\Invoice;
+use App\Models\Payment;
+use App\Models\Property;
 use App\Models\Rental;
+use App\Models\Tenant;
 use App\Services\Adjustment\AdjustmentChainCalculator;
 use App\Services\FinancialAnalysisService;
 
@@ -36,7 +41,103 @@ class PortfolioContextBuilder
             rentals: $rentals->map(fn (Rental $rental): array => $this->rentalSummary($rental))->all(),
             totals: $this->totalsFor($userId),
             alerts: $this->analysis->alertsFor($userId),
+            pendingInvoices: $this->pendingInvoicesFor($userId),
+            catalog: $this->catalogFor($userId),
         );
+    }
+
+    /**
+     * Universo completo de entidades del usuario: TODOS los inquilinos,
+     * propiedades y arriendos (activos e inactivos). Sin esto el modelo
+     * no puede resolver referencias a entidades fuera del digest de
+     * arriendos activos ("el arriendo viejo de Laura", "la propiedad
+     * que no tiene arriendo"). Es el mapa de nombres para que el modelo
+     * elija el param correcto sin tener que adivinar.
+     *
+     * @return array<string, mixed>
+     */
+    private function catalogFor(int $userId): array
+    {
+        return [
+            'tenants' => Tenant::query()
+                ->where('user_id', $userId)
+                ->orderBy('name')
+                ->limit(100)
+                ->pluck('name')
+                ->all(),
+            'properties' => Property::query()
+                ->where('user_id', $userId)
+                ->orderBy('name')
+                ->limit(100)
+                ->get(['name', 'address'])
+                ->map(fn (Property $property): array => [
+                    'name' => $property->name,
+                    'address' => $property->address,
+                ])
+                ->all(),
+            'rentals' => Rental::query()
+                ->where('user_id', $userId)
+                ->with(['tenant:id,name', 'property:id,name'])
+                ->orderBy('name')
+                ->limit(100)
+                ->get(['id', 'name', 'tenant_id', 'property_id', 'is_active'])
+                ->map(fn (Rental $rental): array => [
+                    'name' => $rental->name,
+                    'tenant' => $rental->tenant?->name,
+                    'property' => $rental->property?->name,
+                    'active' => (bool) $rental->is_active,
+                ])
+                ->all(),
+        ];
+    }
+
+    /**
+     * Facturas con saldo pendiente, una por una y con su vencimiento.
+     *
+     * Sin esta lista el modelo no puede resolver referencias relativas
+     * ("la factura mas antigua de Valentina", "la ultima vencida"): los
+     * arriendos agregados no dicen nada de numeros de factura. Los pagos
+     * se suman en UNA consulta agrupada para no hacer N+1 por factura.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function pendingInvoicesFor(int $userId): array
+    {
+        $invoices = Invoice::query()
+            ->where('user_id', $userId)
+            ->whereIn('status', [InvoiceStatus::EMITIDA, InvoiceStatus::VENCIDA])
+            ->with(['rental:id,name,tenant_id', 'rental.tenant:id,name'])
+            ->orderBy('due_at')
+            ->get();
+
+        if ($invoices->isEmpty()) {
+            return [];
+        }
+
+        $paid = Payment::query()
+            ->whereIn('invoice_id', $invoices->pluck('id'))
+            ->selectRaw('invoice_id, SUM(amount) as paid')
+            ->groupBy('invoice_id')
+            ->pluck('paid', 'invoice_id');
+
+        return $invoices
+            ->map(fn (Invoice $invoice): array => [
+                'number' => $invoice->number,
+                'rental' => $invoice->rental?->name,
+                'tenant' => $invoice->rental?->tenant?->name,
+                'period' => $invoice->period,
+                'amount' => round((float) $invoice->amount, 2),
+                'balance' => round((float) $invoice->amount - (float) ($paid[$invoice->id] ?? 0), 2),
+                'status' => $invoice->status->value,
+                'due_at' => $invoice->due_at?->toDateString(),
+                'days_overdue' => $invoice->due_at !== null && $invoice->due_at->isBefore(today()->startOfDay())
+                    ? (int) $invoice->due_at->startOfDay()->diffInDays(today()->startOfDay())
+                    : 0,
+            ])
+            ->filter(fn (array $row): bool => $row['balance'] > 0)
+            ->take(60)
+            ->values()
+            ->all();
     }
 
     /**
