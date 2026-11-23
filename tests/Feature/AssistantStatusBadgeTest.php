@@ -64,4 +64,31 @@ class AssistantStatusBadgeTest extends TestCase
         $this->assertNull(AssistantStatusBadge::for('status', '', 'info'));
         $this->assertNull(AssistantStatusBadge::for('status', '—', 'info'));
     }
+
+    #[Test]
+    public function enum_reconocido_por_valor_aunque_la_columna_tenga_nombre_en_espanol(): void
+    {
+        // El SQL del modelo aliasa columnas como quiera ("frecuencia",
+        // "estado"): el badge debe salir igual porque el VALOR es un
+        // enum de dominio, no por el nombre de la columna.
+        $badge = AssistantStatusBadge::for('frecuencia', 'MENSUAL');
+
+        $this->assertNotNull($badge);
+        $this->assertStringContainsString('info', $badge['classes']);
+
+        $badge = AssistantStatusBadge::for('estado', 'vencida');
+
+        $this->assertNotNull($badge);
+        $this->assertStringContainsString('danger', $badge['classes']);
+    }
+
+    #[Test]
+    public function columna_en_espanol_con_valor_libre_sin_color_cae_al_gris(): void
+    {
+        $badge = AssistantStatusBadge::for('metodo_pago', 'Nequi');
+
+        $this->assertNotNull($badge);
+        $this->assertSame('Nequi', $badge['label']);
+        $this->assertStringContainsString('gray', $badge['classes']);
+    }
 }

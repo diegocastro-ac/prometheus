@@ -91,8 +91,41 @@ class PlainTextRenderer implements DocumentRenderer
         if ($body->headers !== [] && $body->rows !== []) {
             $lines[] = sprintf('%d. %s', $sectionNumber++, __('document.details'));
             $lines[] = str_repeat('─', 60);
-            $lines[] = $this->table($body);
+            $lines[] = $this->table($body->headers, $body->rows);
             $lines[] = '';
+        }
+
+        // Secciones de documentos compuestos: cada una puede llevar
+        // titulo, texto, campos y su propia tabla.
+        foreach ($body->sections as $section) {
+            if (($section['title'] ?? '') !== '') {
+                $lines[] = sprintf('%d. %s', $sectionNumber++, $section['title']);
+            }
+
+            if (($section['text'] ?? '') !== '') {
+                $lines[] = '  '.str_replace("\n", "\n  ", $section['text']);
+            }
+
+            $sectionFields = is_array($section['fields'] ?? null) ? $section['fields'] : [];
+
+            if ($sectionFields !== []) {
+                $sectionLabelWidth = $this->labelWidth($sectionFields);
+
+                foreach ($sectionFields as $label => $value) {
+                    $lines[] = sprintf('  %-'.($sectionLabelWidth).'s : %s', $label.':', $value);
+                }
+            }
+
+            $sectionTable = $section['table'] ?? null;
+
+            if (is_array($sectionTable) && isset($sectionTable['headers'], $sectionTable['rows'])) {
+                $lines[] = '';
+                $lines[] = $this->table($sectionTable['headers'], $sectionTable['rows']);
+            }
+
+            if (($section['title'] ?? '') !== '' || ($section['text'] ?? '') !== '' || $sectionFields !== [] || isset($sectionTable)) {
+                $lines[] = '';
+            }
         }
 
         if ($body->warnings !== []) {
@@ -123,20 +156,21 @@ class PlainTextRenderer implements DocumentRenderer
     }
 
     /**
+     * @param  list<string>  $headers
      * @param  list<list<string>>  $rows
      */
-    private function table(DocumentBody $body): string
+    private function table(array $headers, array $rows): string
     {
-        $widths = $this->widths($body->headers, $body->rows);
+        $widths = $this->widths($headers, $rows);
 
-        $out = [$this->row($body->headers, $widths)];
+        $out = [$this->row($headers, $widths)];
 
         $out[] = implode('  ', array_map(
             static fn (int $width): string => str_repeat('-', $width),
             $widths,
         ));
 
-        foreach ($body->rows as $row) {
+        foreach ($rows as $row) {
             $out[] = $this->row($row, $widths);
         }
 

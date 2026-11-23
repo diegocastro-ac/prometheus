@@ -22,15 +22,28 @@ use Illuminate\Support\Str;
  */
 final class AssistantStatusBadge
 {
-    /** Columnas donde un valor tipo estado merece badge. */
+    /** Columnas donde un valor tipo estado merece badge. Incluye los
+     *  alias en espanol porque el SQL del modelo nombra las columnas
+     *  como quiera ("frecuencia", "estado_pago"); sin ellos esas
+     *  columnas nunca llegaban ni al badge ni al colorista de la IA. */
     private const STATUS_COLUMNS = [
         'status', 'state', 'payment_status', 'invoice_status', 'type',
         'method', 'cadence', 'billing_cadence', 'rental_type', 'act_type',
         'kind', 'basis', 'pactado',
+        'estado', 'estado_pago', 'estado_factura', 'estado_arriendo',
+        'estado_contrato', 'frecuencia', 'frecuencia_cobro',
+        'frecuencia_facturacion', 'cadencia', 'periodicidad',
+        'tipo', 'tipo_arriendo', 'tipo_documento', 'tipo_acta',
+        'metodo', 'metodo_pago', 'forma_pago', 'payment_method',
+        'condicion', 'condicion_pago', 'plazo', 'categoria', 'category',
+        'result', 'resultado', 'outcome', 'etapa', 'fase',
     ];
 
     /** Columnas booleanas: si/no se pintan como badge de exito/peligro. */
-    private const YES_NO_COLUMNS = ['is_active', 'pactado', 'active', 'signed', 'overdue'];
+    private const YES_NO_COLUMNS = [
+        'is_active', 'pactado', 'active', 'signed', 'overdue',
+        'activo', 'activa', 'vigente', 'enabled', 'firmada',
+    ];
 
     /**
      * ¿La columna puede mostrar un badge de estado? Lo usa el colorista
@@ -62,11 +75,9 @@ final class AssistantStatusBadge
     public static function for(?string $column, mixed $value, ?string $aiColor = null): ?array
     {
         $columnKey = Str::lower($column);
+        $isCategoricalColumn = in_array($columnKey, self::STATUS_COLUMNS, true)
+            || in_array($columnKey, self::YES_NO_COLUMNS, true);
 
-        if (! in_array($columnKey, self::STATUS_COLUMNS, true)
-            && ! in_array($columnKey, self::YES_NO_COLUMNS, true)) {
-            return null;
-        }
         if (! is_string($value) || trim($value) === '') {
             return null;
         }
@@ -78,6 +89,12 @@ final class AssistantStatusBadge
 
         $key = str_replace(' ', '_', Str::lower(trim($value)));
 
+        // Los enums de dominio se reconocen por el VALOR, no por el
+        // nombre de la columna: el modelo puede aliasar "frecuencia" o
+        // "estado" y un badge limitado a nombres en ingles se perdia el
+        // estado. Un falso positivo exige que TODA la celda sea
+        // exactamente un valor/etiqueta de enum ("MENSUAL", "Pagada"),
+        // algo que un texto libre casi nunca produce.
         if ($invoice = InvoiceStatus::tryFrom($key)) {
             return ['label' => $invoice->label(), 'classes' => self::classes($invoice->color())];
         }
@@ -110,6 +127,14 @@ final class AssistantStatusBadge
                     return ['label' => $case->label(), 'classes' => self::classes('info')];
                 }
             }
+        }
+
+        // De aqui en adelante el badge depende de la columna: las alertas,
+        // el si/no y el fallback con color de la IA solo aplican a
+        // columnas categoricas. El aiColor nunca llega a columnas fuera
+        // de la lista (el muestreador no las envia al colorista).
+        if (! $isCategoricalColumn) {
+            return null;
         }
 
         // 'overdue' ya cayo en PaymentStatus; aqui quedan los tipos de alerta

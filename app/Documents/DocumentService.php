@@ -115,6 +115,28 @@ class DocumentService
     }
 
     /**
+     * Documento personalizado compuesto por el asistente: la
+     * especificacion (titulo, introduccion, campos, secciones con
+     * texto/campos/tablas) la redacto la IA con datos reales y viaja en
+     * los params de la accion. CustomDocument la sanea en la frontera.
+     *
+     * @param  array<string, mixed>  $spec
+     */
+    public function customDocumentFor(array $spec, ?string $format = null): Document
+    {
+        $factory = $this->factory($format);
+        $title = trim((string) ($spec['title'] ?? ''));
+
+        return $this->proxy(
+            type: 'custom_document',
+            format: $factory->format(),
+            reference: $title !== '' ? $title : 'personalizado',
+            context: ['spec' => $spec],
+            builder: fn (): Document => $factory->customDocument($spec),
+        );
+    }
+
+    /**
      * Formatos disponibles, para el selector de la pantalla.
      *
      * @return array<string, string>

@@ -115,6 +115,7 @@ class AssistantToolInvoker
         'recalculate_adjustments',
         'annul_invoice',
         'generate_document',
+        'custom_document',
         'bill_single_rental',
         'create_delivery_act',
         'update_settings',
@@ -1493,6 +1494,7 @@ class AssistantToolInvoker
             'recalculate_adjustments' => $this->proposeRecalculateAdjustments($params, $userId),
             'annul_invoice' => $this->proposeAnnulInvoice($params, $userId),
             'generate_document' => $this->proposeGenerateDocument($params, $userId),
+            'custom_document' => $this->proposeCustomDocument($params, $userId),
             'bill_single_rental' => $this->proposeBillSingleRental($params, $userId),
             'create_delivery_act' => $this->proposeCreateDeliveryAct($params, $userId),
             'update_settings' => $this->proposeUpdateSettings($params, $userId),
@@ -2351,15 +2353,212 @@ class AssistantToolInvoker
                 ]);
         }
 
+        // Si el modelo declaro la relacion (params.nest) las filas del
+        // JOIN se agrupan: una fila por entidad padre con sus registros
+        // relacionados como tabla expandible adentro.
+        $display = $this->nestQueryRows($clean, $params['nest'] ?? null) ?? $clean;
+
         return new AssistantReply(
-            text: __('assistant.replies.query_results', ['count' => count($clean)]),
-            data: ['results' => $clean],
+            text: __('assistant.replies.query_results', ['count' => count($display)]),
+            data: ['results' => $display],
             suggestions: $this->defaultSuggestions(),
             draft: [
                 'instruction' => 'Resume en 2-4 frases, en el idioma del usuario, lo que muestran estos resultados de una consulta a la base de datos del negocio. Menciona los datos clave (nombres, montos, fechas) tal cual vienen; no inventes cifras ni conclusiones que los datos no soporten. Si la lista es larga, destaca lo mas relevante.',
                 'context' => ['pregunta' => $params['question'] ?? '', 'resultados' => array_slice($clean, 0, 30)],
             ],
         );
+    }
+
+    /**
+     * Anida filas planas de un JOIN cuando el modelo declara la
+     * relacion en params.nest. Dos formas:
+     *
+     *  - Una relacion: {parent: [cols], child: [cols], as?: "nombre"}.
+     *  - Varias relaciones del mismo padre (arriendo -> inquilino Y
+     *    propiedad): {parent: [cols], children: [{as, columns}, ...]} —
+     *    cada entidad relacionada va en SU propia tabla anidada, nunca
+     *    combinadas en una sola fila.
+     *
+     * Las filas que comparten los valores de las columnas padre se
+     * agrupan en una sola fila que lleva los datos del padre mas una
+     * lista de filas hijo por cada relacion declarada (las tablas
+     * expandibles del chat). Filas LEFT JOIN sin hijo (todas las
+     * columnas de esa relacion en null/vacio) quedan con lista vacia.
+     *
+     * Devuelve null cuando la declaracion no es usable (sin columnas,
+     * o aliases que no existen en el resultado): en ese caso se prefiere
+     * mostrar la tabla plana a romper la respuesta.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, mixed>>|null
+     */
+    private function nestQueryRows(array $rows, mixed $nest): ?array
+    {
+        if (! is_array($nest)) {
+            return null;
+        }
+
+        $parentCols = $this->nestColumns($nest['parent'] ?? null);
+        $childSpecs = $this->nestChildSpecs($nest);
+
+        if ($parentCols === [] || $childSpecs === []) {
+            return null;
+        }
+
+        // Todas las columnas declaradas deben existir en el resultado;
+        // si el modelo se equivoco de alias se prefiere la tabla plana.
+        $columns = array_keys($rows[0]);
+        $declared = $parentCols;
+
+        foreach ($childSpecs as $spec) {
+            $declared = array_merge($declared, $spec['columns']);
+        }
+
+        foreach ($declared as $column) {
+            if (! in_array($column, $columns, true)) {
+                return null;
+            }
+        }
+
+        $groups = [];
+        $order = [];
+
+        foreach ($rows as $row) {
+            $keyParts = [];
+
+            foreach ($parentCols as $column) {
+                $keyParts[] = $row[$column] === null ? "\0" : (string) $row[$column];
+            }
+
+            $key = implode("\x1F", $keyParts);
+
+            if (! isset($groups[$key])) {
+                $groups[$key] = [
+                    'parent' => [],
+                    'children' => array_fill_keys(array_column($childSpecs, 'as'), []),
+                    'seen' => array_fill_keys(array_column($childSpecs, 'as'), []),
+                ];
+                $order[] = $key;
+            }
+
+            $groups[$key]['parent'] += array_intersect_key($row, array_flip($parentCols));
+
+            foreach ($childSpecs as $spec) {
+                if (! $this->rowHasValues($row, $spec['columns'])) {
+                    continue;
+                }
+
+                // Relaciones 1:1 conviven con 1:N en el mismo JOIN: la
+                // fila del "uno" se repite por cada hijo N; se deduplica
+                // para que su tabla anidada muestre una sola fila.
+                $childRow = array_intersect_key($row, array_flip($spec['columns']));
+                $signature = serialize($childRow);
+
+                if (! isset($groups[$key]['seen'][$spec['as']][$signature])) {
+                    $groups[$key]['seen'][$spec['as']][$signature] = true;
+                    $groups[$key]['children'][$spec['as']][] = $childRow;
+                }
+            }
+        }
+
+        $nested = [];
+
+        foreach ($order as $key) {
+            $nested[] = $groups[$key]['parent'] + $groups[$key]['children'];
+        }
+
+        return $nested;
+    }
+
+    /**
+     * Normaliza las relaciones hijas del nest a una lista de
+     * {as, columns}: acepta la forma simple (child+as) o la lista
+     * children[]. Dos specs con el mismo "as" se fusionan para no
+     * pisar la tabla anidada.
+     *
+     * @param  array<string, mixed>  $nest
+     * @return list<array{as: string, columns: list<string>}>
+     */
+    private function nestChildSpecs(array $nest): array
+    {
+        $specs = [];
+        $indexByAs = [];
+
+        $collect = function (mixed $as, mixed $columns) use (&$specs, &$indexByAs): void {
+            $columns = $this->nestColumns($columns);
+
+            if ($columns === []) {
+                return;
+            }
+
+            $as = trim((string) $as);
+            $as = $as !== '' ? $as : 'detalles';
+
+            if (isset($indexByAs[$as])) {
+                $i = $indexByAs[$as];
+                $specs[$i]['columns'] = array_values(array_unique(array_merge($specs[$i]['columns'], $columns)));
+
+                return;
+            }
+
+            $indexByAs[$as] = count($specs);
+            $specs[] = ['as' => $as, 'columns' => $columns];
+        };
+
+        if (is_array($nest['children'] ?? null)) {
+            foreach ($nest['children'] as $child) {
+                if (is_array($child)) {
+                    $collect($child['as'] ?? null, $child['columns'] ?? $child['child'] ?? null);
+                }
+            }
+        }
+
+        // Forma simple: un solo hijo declarado con child+as.
+        if ($specs === []) {
+            $collect($nest['as'] ?? null, $nest['child'] ?? null);
+        }
+
+        return $specs;
+    }
+
+    /**
+     * true si alguna de las columnas declaradas trae un valor real en
+     * la fila (los LEFT JOIN sin hijo traen todo null/vacio).
+     *
+     * @param  array<string, mixed>  $row
+     * @param  list<string>  $columns
+     */
+    private function rowHasValues(array $row, array $columns): bool
+    {
+        foreach ($columns as $column) {
+            if (($row[$column] ?? null) !== null && ($row[$column] ?? '') !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Normaliza la declaracion de columnas del nest: acepta un string
+     * suelto o una lista; devuelve aliases unicos en orden.
+     *
+     * @return list<string>
+     */
+    private function nestColumns(mixed $value): array
+    {
+        $list = is_array($value) ? $value : [$value];
+        $columns = [];
+
+        foreach ($list as $column) {
+            $column = trim((string) $column);
+
+            if ($column !== '' && ! in_array($column, $columns, true)) {
+                $columns[] = $column;
+            }
+        }
+
+        return $columns;
     }
 
     /**
@@ -4519,16 +4718,20 @@ class AssistantToolInvoker
 
         // Conserva lo ya diligenciado en envios anteriores del form:
         // cada intento de creacion vuelve a abrirlo con lo acumulado.
+        // EXCEPCION: al avanzar a la siguiente entidad de la cola
+        // (fresh=true) los valores del item anterior NO se heredan —
+        // son datos de otra entidad, no del mismo formulario.
         $previous = $this->forms->getCreate($userId);
+        $fresh = (bool) ($queueContext['fresh'] ?? false);
         $known = array_merge(
-            $previous !== null && $previous['entity'] === $entity ? $previous['values'] : [],
+            $previous !== null && $previous['entity'] === $entity && ! $fresh ? $previous['values'] : [],
             $this->normalizeCreateValues($entity, $params),
         );
 
         // __pending (entidades que el mismo batch va a crear) no es un
         // campo del form pero proposeCreateRental lo necesita para no
         // pedir datos que la otra peticion ya trae.
-        $pendingBatch = $params['__pending'] ?? ($previous['values']['__pending'] ?? null);
+        $pendingBatch = $params['__pending'] ?? ($fresh ? null : ($previous['values']['__pending'] ?? null));
 
         if (is_array($pendingBatch)) {
             $known['__pending'] = $pendingBatch;
@@ -4838,6 +5041,9 @@ class AssistantToolInvoker
             'collected' => $collected,
             'step' => $step,
             'total' => $total,
+            // Nueva entidad: el form arranca vacio salvo lo que el
+            // modelo ya extrajo de su peticion; nada del item anterior.
+            'fresh' => true,
         ]);
 
         if ($notes !== []) {
@@ -5808,6 +6014,55 @@ class AssistantToolInvoker
                 'summary' => __('assistant.actions.document_summary', [
                     'document' => __('assistant.doc_types.'.$kind),
                     'target' => $target['label'],
+                ]),
+            ],
+            suggestions: [],
+        );
+    }
+
+    /**
+     * Documento personalizado: la especificacion estructurada ya la
+     * compuso la IA investigando datos reales (GeminiDataAssistant la
+     * inyecta en params.spec). Aqui solo se valida que exista y se
+     * propone la accion generate_document kind=custom para que el
+     * humano revise y confirme antes de generar el archivo.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function proposeCustomDocument(array $params, int $userId): AssistantReply
+    {
+        $spec = is_array($params['spec'] ?? null) ? $params['spec'] : [];
+
+        if ($spec === []) {
+            return AssistantReply::say(__('assistant.replies.custom_document_failed'), [
+                __('assistant.suggestions.documents'),
+            ]);
+        }
+
+        $formats = $this->rentals->documentFormats();
+        $format = Str::lower((string) ($params['format'] ?? 'text'));
+
+        if (! isset($formats[$format])) {
+            $format = array_key_first($formats) ?? 'text';
+        }
+
+        $title = trim((string) ($spec['title'] ?? ''));
+        $title = $title !== '' ? $title : __('assistant.doc_types.custom');
+
+        return new AssistantReply(
+            text: __('assistant.replies.propose_custom_document', [
+                'title' => $title,
+                'format' => $format,
+            ]),
+            action: [
+                'type' => 'generate_document',
+                'params' => [
+                    'kind' => 'custom',
+                    'format' => $format,
+                    'spec' => $spec,
+                ],
+                'summary' => __('assistant.actions.custom_document_summary', [
+                    'title' => $title,
                 ]),
             ],
             suggestions: [],

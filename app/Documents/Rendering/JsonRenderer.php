@@ -49,6 +49,7 @@ class JsonRenderer implements DocumentRenderer
             ],
             'warnings' => $body->warnings,
             'notes' => $body->notes,
+            'sections' => $body->sections,
             'footer' => $body->footer,
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }

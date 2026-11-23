@@ -38,6 +38,10 @@ final class AssistantReply
      * @param  list<array{text: string, data: array<string, mixed>|null}>|null  $sections
      * @param  array{form: string, step: int, total_steps: int, field: string, prompt: string, quick_replies?: list<string>}|null  $pendingForm
      * @param  array<string, array<string, string>>|null  $badgeColors
+     * @param  bool  $ok  false cuando la respuesta reporta un fallo
+     *         (entidad inexistente, validacion, error de dominio). El
+     *         batch lo usa para marcar la fila como fallida en la tabla
+     *         de resultados; el resto de la UI no lo consulta.
      */
     public function __construct(
         public readonly string $text,
@@ -51,6 +55,7 @@ final class AssistantReply
         public readonly ?array $pendingForm = null,
         public readonly ?array $badgeColors = null,
         public readonly array $options = [],
+        public readonly bool $ok = true,
     ) {}
 
     public function withIntent(string $intent): self
@@ -67,6 +72,7 @@ final class AssistantReply
             $this->pendingForm,
             $this->badgeColors,
             $this->options,
+            $this->ok,
         );
     }
 
@@ -90,6 +96,7 @@ final class AssistantReply
             $this->pendingForm,
             $this->badgeColors,
             $this->options,
+            $this->ok,
         );
     }
 
@@ -114,6 +121,7 @@ final class AssistantReply
             $this->pendingForm,
             $this->badgeColors,
             $options,
+            $this->ok,
         );
     }
 
@@ -134,6 +142,29 @@ final class AssistantReply
             $this->pendingForm,
             $badgeColors,
             $this->options,
+            $this->ok,
+        );
+    }
+
+    /**
+     * Marca la respuesta como fallo: la tabla de resultados del batch
+     * la pinta como fallida sin cambiar el texto visible.
+     */
+    public function markFailed(): self
+    {
+        return new self(
+            $this->text,
+            $this->data,
+            $this->action,
+            $this->redirect,
+            $this->suggestions,
+            $this->draft,
+            $this->intent,
+            $this->sections,
+            $this->pendingForm,
+            $this->badgeColors,
+            $this->options,
+            false,
         );
     }
 

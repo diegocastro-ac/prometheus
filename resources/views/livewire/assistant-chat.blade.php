@@ -33,6 +33,13 @@
         // descarta en vez de reabrir el modal solo.
         previewSeq: 0,
         previewDismissed: false,
+        // Cierre local e instantaneo del modal: los botones dentro del
+        // preview que lanzan una accion del chat (Hazlo conmigo, pasos
+        // de guia) lo ocultan de una vez en vez de esperar la respuesta
+        // de la IA. OJO: PROHIBIDO usar comillas dobles en este bloque —
+        // el x-data es un atributo HTML y una sola lo truncaria.
+        // Se resetea en cada openPreview.
+        previewHidden: false,
         modelSel: null,
         modelBusy: false,
         // Ancho del drawer en px (null = default del CSS). Solo se usa en
@@ -240,13 +247,14 @@
         // El modal es visible mientras carga (previewBusy) o cuando el
         // servidor ya entrego el contenido ($wire.preview).
         previewVisible() {
-            return this.previewBusy || this.$wire.preview !== null;
+            return ! this.previewHidden && (this.previewBusy || this.$wire.preview !== null);
         },
         // Abre el modal al instante y lanza la carga en segundo plano:
         // el skeleton se ve dentro del modal, no tapando el chat.
         async openPreview(call) {
             this.previewSeq++;
             this.previewDismissed = false;
+            this.previewHidden = false;
             this.previewBusy = true;
             try {
                 await call();
@@ -260,7 +268,15 @@
         closePreviewModal() {
             if (this.previewBusy) this.previewDismissed = true;
             this.previewBusy = false;
+            this.previewHidden = true;
             this.$wire.closePreview();
+        },
+        // Botones dentro del modal que envian un prompt al chat: cierran
+        // la vista al instante (sin esperar la respuesta de la IA) y el
+        // servidor ademas limpia $preview via askFromPreview.
+        dismissPreviewForChat() {
+            this.previewHidden = true;
+            this.previewBusy = false;
         },
         // Esc cierra en orden de prioridad: primero el modal de preview,
         // luego el selector de modelo y al final el drawer completo.
@@ -746,7 +762,11 @@
                             <div @class([
                                 'relative max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm lg:max-w-3xl',
                                 'rounded-br-md bg-primary-600 text-white' => $isUserMessage,
-                                'rounded-bl-md bg-white text-gray-800 ring-1 ring-gray-950/5 dark:bg-gray-800 dark:text-gray-100 dark:ring-white/10' => ! $isUserMessage,
+                                // pr-8 reserva la franja derecha donde vive
+                                // el boton copiar (a caballo del borde,
+                                // centrado vertical) sin que el texto o las
+                                // tablas queden debajo.
+                                'rounded-bl-md bg-white text-gray-800 ring-1 ring-gray-950/5 dark:bg-gray-800 dark:text-gray-100 dark:ring-white/10 pr-8' => ! $isUserMessage,
                             ])>
                                 {{-- Respuestas batch: cada seccion lleva su texto
                                      seguido de sus tablas, en el orden en que el
@@ -1107,7 +1127,7 @@
                                         x-data="{ copied: false }"
                                         x-on:click="navigator.clipboard.writeText(@js($message['text'])).then(() => { copied = true; setTimeout(() => copied = false, 1500) })"
                                         title="{{ __('assistant.copy') }}"
-                                        class="absolute -bottom-2 left-3 flex h-6 w-6 items-center justify-center rounded-full bg-white text-gray-400 shadow-sm ring-1 ring-gray-950/10 transition hover:text-primary-600 dark:bg-gray-700 dark:text-gray-400 dark:ring-white/10 dark:hover:text-primary-400"
+                                        class="absolute -right-3 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white text-gray-400 shadow-sm ring-1 ring-gray-950/10 transition hover:text-primary-600 dark:bg-gray-700 dark:text-gray-400 dark:ring-white/10 dark:hover:text-primary-400"
                                     >
                                         <svg x-show="!copied" class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" />
@@ -1428,7 +1448,13 @@
                              Se envian por FormData — los vacios no se tocan. --}}
                         @php $wfFields = $pendingForm['fields'] ?? null; @endphp
                         @if (is_array($wfFields) && $wfFields !== [])
+                            {{-- wire:key por paso+contenido: al avanzar a la
+                                 siguiente entidad del batch el form se
+                                 reemplaza entero. Sin esto Livewire morph
+                                 conserva los valores que el usuario tecleo
+                                 en la entidad anterior. --}}
                             <form
+                                wire:key="wf-{{ $pendingForm['form'] ?? 'x' }}-{{ $pendingForm['step'] ?? 1 }}-{{ $pendingForm['total_steps'] ?? 1 }}-{{ md5(json_encode([$pendingForm['prompt'] ?? '', $wfFields])) }}"
                                 x-on:submit.prevent="$wire.submitForm(Object.fromEntries(new FormData($el).entries()))"
                                 class="mt-2 grid max-h-72 gap-2 overflow-y-auto overscroll-contain pr-1 sm:grid-cols-2"
                             >
@@ -1498,7 +1524,11 @@
                                 </div>
                             </form>
                         @elseif (is_array($wfInput))
+                            {{-- Mismo motivo que el form de campos: key por
+                                 paso para que el input del wizard no arrastre
+                                 lo tecleado en el paso anterior. --}}
                             <form
+                                wire:key="wi-{{ $pendingForm['form'] ?? 'x' }}-{{ $pendingForm['step'] ?? 1 }}-{{ md5(json_encode([$pendingForm['prompt'] ?? '', $wfInput])) }}"
                                 x-on:submit.prevent="const v = new FormData($el).get('fv'); if (v !== null && String(v).trim() !== '') { $wire.answerFormField(String(v).trim()); }"
                                 class="mt-2 flex flex-wrap items-center gap-2"
                             >
@@ -1987,7 +2017,7 @@
                                                     );
                                                 @endphp
                                                 <tbody
-                                                    x-data="{ open: false }"
+                                                    x-data="{ open: {} }"
                                                     class="border-t border-gray-950/5 dark:border-white/5"
                                                 >
                                                     <tr>
@@ -1999,40 +2029,36 @@
                                                                     : ($preview['badge_colors'] ?? []);
                                                             @endphp
                                                             <td class="px-2.5 py-1.5">
-                                                                @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => $badgeColumn, 'aiColor' => $cellColors[$badgeColumn] ?? null])
+                                                                @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => $badgeColumn, 'aiColor' => $cellColors[$badgeColumn] ?? null, 'expandKey' => is_string($cellColumn) ? $cellColumn : 'default'])
                                                             </td>
                                                         @endforeach
                                                     </tr>
-                                                    @if ($nestedCells->isNotEmpty())
-                                                        <tr x-show="open">
+                                                    @foreach ($nestedCells as $nestedKey => $nestedRows)
+                                                        <tr x-show="open[{{ Js::from($nestedKey) }}]">
                                                             <td colspan="{{ count($table['columns']) }}" class="bg-gray-50/60 px-3 py-2.5 dark:bg-white/5">
-                                                                <div class="space-y-2">
-                                                                    @foreach ($nestedCells as $nestedRows)
-                                                                        <table class="w-full text-[11px]">
-                                                                            <thead>
-                                                                                <tr>
-                                                                                    @foreach (array_keys($nestedRows[0]) as $nestedColumn)
-                                                                                        <th class="whitespace-nowrap px-2 py-1 text-left font-semibold text-gray-400 dark:text-gray-500">
-                                                                                            {{ __("assistant.columns.{$nestedColumn}") !== "assistant.columns.{$nestedColumn}" ? __("assistant.columns.{$nestedColumn}") : str_replace('_', ' ', ucfirst($nestedColumn)) }}
-                                                                                        </th>
-                                                                                    @endforeach
-                                                                                </tr>
-                                                                            </thead>
-                                                                            <tbody>
-                                                                                @foreach ($nestedRows as $nestedRow)
-                                                                                    <tr class="border-t border-gray-950/5 dark:border-white/5">
-                                                                                        @foreach ($nestedRow as $nestedCellColumn => $nestedCell)
-                                                                                            <td class="px-2 py-1">@include('livewire.partials.assistant-cell', ['cell' => $nestedCell, 'column' => is_string($nestedCellColumn) ? $nestedCellColumn : null, 'aiColor' => $cellColors[is_string($nestedCellColumn) ? $nestedCellColumn : ''] ?? null, 'allowExpand' => false])</td>
-                                                                                        @endforeach
-                                                                                    </tr>
+                                                                <table class="w-full text-[11px]">
+                                                                    <thead>
+                                                                        <tr>
+                                                                            @foreach (array_keys($nestedRows[0]) as $nestedColumn)
+                                                                                <th class="whitespace-nowrap px-2 py-1 text-left font-semibold text-gray-400 dark:text-gray-500">
+                                                                                    {{ __("assistant.columns.{$nestedColumn}") !== "assistant.columns.{$nestedColumn}" ? __("assistant.columns.{$nestedColumn}") : str_replace('_', ' ', ucfirst($nestedColumn)) }}
+                                                                                </th>
+                                                                            @endforeach
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody>
+                                                                        @foreach ($nestedRows as $nestedRow)
+                                                                            <tr class="border-t border-gray-950/5 dark:border-white/5">
+                                                                                @foreach ($nestedRow as $nestedCellColumn => $nestedCell)
+                                                                                    <td class="px-2 py-1">@include('livewire.partials.assistant-cell', ['cell' => $nestedCell, 'column' => is_string($nestedCellColumn) ? $nestedCellColumn : null, 'aiColor' => $cellColors[is_string($nestedCellColumn) ? $nestedCellColumn : ''] ?? null, 'allowExpand' => false])</td>
                                                                                 @endforeach
-                                                                            </tbody>
-                                                                        </table>
-                                                                    @endforeach
-                                                                </div>
+                                                                            </tr>
+                                                                        @endforeach
+                                                                    </tbody>
+                                                                </table>
                                                             </td>
                                                         </tr>
-                                                    @endif
+                                                    @endforeach
                                                 </tbody>
                                             @endforeach
                                         </table>

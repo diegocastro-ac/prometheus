@@ -3,6 +3,7 @@
 namespace App\Documents\Factories;
 
 use App\Documents\AdjustmentLetter;
+use App\Documents\CustomDocument;
 use App\Documents\MonthlyStatement;
 use App\Documents\PaymentReceipt;
 use App\Documents\Rendering\PlainTextRenderer;
@@ -45,6 +46,14 @@ class TextDocumentFactory implements DocumentFactory
     public function rentInvoice(Invoice $invoice): RentInvoice
     {
         return RentInvoice::forInvoice($invoice, $this->renderer);
+    }
+
+    /**
+     * @param  array<string, mixed>  $spec
+     */
+    public function customDocument(array $spec): CustomDocument
+    {
+        return CustomDocument::fromSpec($spec, $this->renderer);
     }
 
     public function format(): string

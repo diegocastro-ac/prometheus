@@ -228,11 +228,11 @@
                                     <p class="mt-1 text-[11px] leading-relaxed text-gray-600 dark:text-gray-300">{{ $rec['reason'] }}</p>
                                     @if (! empty($rec['action']))
                                         @if (($rec['action']['kind'] ?? '') === 'prompt' && ! empty($rec['action']['value']))
-                                            <button type="button" wire:click="{{ $promptMethod }}({{ \Illuminate\Support\Js::from($rec['action']['value']) }})" wire:loading.attr="disabled" class="{{ $iconBtn }} mt-2">
+                                            <button type="button" @if ($fromPreview) x-on:click="dismissPreviewForChat()" @endif wire:click="{{ $promptMethod }}({{ \Illuminate\Support\Js::from($rec['action']['value']) }})" wire:loading.attr="disabled" class="{{ $iconBtn }} mt-2">
                                                 {{ $rec['action']['label'] }}
                                             </button>
                                         @elseif (($rec['action']['kind'] ?? '') === 'url' && ! empty($rec['action']['url']))
-                                            <button type="button" wire:click="goTo('{{ $rec['action']['url'] }}')" class="{{ $iconBtn }} mt-2">
+                                            <button type="button" @if ($fromPreview) x-on:click="dismissPreviewForChat()" @endif wire:click="goTo('{{ $rec['action']['url'] }}')" class="{{ $iconBtn }} mt-2">
                                                 {{ $rec['action']['label'] }}
                                             </button>
                                         @endif

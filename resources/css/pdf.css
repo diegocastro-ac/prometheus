@@ -239,6 +239,22 @@ body {
     color: #92400e;
 }
 
+/* Secciones de documentos compuestos (personalizados) */
+.document-section-title {
+    font-size: 11pt;
+    font-weight: bold;
+    color: #1f2937;
+    margin: 14px 0 6px;
+    padding-bottom: 3px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.document-note {
+    font-size: 10pt;
+    color: #1f2937;
+    margin: 6px 0;
+}
+
 /* Footer */
 .document-footer {
     border-top: 1px solid #e5e7eb;

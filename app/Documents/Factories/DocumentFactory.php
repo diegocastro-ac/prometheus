@@ -3,6 +3,7 @@
 namespace App\Documents\Factories;
 
 use App\Documents\AdjustmentLetter;
+use App\Documents\CustomDocument;
 use App\Documents\MonthlyStatement;
 use App\Documents\PaymentReceipt;
 use App\Documents\RentInvoice;
@@ -57,6 +58,16 @@ interface DocumentFactory
      * Factura de arrendamiento.
      */
     public function rentInvoice(Invoice $invoice): RentInvoice;
+
+    /**
+     * Documento personalizado compuesto por el asistente: no nace de una
+     * entidad del dominio sino de una especificacion estructurada
+     * (titulo, introduccion, campos y secciones con texto, campos y
+     * tablas) que el modelo redacto con datos reales.
+     *
+     * @param  array<string, mixed>  $spec
+     */
+    public function customDocument(array $spec): CustomDocument;
 
     /**
      * El formato que entrega esta familia. Sirve para etiquetar la interfaz y

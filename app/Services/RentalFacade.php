@@ -202,6 +202,14 @@ class RentalFacade
     }
 
     /**
+     * @param  array<string, mixed>  $spec
+     */
+    public function customDocumentFor(array $spec, ?string $format = null): Document
+    {
+        return $this->documents->customDocumentFor($spec, $format);
+    }
+
+    /**
      * @return array<string, string>
      */
     public function documentFormats(): array

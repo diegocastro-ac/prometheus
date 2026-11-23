@@ -1039,14 +1039,46 @@ class AssistantChat extends Component
         $kind = (string) ($params['kind'] ?? '');
         $format = (string) ($params['format'] ?? 'text');
 
+        $formatKey = 'invoice.documents.format.'.$format;
+        $formatLabel = __($formatKey);
+        $formatLabel = $formatLabel === $formatKey ? ucfirst($format) : $formatLabel;
+
+        // Documento personalizado: el "objetivo" es el titulo que la IA
+        // redacto para el documento, no una entidad del dominio.
+        if ($kind === 'custom') {
+            $spec = is_array($params['spec'] ?? null) ? $params['spec'] : [];
+            $customTitle = trim((string) ($spec['title'] ?? ''));
+
+            $rows = [
+                [
+                    'label' => __('assistant.fields.document_type'),
+                    'value' => trim((string) preg_replace('/^(?:el|la|los|las|the)\s+/iu', '', __('assistant.doc_types.custom'))),
+                    'badge' => 'document',
+                ],
+                [
+                    'label' => __('assistant.fields.format'),
+                    'value' => $formatLabel,
+                ],
+            ];
+
+            if ($customTitle !== '') {
+                $rows[] = ['label' => __('assistant.fields.document_title'), 'value' => $customTitle];
+            }
+
+            $sections = is_array($spec['sections'] ?? null) ? count($spec['sections']) : 0;
+
+            if ($sections > 0) {
+                $rows[] = ['label' => __('assistant.fields.sections'), 'value' => (string) $sections];
+            }
+
+            return $rows;
+        }
+
         $kindLabel = $kind !== '' ? __('assistant.doc_types.'.$kind) : '—';
         // doc_types trae articulo ("la factura"): el badge muestra el
         // nombre solo, igual que fieldTitle hace con los labels.
         $kindBadge = trim((string) preg_replace('/^(?:el|la|los|las|the)\s+/iu', '', $kindLabel));
         $kindBadge = $kindBadge === '' ? $kindLabel : mb_strtoupper(mb_substr($kindBadge, 0, 1)).mb_substr($kindBadge, 1);
-
-        $formatKey = 'invoice.documents.format.'.$format;
-        $formatLabel = __($formatKey);
 
         $rows = [
             [
@@ -1056,7 +1088,7 @@ class AssistantChat extends Component
             ],
             [
                 'label' => __('assistant.fields.format'),
-                'value' => $formatLabel === $formatKey ? ucfirst($format) : $formatLabel,
+                'value' => $formatLabel,
             ],
         ];
 
@@ -1759,12 +1791,36 @@ class AssistantChat extends Component
             ));
 
             $data[$key] = array_map(
-                fn (array $row): array => array_intersect_key($row, array_flip($visible)),
+                fn (array $row): array => $this->stripRowIds($row, $visible),
                 $rows,
             );
         }
 
         return $data;
+    }
+
+    /**
+     * Deja solo las columnas visibles de una fila y aplica la misma
+     * limpieza a las celdas que son tablas anidadas (consulta con
+     * nest: cada entidad padre lleva sus relacionados adentro).
+     *
+     * @param  array<string, mixed>  $row
+     * @param  list<string>  $visible
+     * @return array<string, mixed>
+     */
+    private function stripRowIds(array $row, array $visible): array
+    {
+        $clean = [];
+
+        foreach ($row as $column => $cell) {
+            if (in_array($column, $visible, true)) {
+                $clean[$column] = is_array($cell) && isset($cell[0]) && is_array($cell[0])
+                    ? $this->stripIdColumns([$column => $cell])[$column]
+                    : $cell;
+            }
+        }
+
+        return $clean;
     }
 
     /**

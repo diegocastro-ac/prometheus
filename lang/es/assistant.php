@@ -152,6 +152,7 @@ return [
         'settings' => 'Ajustes del negocio',
         'rental' => 'Arriendo',
         'results' => 'Resultados de la consulta',
+        'batch_results' => 'Resultados del paquete',
     ],
 
     'guide' => [
@@ -424,6 +425,7 @@ return [
         'label' => 'Método',
         'basis' => 'Base',
         'suggested_rent' => 'Canon sugerido',
+        'action' => 'Acción',
     ],
 
     'alerts' => [
@@ -554,6 +556,9 @@ return [
         'propose_recalculate' => 'Voy a recalcular la cadena de reajustes de :rental (:count reajuste(s) registrados). Confirma para continuar.',
         'propose_annul_invoice' => 'Voy a anular la factura :number de :tenant por :amount. Confirma para continuar.',
         'propose_document' => 'Voy a generar :document de :target en formato :format. Confirma para continuar.',
+        'propose_custom_document' => 'Preparé el documento «:title» en formato :format. Revisa el resumen y confirma para generarlo.',
+        'custom_document_failed' => 'No pude componer el documento con los datos disponibles. Intenta describir con más detalle qué debe contener.',
+        'custom_document_unavailable' => 'El servicio de IA no respondió a tiempo (está saturado o sin cuota). Espera un momento y vuelve a pedirme el documento.',
         'unknown_document' => '¿Qué documento necesitas? Puedo generar la factura, el comprobante de pago, la carta de reajuste o el estado de cuenta.',
         'propose_bill_rental' => 'Voy a facturar el periodo :period del arriendo :rental. Confirma para continuar.',
         'propose_export_csv' => 'Voy a exportar :section a CSV. Confirma para continuar.',
@@ -650,6 +655,8 @@ return [
         'balance' => 'el saldo',
         'status' => 'el estado',
         'document_type' => 'el tipo de documento',
+        'document_title' => 'el título',
+        'sections' => 'las secciones',
         'format' => 'el formato',
         'optional' => 'Opcional',
     ],
@@ -834,10 +841,40 @@ return [
         'export_csv' => 'Exportación',
     ],
 
+    // Etiqueta singular por item en la tabla de resultados del batch.
+    'batch_item' => [
+        'create_tenant' => 'Registrar inquilino',
+        'create_property' => 'Crear propiedad',
+        'create_rental' => 'Agendar arriendo',
+        'record_payment' => 'Registrar pago',
+        'generate_invoices' => 'Generar facturas',
+        'update_profile' => 'Actualizar perfil',
+        'update_tenant' => 'Actualizar inquilino',
+        'update_property' => 'Actualizar propiedad',
+        'update_rental' => 'Actualizar arriendo',
+        'record_adjustment' => 'Registrar reajuste',
+        'apply_adjustment' => 'Aplicar reajuste',
+        'mark_adjustment_notified' => 'Marcar reajuste notificado',
+        'recalculate_adjustments' => 'Recalcular reajustes',
+        'annul_invoice' => 'Anular factura',
+        'bill_rental_invoices' => 'Facturar arriendo',
+        'create_delivery_act' => 'Crear acta',
+        'update_settings' => 'Actualizar ajustes',
+        'sync_ipc' => 'Sincronizar IPC',
+        'generate_document' => 'Generar documento',
+        'export_csv' => 'Exportar CSV',
+    ],
+
+    'batch_status' => [
+        'ok' => 'Hecho',
+        'failed' => 'Falló',
+    ],
+
     'actions' => [
         'batch_summary' => 'Registrar paquete: :items',
         'batch_label' => 'Registrar paquete',
         'batch_done' => 'Listo: procesé :count acción(es) del paquete.',
+        'batch_done_partial' => 'Procesé :done de :count acciones del paquete; :failed fallaron (detalle en la tabla).',
         'update_profile_summary' => 'Actualizar datos del perfil',
         'profile_done' => 'Listo: actualicé tus datos de perfil.',
         'profile_invalid' => 'El :field no tiene un formato válido. Revisa el dato e intenta de nuevo.',
@@ -887,6 +924,7 @@ return [
         'recalculate_summary' => 'Recalcular cadena de reajustes',
         'annul_invoice_summary' => 'Anular factura',
         'document_summary' => 'Generar :document de :target',
+        'custom_document_summary' => 'Generar documento personalizado: :title',
         'bill_rental_summary' => 'Facturar un arriendo',
         'create_act_summary' => 'Crear acta de entrega de :rental (:tenant)',
         'update_settings_summary' => 'Actualizar ajustes del negocio',
@@ -930,6 +968,12 @@ return [
         'receipt' => 'el comprobante de pago',
         'adjustment_letter' => 'la carta de reajuste',
         'statement' => 'el estado de cuenta',
+        'custom' => 'el documento personalizado',
+    ],
+
+    'doc_sections' => [
+        'one' => '1 sección',
+        'many' => ':count secciones',
     ],
 
     'doc_kinds' => [

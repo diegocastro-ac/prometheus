@@ -74,16 +74,16 @@ class AssistantActionExecutor
                 'generate_document' => $this->generateDocument($action['params'] ?? [], $userId),
                 'export_csv' => $this->exportCsv($action['params'] ?? [], $userId),
                 'batch' => $this->executeBatch($action['items'] ?? [], $userId),
-                default => AssistantReply::say(__('assistant.actions.unknown')),
+                default => AssistantReply::say(__('assistant.actions.unknown'))->markFailed(),
             };
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return AssistantReply::say(__('assistant.actions.entity_missing'))->markFailed();
         } catch (DomainException $exception) {
-            return AssistantReply::say($exception->getMessage());
+            return AssistantReply::say($exception->getMessage())->markFailed();
         } catch (Throwable $exception) {
             report($exception);
 
-            return AssistantReply::say(__('assistant.actions.failed'));
+            return AssistantReply::say(__('assistant.actions.failed'))->markFailed();
         }
     }
 
@@ -97,31 +97,105 @@ class AssistantActionExecutor
      */
     private function executeBatch(array $items, int $userId): AssistantReply
     {
-        $lines = [];
+        $results = [];
         $processed = 0;
+        $failed = 0;
 
         foreach ($items as $item) {
             if (! is_array($item) || ! isset($item['type']) || ! is_string($item['type'])) {
                 continue;
             }
 
-            $sub = $this->execute([
-                'type' => $item['type'],
-                'params' => is_array($item['params'] ?? null) ? $item['params'] : [],
-            ], $userId);
+            $type = $item['type'];
+            $params = is_array($item['params'] ?? null) ? $item['params'] : [];
+
+            $sub = $this->execute(['type' => $type, 'params' => $params], $userId);
 
             $processed++;
-            $lines[] = '• '.$sub->text;
+            $failed += $sub->ok ? 0 : 1;
+            $results[] = [
+                'action' => $this->batchItemAction($type),
+                'item' => $this->batchItemName($params) ?? $this->batchItemSummary($item),
+                'detail' => Str::before($sub->text, '. ') !== '' ? Str::before($sub->text, '. ') : $sub->text,
+                'status' => __($sub->ok ? 'assistant.batch_status.ok' : 'assistant.batch_status.failed'),
+            ];
         }
 
         if ($processed === 0) {
-            return AssistantReply::say(__('assistant.actions.unknown'));
+            return AssistantReply::say(__('assistant.actions.unknown'))->markFailed();
         }
 
-        return AssistantReply::say(
-            __('assistant.actions.batch_done', ['count' => $processed])."\n\n".implode("\n", $lines),
-            [__('assistant.suggestions.portfolio')],
+        // La tabla resume que se creo/edito y como quedo cada item; el
+        // texto queda corto porque el detalle ya esta en las filas.
+        return new AssistantReply(
+            text: $failed > 0
+                ? __('assistant.actions.batch_done_partial', [
+                    'done' => $processed - $failed,
+                    'count' => $processed,
+                    'failed' => $failed,
+                ])
+                : __('assistant.actions.batch_done', ['count' => $processed]),
+            data: ['batch_results' => $results],
+            suggestions: [__('assistant.suggestions.portfolio')],
         );
+    }
+
+    /**
+     * Etiqueta singular de la accion por item ("Registrar inquilino"):
+     * cae al tipo crudo si la traduccion no existe.
+     */
+    private function batchItemAction(string $type): string
+    {
+        $label = __('assistant.batch_item.'.$type);
+
+        return $label !== 'assistant.batch_item.'.$type ? $label : $type;
+    }
+
+    /**
+     * Nombre legible del elemento procesado (inquilino, propiedad,
+     * factura...); null cuando el item no nombra una entidad concreta
+     * (los updates viajan por id y su nombre esta en el summary).
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function batchItemName(array $params): ?string
+    {
+        $label = trim((string) ($params['name'] ?? ''));
+
+        if ($label === '') {
+            $label = trim(implode(' — ', array_filter([
+                $params['tenant_name'] ?? null,
+                $params['property_name'] ?? null,
+            ])), ' —');
+        }
+
+        if ($label === '') {
+            $label = trim((string) ($params['invoice_number'] ?? $params['number'] ?? ''));
+        }
+
+        if ($label === '') {
+            $label = trim((string) ($params['rental_name'] ?? ''));
+        }
+
+        if ($label !== '') {
+            return $label;
+        }
+
+        return null;
+    }
+
+    /**
+     * Respaldo para la columna "Elemento" cuando los params no traen
+     * nombre: el summary de la accion ya describe la entidad
+     * ("Actualizar inquilino: Maria").
+     *
+     * @param  array<string, mixed>  $item
+     */
+    private function batchItemSummary(array $item): string
+    {
+        $summary = trim((string) ($item['summary'] ?? ''));
+
+        return $summary !== '' ? $summary : '—';
     }
 
     /**
@@ -136,7 +210,7 @@ class AssistantActionExecutor
         $user = User::query()->find($userId);
 
         if ($user === null) {
-            return AssistantReply::say(__('assistant.actions.failed'));
+            return AssistantReply::say(__('assistant.actions.failed'))->markFailed();
         }
 
         $allowed = ['name', 'email', 'document_type', 'document', 'phone_number'];
@@ -151,12 +225,12 @@ class AssistantActionExecutor
         }
 
         if ($changes === []) {
-            return AssistantReply::say(__('assistant.replies.need_profile_changes'));
+            return AssistantReply::say(__('assistant.replies.need_profile_changes'))->markFailed();
         }
 
         if (isset($changes['email'])
             && ! filter_var($changes['email'], FILTER_VALIDATE_EMAIL)) {
-            return AssistantReply::say(__('assistant.actions.profile_invalid', ['field' => __('assistant.fields.profile_email')]));
+            return AssistantReply::say(__('assistant.actions.profile_invalid', ['field' => __('assistant.fields.profile_email')]))->markFailed();
         }
 
         // Unicidad igual que el formulario de perfil: otro usuario no puede
@@ -174,7 +248,7 @@ class AssistantActionExecutor
             if ($taken) {
                 return AssistantReply::say(__('assistant.actions.profile_taken', [
                     'field' => __('assistant.fields.profile_'.$uniqueField),
-                ]));
+                ]))->markFailed();
             }
         }
 
@@ -197,7 +271,7 @@ class AssistantActionExecutor
         $periodStart = $this->billingPeriodStart($params['period'] ?? null);
 
         if ($periodStart === null) {
-            return AssistantReply::say(__('assistant.replies.need_period'));
+            return AssistantReply::say(__('assistant.replies.need_period'))->markFailed();
         }
 
         $result = $this->billing->billAllFor($userId, $periodStart);
@@ -253,13 +327,13 @@ class AssistantActionExecutor
             ->first();
 
         if ($invoice === null) {
-            return AssistantReply::say(__('assistant.actions.invoice_missing'));
+            return AssistantReply::say(__('assistant.actions.invoice_missing'))->markFailed();
         }
 
         if (! in_array($invoice->status, [InvoiceStatus::EMITIDA, InvoiceStatus::VENCIDA], true)) {
             return AssistantReply::say(__('assistant.actions.invoice_closed', [
                 'number' => $invoice->number,
-            ]));
+            ]))->markFailed();
         }
 
         try {
@@ -300,7 +374,7 @@ class AssistantActionExecutor
         if ($name === '' || $document === null || $phone === null) {
             return AssistantReply::say(__('assistant.replies.need_tenant_details', [
                 'missing' => __('assistant.fields.all_tenant'),
-            ]));
+            ]))->markFailed();
         }
 
         $tenant = Tenant::query()->create([
@@ -328,7 +402,7 @@ class AssistantActionExecutor
         if ($name === '' || $address === null) {
             return AssistantReply::say(__('assistant.replies.need_property_details', [
                 'missing' => __('assistant.fields.all_property'),
-            ]));
+            ]))->markFailed();
         }
 
         $property = Property::query()->create([
@@ -360,7 +434,7 @@ class AssistantActionExecutor
         $amount = round((float) ($params['monthly_amount'] ?? 0), 2);
 
         if ($amount <= 0) {
-            return AssistantReply::say(__('assistant.replies.need_rental_details', ['missing' => __('assistant.fields.amount')]));
+            return AssistantReply::say(__('assistant.replies.need_rental_details', ['missing' => __('assistant.fields.amount')]))->markFailed();
         }
 
         $cadence = BillingCadence::tryFrom(strtoupper((string) ($params['billing_cadence'] ?? 'MENSUAL')))
@@ -535,7 +609,7 @@ class AssistantActionExecutor
             ->find((int) ($params['tenant_id'] ?? 0));
 
         if ($tenant === null) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return AssistantReply::say(__('assistant.actions.entity_missing'))->markFailed();
         }
 
         $changes = $this->whitelistChanges($params, 'tenant');
@@ -547,7 +621,7 @@ class AssistantActionExecutor
         // Email/documento/teléfono no tienen unique en Tenant, pero el
         // formulario si valida formato de correo.
         if (isset($changes['email']) && ! filter_var($changes['email'], FILTER_VALIDATE_EMAIL)) {
-            return AssistantReply::say(__('assistant.actions.profile_invalid', ['field' => __('assistant.fields.email')]));
+            return AssistantReply::say(__('assistant.actions.profile_invalid', ['field' => __('assistant.fields.email')]))->markFailed();
         }
 
         // El nombre ANTES de guardar: tras fill() ya es el nuevo y el
@@ -581,7 +655,7 @@ class AssistantActionExecutor
             ->find((int) ($params['property_id'] ?? 0));
 
         if ($property === null) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return AssistantReply::say(__('assistant.actions.entity_missing'))->markFailed();
         }
 
         $changes = $this->whitelistChanges($params, 'property');
@@ -619,7 +693,7 @@ class AssistantActionExecutor
             ->find((int) ($params['rental_id'] ?? 0));
 
         if ($rental === null) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return AssistantReply::say(__('assistant.actions.entity_missing'))->markFailed();
         }
 
         $changes = $this->whitelistChanges($params, 'rental');
@@ -754,7 +828,7 @@ class AssistantActionExecutor
             ->find((int) ($params['rental_id'] ?? 0));
 
         if ($rental === null) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return AssistantReply::say(__('assistant.actions.entity_missing'))->markFailed();
         }
 
         try {
@@ -766,7 +840,7 @@ class AssistantActionExecutor
         $newRent = (float) ($params['new_rent'] ?? 0);
 
         if ($newRent <= 0) {
-            return AssistantReply::say(__('assistant.replies.need_rental_details', ['missing' => __('assistant.fields.new_rent')]));
+            return AssistantReply::say(__('assistant.replies.need_rental_details', ['missing' => __('assistant.fields.new_rent')]))->markFailed();
         }
 
         $basis = \App\Enums\IpcBasis::tryFrom((string) ($params['basis'] ?? '')) ?? \App\Enums\IpcBasis::National;
@@ -783,7 +857,7 @@ class AssistantActionExecutor
                 notes: $this->nullable($params['notes'] ?? null),
             );
         } catch (DomainException $exception) {
-            return AssistantReply::say($exception->getMessage());
+            return AssistantReply::say($exception->getMessage())->markFailed();
         }
 
         return AssistantReply::say(__('assistant.actions.adjustment_recorded', [
@@ -804,19 +878,19 @@ class AssistantActionExecutor
         $adjustment = $this->ownedAdjustment($params, $userId);
 
         if ($adjustment === null) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return AssistantReply::say(__('assistant.actions.entity_missing'))->markFailed();
         }
 
         if (! $adjustment->canApply()) {
             return AssistantReply::say(__('assistant.replies.adjustment_cannot_apply', [
                 'state' => $adjustment->state()->label(),
-            ]));
+            ]))->markFailed();
         }
 
         try {
             $rental = $this->rentals->applyAdjustment($adjustment);
         } catch (DomainException $exception) {
-            return AssistantReply::say($exception->getMessage());
+            return AssistantReply::say($exception->getMessage())->markFailed();
         }
 
         return AssistantReply::say(__('assistant.actions.adjustment_applied', [
@@ -833,13 +907,13 @@ class AssistantActionExecutor
         $adjustment = $this->ownedAdjustment($params, $userId);
 
         if ($adjustment === null) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return AssistantReply::say(__('assistant.actions.entity_missing'))->markFailed();
         }
 
         if (! $adjustment->canNotify()) {
             return AssistantReply::say(__('assistant.replies.adjustment_cannot_notify', [
                 'state' => $adjustment->state()->label(),
-            ]));
+            ]))->markFailed();
         }
 
         $method = NotificationMethod::tryFrom((string) ($params['method'] ?? '')) ?? NotificationMethod::Contractual;
@@ -857,7 +931,7 @@ class AssistantActionExecutor
                 $method,
             );
         } catch (DomainException $exception) {
-            return AssistantReply::say($exception->getMessage());
+            return AssistantReply::say($exception->getMessage())->markFailed();
         }
 
         return AssistantReply::say(__('assistant.actions.adjustment_notified', [
@@ -874,13 +948,13 @@ class AssistantActionExecutor
             ->find((int) ($params['rental_id'] ?? 0));
 
         if ($rental === null) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return AssistantReply::say(__('assistant.actions.entity_missing'))->markFailed();
         }
 
         try {
             $result = $this->rentals->recalculateAdjustmentChain($rental);
         } catch (DomainException $exception) {
-            return AssistantReply::say($exception->getMessage());
+            return AssistantReply::say($exception->getMessage())->markFailed();
         }
 
         return AssistantReply::say(__('assistant.actions.chain_recalculated', [
@@ -903,13 +977,13 @@ class AssistantActionExecutor
             ->find((int) ($params['invoice_id'] ?? 0));
 
         if ($invoice === null) {
-            return AssistantReply::say(__('assistant.actions.invoice_missing'));
+            return AssistantReply::say(__('assistant.actions.invoice_missing'))->markFailed();
         }
 
         if ($invoice->status === InvoiceStatus::ANULADA) {
             return AssistantReply::say(__('assistant.replies.invoice_already_void', [
                 'number' => $invoice->number,
-            ]));
+            ]))->markFailed();
         }
 
         $invoice->update(['status' => InvoiceStatus::ANULADA]);
@@ -928,13 +1002,13 @@ class AssistantActionExecutor
             ->find((int) ($params['rental_id'] ?? 0));
 
         if ($rental === null) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return AssistantReply::say(__('assistant.actions.entity_missing'))->markFailed();
         }
 
         $periodStart = $this->billingPeriodStart($params['period'] ?? null);
 
         if ($periodStart === null) {
-            return AssistantReply::say(__('assistant.replies.need_period'));
+            return AssistantReply::say(__('assistant.replies.need_period'))->markFailed();
         }
 
         // billPeriodFor devuelve la lista de facturas aseguradas del periodo
@@ -964,9 +1038,9 @@ class AssistantActionExecutor
         try {
             $act = $this->acts->record($params, $userId);
         } catch (\RuntimeException $exception) {
-            return AssistantReply::say($exception->getMessage());
+            return AssistantReply::say($exception->getMessage())->markFailed();
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return AssistantReply::say(__('assistant.actions.entity_missing'))->markFailed();
         }
 
         return AssistantReply::say(__('assistant.actions.act_done', [
@@ -1029,7 +1103,7 @@ class AssistantActionExecutor
 
             return AssistantReply::say(__('assistant.actions.ipc_failed', [
                 'error' => $exception->getMessage(),
-            ]));
+            ]))->markFailed();
         }
 
         $rows = collect($results)->sum(fn (array $row): int => (int) ($row['stored'] ?? 0));
@@ -1050,13 +1124,13 @@ class AssistantActionExecutor
         $document = $this->resolveDocument($params, $userId);
 
         if ($document === null) {
-            return AssistantReply::say(__('assistant.actions.document_failed'));
+            return AssistantReply::say(__('assistant.actions.document_failed'))->markFailed();
         }
 
         // El estado de cuenta de un periodo sin facturas es un documento
         // vacio: mejor un mensaje claro que un PDF en cero.
         if ($document->isEmpty()) {
-            return AssistantReply::say(__('assistant.replies.document_no_movements'));
+            return AssistantReply::say(__('assistant.replies.document_no_movements'))->markFailed();
         }
 
         $token = (string) Str::uuid();
@@ -1097,6 +1171,13 @@ class AssistantActionExecutor
         // utiles, asi que solo se traduce el "no existe" y el resto sube.
         try {
             return match ($kind) {
+                // Documento personalizado: la especificacion viaja en
+                // params.spec (la redacto la IA con datos reales) y
+                // CustomDocument la sanea al construir el cuerpo.
+                'custom' => $this->rentals->customDocumentFor(
+                    is_array($params['spec'] ?? null) ? $params['spec'] : [],
+                    $format,
+                ),
                 'receipt' => $this->rentals->receiptFor(
                     Invoice::query()->where('user_id', $userId)->findOrFail((int) ($params['invoice_id'] ?? 0)),
                     $format,
@@ -1131,7 +1212,7 @@ class AssistantActionExecutor
         $tables = is_array($params['tables'] ?? null) ? $params['tables'] : [];
 
         if ($tables === []) {
-            return AssistantReply::say(__('assistant.actions.export_empty'));
+            return AssistantReply::say(__('assistant.actions.export_empty'))->markFailed();
         }
 
         // Una sola tabla por ahora: la primera con filas.
@@ -1160,7 +1241,7 @@ class AssistantActionExecutor
         }
 
         if ($rows === []) {
-            return AssistantReply::say(__('assistant.actions.export_empty'));
+            return AssistantReply::say(__('assistant.actions.export_empty'))->markFailed();
         }
 
         if ($headers === []) {

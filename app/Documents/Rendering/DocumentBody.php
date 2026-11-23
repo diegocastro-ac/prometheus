@@ -23,6 +23,7 @@ final class DocumentBody
      * @param  list<list<string>>  $rows
      * @param  list<string>  $notes
      * @param  list<string>  $warnings
+     * @param  list<array{title: string, text?: string, fields?: array<string, string>, table?: array{headers: list<string>, rows: list<list<string>>}}>  $sections
      */
     public function __construct(
         public readonly string $title,
@@ -33,6 +34,7 @@ final class DocumentBody
         public readonly array $warnings = [],
         public readonly ?string $footer = null,
         public readonly array $meta = [],
+        public readonly array $sections = [],
         private ?object $document = null,
     ) {}
 
@@ -94,6 +96,19 @@ final class DocumentBody
         return $this->clone(meta: array_merge($this->meta, $meta));
     }
 
+    /**
+     * Secciones de un documento compuesto: cada una lleva titulo
+     * opcional, texto libre, campos clave-valor y/o una tabla. Es la
+     * estructura que necesita el documento personalizado, que no cabe
+     * en el unico fields+table del cuerpo base.
+     *
+     * @param  list<array{title?: string, text?: string, fields?: array<string, string>, table?: array{headers: list<string>, rows: list<list<string>>}}>  $sections
+     */
+    public function withSections(array $sections): self
+    {
+        return $this->clone(sections: $sections);
+    }
+
     public function document(): ?object
     {
         return $this->document;
@@ -112,6 +127,7 @@ final class DocumentBody
         ?array $warnings = null,
         ?string $footer = null,
         ?array $meta = null,
+        ?array $sections = null,
         ?object $document = null,
     ): self {
         return new self(
@@ -123,6 +139,7 @@ final class DocumentBody
             warnings: $warnings ?? $this->warnings,
             footer: $footer ?? $this->footer,
             meta: $meta ?? $this->meta,
+            sections: $sections ?? $this->sections,
             document: $document ?? $this->document,
         );
     }

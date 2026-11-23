@@ -152,6 +152,7 @@ return [
         'settings' => 'Business settings',
         'rental' => 'Rental',
         'results' => 'Query results',
+        'batch_results' => 'Batch results',
     ],
 
     'guide' => [
@@ -424,6 +425,7 @@ return [
         'label' => 'Method',
         'basis' => 'Basis',
         'suggested_rent' => 'Suggested rent',
+        'action' => 'Action',
     ],
 
     'alerts' => [
@@ -554,6 +556,9 @@ return [
         'propose_recalculate' => 'I will recalculate the adjustment chain for :rental (:count adjustment(s) recorded). Confirm to continue.',
         'propose_annul_invoice' => 'I will void invoice :number for :tenant for :amount. Confirm to continue.',
         'propose_document' => 'I will generate :document for :target in :format format. Confirm to continue.',
+        'propose_custom_document' => 'I prepared the document ":title" in :format format. Review the summary and confirm to generate it.',
+        'custom_document_failed' => 'I could not compose the document with the available data. Try describing in more detail what it should contain.',
+        'custom_document_unavailable' => 'The AI service did not respond in time (it is saturated or out of quota). Wait a moment and ask me for the document again.',
         'unknown_document' => 'Which document do you need? I can generate the invoice, the payment receipt, the adjustment letter or the account statement.',
         'propose_bill_rental' => 'I will bill period :period for rental :rental. Confirm to continue.',
         'propose_export_csv' => 'I will export :section to CSV. Confirm to continue.',
@@ -650,6 +655,8 @@ return [
         'balance' => 'the balance',
         'status' => 'the status',
         'document_type' => 'the document type',
+        'document_title' => 'the title',
+        'sections' => 'the sections',
         'format' => 'the format',
         'optional' => 'Optional',
     ],
@@ -834,10 +841,40 @@ return [
         'export_csv' => 'Export',
     ],
 
+    // Singular label per row in the batch results table.
+    'batch_item' => [
+        'create_tenant' => 'Register tenant',
+        'create_property' => 'Create property',
+        'create_rental' => 'Schedule rental',
+        'record_payment' => 'Record payment',
+        'generate_invoices' => 'Generate invoices',
+        'update_profile' => 'Update profile',
+        'update_tenant' => 'Update tenant',
+        'update_property' => 'Update property',
+        'update_rental' => 'Update rental',
+        'record_adjustment' => 'Record adjustment',
+        'apply_adjustment' => 'Apply adjustment',
+        'mark_adjustment_notified' => 'Mark adjustment notified',
+        'recalculate_adjustments' => 'Recalculate adjustments',
+        'annul_invoice' => 'Void invoice',
+        'bill_rental_invoices' => 'Bill rental',
+        'create_delivery_act' => 'Create act',
+        'update_settings' => 'Update settings',
+        'sync_ipc' => 'Sync CPI',
+        'generate_document' => 'Generate document',
+        'export_csv' => 'Export CSV',
+    ],
+
+    'batch_status' => [
+        'ok' => 'Done',
+        'failed' => 'Failed',
+    ],
+
     'actions' => [
         'batch_summary' => 'Register batch: :items',
         'batch_label' => 'Register batch',
         'batch_done' => 'Done: I processed :count action(s) from the batch.',
+        'batch_done_partial' => 'Processed :done of :count batch actions; :failed failed (see the table for details).',
         'update_profile_summary' => 'Update profile details',
         'profile_done' => 'Done: I updated your profile details.',
         'profile_invalid' => 'The :field is not in a valid format. Check it and try again.',
@@ -887,6 +924,7 @@ return [
         'recalculate_summary' => 'Recalculate adjustment chain',
         'annul_invoice_summary' => 'Void invoice',
         'document_summary' => 'Generate :document for :target',
+        'custom_document_summary' => 'Generate custom document: :title',
         'bill_rental_summary' => 'Bill a single rental',
         'create_act_summary' => 'Create delivery act for :rental (:tenant)',
         'update_settings_summary' => 'Update business settings',
@@ -930,6 +968,12 @@ return [
         'receipt' => 'the payment receipt',
         'adjustment_letter' => 'the adjustment letter',
         'statement' => 'the account statement',
+        'custom' => 'the custom document',
+    ],
+
+    'doc_sections' => [
+        'one' => '1 section',
+        'many' => ':count sections',
     ],
 
     'doc_kinds' => [

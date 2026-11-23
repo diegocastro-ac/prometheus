@@ -83,6 +83,7 @@
                                 @if ($step['action']['kind'] === 'url' && ! empty($step['action']['url']))
                                     <button
                                         type="button"
+                                        @if ($fromPreview) x-on:click="dismissPreviewForChat()" @endif
                                         wire:click="goTo('{{ $step['action']['url'] }}')"
                                         class="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-700 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:ring-white/10 dark:hover:bg-white/5"
                                     >
@@ -92,6 +93,7 @@
                                 @elseif ($step['action']['kind'] === 'prompt' && ! empty($step['action']['prompt']))
                                     <button
                                         type="button"
+                                        @if ($fromPreview) x-on:click="dismissPreviewForChat()" @endif
                                         wire:click="{{ $promptMethod }}({{ \Illuminate\Support\Js::from($step['action']['prompt']) }})"
                                         wire:loading.attr="disabled"
                                         class="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"

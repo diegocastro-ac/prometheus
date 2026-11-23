@@ -268,11 +268,11 @@
                                                         @endif
                                                         @if (! empty($stepItem['action']))
                                                             @if (($stepItem['action']['kind'] ?? '') === 'url' && ! empty($stepItem['action']['url']))
-                                                                <button type="button" wire:click="goTo('{{ $stepItem['action']['url'] }}')" class="{{ $iconBtn }} mt-1.5">
+                                                                <button type="button" @if ($fromPreview) x-on:click="dismissPreviewForChat()" @endif wire:click="goTo('{{ $stepItem['action']['url'] }}')" class="{{ $iconBtn }} mt-1.5">
                                                                     {{ $stepItem['action']['label'] }}
                                                                 </button>
                                                             @elseif (($stepItem['action']['kind'] ?? '') === 'prompt' && ! empty($stepItem['action']['prompt']))
-                                                                <button type="button" wire:click="{{ $promptMethod }}({{ \Illuminate\Support\Js::from($stepItem['action']['prompt']) }})" wire:loading.attr="disabled" class="{{ $iconBtn }} mt-1.5">
+                                                                <button type="button" @if ($fromPreview) x-on:click="dismissPreviewForChat()" @endif wire:click="{{ $promptMethod }}({{ \Illuminate\Support\Js::from($stepItem['action']['prompt']) }})" wire:loading.attr="disabled" class="{{ $iconBtn }} mt-1.5">
                                                                     {{ $stepItem['action']['label'] }}
                                                                 </button>
                                                             @endif

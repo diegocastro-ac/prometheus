@@ -1232,6 +1232,150 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
+    public function batch_confirmado_devuelve_tabla_de_resultados_sin_repetir_texto(): void
+    {
+        $result = app(AssistantActionExecutor::class)->execute([
+            'type' => 'batch',
+            'items' => [
+                ['type' => 'create_tenant', 'params' => ['name' => 'Isaac Uno', 'document' => '111', 'phone_number' => '3000000001']],
+                ['type' => 'create_tenant', 'params' => ['name' => 'Maria Dos', 'document' => '222', 'phone_number' => '3000000002']],
+                ['type' => 'create_property', 'params' => ['name' => 'Apto sin direccion']],
+            ],
+        ], $this->user->id);
+
+        // Una fila por item: accion, elemento, detalle y estado — la
+        // tabla reemplaza los bullets "Listo: ..." repetidos por item.
+        $rows = $result->data['batch_results'] ?? [];
+        $this->assertCount(3, $rows);
+        $this->assertSame('Registrar inquilino', $rows[0]['action']);
+        $this->assertSame('Isaac Uno', $rows[0]['item']);
+        $this->assertSame('Hecho', $rows[0]['status']);
+        $this->assertSame('Maria Dos', $rows[1]['item']);
+
+        // El item invalido queda marcado como fallido y el resumen lo
+        // cuenta sin listar cada exito otra vez.
+        $this->assertSame('Falló', $rows[2]['status']);
+        $this->assertStringContainsString('2 de 3', $result->text);
+        $this->assertStringNotContainsString('•', $result->text);
+    }
+
+    #[Test]
+    public function batch_de_updates_confirmado_devuelve_tabla_con_cada_entidad(): void
+    {
+        $tenantA = Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Persona A',
+            'phone_number' => '3000000000',
+        ]);
+        $tenantB = Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Persona B',
+            'phone_number' => '3000000000',
+        ]);
+
+        $result = app(AssistantActionExecutor::class)->execute([
+            'type' => 'batch',
+            'items' => [
+                ['type' => 'update_tenant', 'params' => ['tenant_id' => $tenantA->id, 'phone_number' => '3111111111'], 'summary' => 'Actualizar inquilino: Persona A'],
+                ['type' => 'update_tenant', 'params' => ['tenant_id' => $tenantB->id, 'name' => 'Persona B Editada'], 'summary' => 'Actualizar inquilino: Persona B'],
+            ],
+        ], $this->user->id);
+
+        $rows = $result->data['batch_results'] ?? [];
+        $this->assertCount(2, $rows);
+        $this->assertSame('Actualizar inquilino', $rows[0]['action']);
+        $this->assertSame('Hecho', $rows[1]['status']);
+
+        // Los updates viajan por id: el nombre de la entidad sale del
+        // summary de la accion, no de los params.
+        $this->assertSame('Actualizar inquilino: Persona A', $rows[0]['item']);
+        $this->assertSame('3111111111', $tenantA->fresh()->phone_number);
+        $this->assertSame('Persona B Editada', $tenantB->fresh()->name);
+    }
+
+    #[Test]
+    public function wizard_de_creacion_en_batch_no_hereda_valores_del_item_anterior(): void
+    {
+        $invoker = app(AssistantToolInvoker::class);
+
+        // Dos creates incompletos -> la cola del wizard los recorre por
+        // turnos. El primero se diligencia completo; el segundo debe
+        // abrirse VACIO salvo lo que el modelo ya extrajo de su peticion.
+        $first = $invoker->invokeBatch([
+            ['intent' => 'create_tenant', 'params' => ['name' => 'Primera Persona']],
+            ['intent' => 'create_tenant', 'params' => ['name' => 'Segunda Persona']],
+        ], $this->user->id);
+
+        $this->assertNotNull($first->pendingForm);
+
+        $second = $invoker->submitCreateForm([
+            'name' => 'Primera Persona',
+            'document' => '100200300',
+            'phone_number' => '3009998877',
+            'email' => 'primera@mail.com',
+        ], $this->user->id);
+
+        $this->assertNotNull($second->pendingForm);
+        $fields = collect($second->pendingForm['fields'])->keyBy('key');
+
+        // El form del segundo inquilino trae SU nombre y nada del
+        // primero: ni documento, ni telefono, ni correo heredados.
+        $this->assertSame('Segunda Persona', $fields->get('name')['value'] ?? null);
+        $this->assertSame('', $fields->get('document')['value'] ?? null);
+        $this->assertSame('', $fields->get('phone_number')['value'] ?? null);
+        $this->assertSame('', $fields->get('email')['value'] ?? null);
+
+        // La sesion tampoco conserva los valores del item anterior.
+        $session = session('assistant.createform.'.$this->user->id);
+        $this->assertSame('tenant', $session['entity'] ?? null);
+        $this->assertArrayNotHasKey('100200300', $session['values'] ?? []);
+        $this->assertSame('Segunda Persona', $session['values']['name'] ?? null);
+    }
+
+    #[Test]
+    public function wizard_de_update_en_batch_rehidrata_cada_entidad_independiente(): void
+    {
+        $tenantA = Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Cliente Alpha',
+            'phone_number' => '3000000001',
+        ]);
+        $tenantB = Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Cliente Beta',
+            'phone_number' => '3000000002',
+        ]);
+
+        $invoker = app(AssistantToolInvoker::class);
+
+        // Encola los dos updates sin campo: cada uno abre su
+        // clarificacion y el batch los recorre con UN solo wizard.
+        $first = $invoker->invokeBatch([
+            ['intent' => 'update_tenant', 'params' => ['tenant_name' => 'Cliente Alpha']],
+            ['intent' => 'update_tenant', 'params' => ['tenant_name' => 'Cliente Beta']],
+        ], $this->user->id);
+
+        $this->assertNotNull($first->pendingForm);
+        $this->assertStringContainsString('Alpha', $first->pendingForm['prompt'] ?? '');
+
+        // Diligencia el primero cambiando el nombre.
+        $second = $invoker->submitUpdateForm(['name' => 'Alpha Renombrado'], $this->user->id);
+
+        // El siguiente paso es el SEGUNDO inquilino: su formulario se
+        // rehidrato desde su propio registro, no del edit recien hecho.
+        $this->assertNotNull($second->pendingForm);
+        $this->assertStringContainsString('Beta', $second->pendingForm['prompt'] ?? '');
+        $this->assertSame('update_clarify', session('assistant.form.'.$this->user->id)['form'] ?? null);
+        $this->assertSame($tenantB->id, (int) (session('assistant.form.'.$this->user->id)['data']['entity_id'] ?? 0));
+
+        // El select de estado u otro campo con valor actual refleja a B,
+        // nunca el nombre que se acaba de escribir para A (que ni siquiera
+        // esta persistido todavia).
+        $this->assertSame('Cliente Beta', $tenantB->fresh()->name);
+        $this->assertSame('Cliente Alpha', $tenantA->fresh()->name);
+    }
+
+    #[Test]
     public function show_profile_devuelve_los_datos_de_la_cuenta(): void
     {
         $this->fakeGemini([
@@ -1947,6 +2091,127 @@ class AssistantTest extends TestCase
         // 1 clasificacion + 1 reintento de clasificacion: el SQL nunca corre.
         $this->assertSame(2, $calls);
         $this->assertSame($tenantsBefore, Tenant::count());
+    }
+
+    #[Test]
+    public function query_data_anida_relaciones_cuando_el_modelo_declara_nest(): void
+    {
+        foreach (['FV-2026-9001', 'FV-2026-9002'] as $i => $number) {
+            Invoice::factory()->create([
+                'rental_id' => $this->rental->id,
+                'user_id' => $this->user->id,
+                'number' => $number,
+                'amount' => 500000 + $i,
+                'status' => InvoiceStatus::EMITIDA,
+                'issued_at' => today()->toDateString(),
+                'due_at' => today()->addDays(5)->toDateString(),
+                'period' => today()->format('Y-m'),
+            ]);
+        }
+
+        Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Sin Facturas',
+        ]);
+
+        $reply = app(AssistantToolInvoker::class)->invoke('query_data', [
+            'sql' => 'SELECT t.name AS inquilino, i.number AS factura, i.amount AS valor '
+                .'FROM tenants t '
+                .'LEFT JOIN rentals r ON r.tenant_id = t.id AND r.user_id = '.$this->user->id.' '
+                .'LEFT JOIN invoices i ON i.rental_id = r.id '
+                .'WHERE t.user_id = '.$this->user->id,
+            'question' => 'mis inquilinos y por cada uno sus facturas',
+            'nest' => [
+                'parent' => ['inquilino'],
+                'child' => ['factura', 'valor'],
+                'as' => 'facturas',
+            ],
+        ], $this->user->id);
+
+        $rows = $reply->data['results'] ?? [];
+        $this->assertCount(2, $rows);
+
+        $conFacturas = collect($rows)->firstWhere('inquilino', $this->rental->tenant->name);
+        $this->assertCount(2, $conFacturas['facturas']);
+        $this->assertSame('FV-2026-9001', $conFacturas['facturas'][0]['factura']);
+
+        // LEFT JOIN sin hijo: la fila aparece con la tabla vacia, no se pierde.
+        $sinFacturas = collect($rows)->firstWhere('inquilino', 'Sin Facturas');
+        $this->assertSame([], $sinFacturas['facturas']);
+    }
+
+    #[Test]
+    public function query_data_con_nest_invalido_cae_a_la_tabla_plana(): void
+    {
+        $reply = app(AssistantToolInvoker::class)->invoke('query_data', [
+            'sql' => 'SELECT name AS inquilino, document AS cedula FROM tenants WHERE user_id = '.$this->user->id,
+            'question' => 'inquilinos',
+            // Alias que no existe en el SELECT: nest no es usable.
+            'nest' => ['parent' => ['inquilino'], 'child' => ['columna_fantasma'], 'as' => 'hijos'],
+        ], $this->user->id);
+
+        $rows = $reply->data['results'] ?? [];
+        $this->assertNotEmpty($rows);
+        $this->assertArrayHasKey('inquilino', $rows[0]);
+        $this->assertArrayNotHasKey('hijos', $rows[0]);
+    }
+
+    #[Test]
+    public function query_data_anida_varias_relaciones_en_tablas_separadas(): void
+    {
+        // Arriendo con 2 facturas (1:N) + inquilino y propiedad (1:1):
+        // el JOIN repite las columnas del "uno" por cada factura; el
+        // nest debe deduplicarlas y separar cada entidad en su tabla.
+        foreach (['FV-2026-9101', 'FV-2026-9102'] as $number) {
+            Invoice::factory()->create([
+                'rental_id' => $this->rental->id,
+                'user_id' => $this->user->id,
+                'number' => $number,
+                'amount' => 700000,
+                'status' => InvoiceStatus::EMITIDA,
+                'issued_at' => today()->toDateString(),
+                'due_at' => today()->addDays(5)->toDateString(),
+                'period' => today()->format('Y-m'),
+            ]);
+        }
+
+        $reply = app(AssistantToolInvoker::class)->invoke('query_data', [
+            'sql' => 'SELECT r.monthly_amount AS canon, t.name AS inquilino, t.document AS doc_inquilino, '
+                .'p.name AS propiedad, p.address AS dir_propiedad, i.number AS factura, i.amount AS valor '
+                .'FROM rentals r '
+                .'LEFT JOIN tenants t ON t.id = r.tenant_id '
+                .'LEFT JOIN properties p ON p.id = r.property_id '
+                .'LEFT JOIN invoices i ON i.rental_id = r.id '
+                .'WHERE r.user_id = '.$this->user->id,
+            'question' => 'mis arriendos con su inquilino, propiedad y facturas',
+            'nest' => [
+                'parent' => ['canon'],
+                'children' => [
+                    ['as' => 'inquilino', 'columns' => ['inquilino', 'doc_inquilino']],
+                    ['as' => 'propiedad', 'columns' => ['propiedad', 'dir_propiedad']],
+                    ['as' => 'facturas', 'columns' => ['factura', 'valor']],
+                ],
+            ],
+        ], $this->user->id);
+
+        $rows = $reply->data['results'] ?? [];
+        $this->assertCount(1, $rows);
+        $row = $rows[0];
+
+        // Cada relacion en su propia tabla anidada.
+        $this->assertSame($this->rental->tenant->name, $row['inquilino'][0]['inquilino']);
+        $this->assertSame($this->rental->property->name, $row['propiedad'][0]['propiedad']);
+        $this->assertCount(2, $row['facturas']);
+
+        // La 1:1 no se duplica por las 2 facturas del 1:N.
+        $this->assertCount(1, $row['inquilino']);
+        $this->assertCount(1, $row['propiedad']);
+
+        // Las columnas de cada tabla solo traen las suyas: la del
+        // inquilino no filtra campos de propiedad ni de factura.
+        $this->assertArrayNotHasKey('propiedad', $row['inquilino'][0]);
+        $this->assertArrayNotHasKey('factura', $row['inquilino'][0]);
+        $this->assertArrayNotHasKey('inquilino', $row['facturas'][0]);
     }
 
     #[Test]
@@ -2952,5 +3217,129 @@ class AssistantTest extends TestCase
         $this->assertSame('bar', $blocks[0]['chart']);
         $this->assertSame(['2026-08', '2026-09', '2026-10'], $blocks[0]['labels']);
         $this->assertSame([1000000.0, 1500000.0, 900000.0], $blocks[0]['values']);
+    }
+
+    // ---------------------------------------------------------------
+    // Documento personalizado (custom_document)
+    // ---------------------------------------------------------------
+
+    #[Test]
+    public function custom_document_compone_la_especificacion_y_propone_la_accion(): void
+    {
+        // El mismo payload sirve para classify (lee intent/params) y
+        // para el compositor de documentos (lee 'document' directo).
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'custom_document',
+            'params' => ['format' => 'pdf'],
+            'confidence' => 0.9,
+            'document' => [
+                'title' => 'Estado del portafolio',
+                'intro' => 'Resumen general del negocio.',
+                'fields' => ['Periodo' => 'Noviembre 2026'],
+                'sections' => [[
+                    'title' => 'Cartera activa',
+                    'text' => 'Tienes varios arriendos activos.',
+                    'table' => [
+                        'headers' => ['Arriendo', 'Canon'],
+                        'rows' => [['Local norte', '$800.000']],
+                    ],
+                ]],
+            ],
+        ]);
+
+        $reply = $this->assistant()->ask('hazme un pdf con el estado de mi portafolio', [], $this->user->id);
+
+        $this->assertSame('generate_document', $reply->action['type']);
+        $this->assertSame('custom', $reply->action['params']['kind']);
+        $this->assertSame('pdf', $reply->action['params']['format']);
+        $this->assertSame('Estado del portafolio', $reply->action['params']['spec']['title']);
+        $this->assertNotEmpty($reply->action['params']['spec']['sections']);
+    }
+
+    #[Test]
+    public function custom_document_sin_especificacion_cae_al_fallback(): void
+    {
+        // Si el modelo clasifica custom_document pero el compositor no
+        // logra producir spec (o se invoca directo sin spec), el
+        // invoker responde el mensaje de fallback en vez de romper.
+        $reply = app(AssistantToolInvoker::class)->invoke('custom_document', [], $this->user->id);
+
+        $this->assertNull($reply->action);
+        $this->assertNotSame('', trim($reply->text));
+    }
+
+    #[Test]
+    public function custom_document_se_entrega_en_los_tres_formatos(): void
+    {
+        $service = app(\App\Documents\DocumentService::class);
+
+        $spec = [
+            'title' => 'Carta de cobro especial',
+            'intro' => 'Carta dirigida al inquilino.',
+            'sections' => [[
+                'title' => 'Detalle',
+                'text' => 'Se detalla el saldo.',
+                'table' => ['headers' => ['Concepto', 'Valor'], 'rows' => [['Saldo', '$500.000']]],
+            ]],
+        ];
+
+        $text = $service->customDocumentFor($spec, 'text');
+        $this->assertStringEndsWith('.txt', $text->filename());
+        $this->assertStringContainsString('Carta de cobro especial', $text->content());
+        $this->assertStringContainsString('Detalle', $text->content());
+        $this->assertStringContainsString('$500.000', $text->content());
+
+        $json = $service->customDocumentFor($spec, 'json');
+        $this->assertStringEndsWith('.json', $json->filename());
+        $decoded = json_decode($json->content(), true);
+        $this->assertSame('Carta de cobro especial', $decoded['title']);
+        $this->assertNotEmpty($decoded['sections']);
+
+        $pdf = $service->customDocumentFor($spec, 'pdf');
+        $this->assertStringEndsWith('.pdf', $pdf->filename());
+        $this->assertStringStartsWith('%PDF', $pdf->content());
+    }
+
+    #[Test]
+    public function custom_document_saneada_descarta_lo_que_no_es_util(): void
+    {
+        // El spec viene de params persistidos: se sanea en la frontera
+        // y lo vacio/no estructurado no llega al documento.
+        $document = \App\Documents\CustomDocument::fromSpec([
+            'title' => str_repeat('T', 300),
+            'sections' => [
+                ['title' => '', 'text' => '', 'fields' => [], 'table' => null],
+                'no-es-array',
+                ['title' => 'Válida', 'text' => 'Contenido'],
+            ],
+            'fields' => ['' => 'sin etiqueta', 'Ok' => 'valor'],
+        ], new \App\Documents\Rendering\PlainTextRenderer);
+
+        $body = $document->body();
+
+        $this->assertLessThanOrEqual(141, mb_strlen($body->title));
+        $this->assertCount(1, $body->sections);
+        $this->assertSame('Válida', $body->sections[0]['title']);
+        $this->assertSame(['Ok' => 'valor'], $body->fields);
+    }
+
+    #[Test]
+    public function ejecutar_custom_document_genera_el_archivo(): void
+    {
+        $result = app(AssistantActionExecutor::class)->execute([
+            'type' => 'generate_document',
+            'params' => [
+                'kind' => 'custom',
+                'format' => 'text',
+                'spec' => [
+                    'title' => 'Reporte de prueba',
+                    'sections' => [['title' => 'Uno', 'text' => 'Hola']],
+                ],
+            ],
+        ], $this->user->id);
+
+        $this->assertNotNull($result->data['file']['token'] ?? null);
+        $this->assertStringEndsWith('.txt', $result->data['file']['filename']);
     }
 }

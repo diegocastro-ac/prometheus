@@ -79,6 +79,7 @@ class GeminiDataAssistant implements DataAssistantInterface
         'recalculate_adjustments',
         'annul_invoice',
         'generate_document',
+        'custom_document',
         'bill_single_rental',
         'aging_report',
         'top_debtors',
@@ -218,13 +219,39 @@ class GeminiDataAssistant implements DataAssistantInterface
             return $this->maybeDraft($reply, $userId);
         }
 
+        // Documento personalizado: la IA investiga la BD por su cuenta
+        // (mismo loop de lookup_data que los reportes) y compone la
+        // especificacion estructurada; el invoker la convierte en la
+        // accion generate_document kind=custom que el humano confirma.
+        // Si la composicion falla cae al invoke normal del intent.
+        if ($intent === 'custom_document') {
+            $spec = $this->composeDocumentSpec($question, $history, $digest->toArray(), $userId);
+
+            if ($spec !== null) {
+                $params['spec'] = $spec;
+                $params['_question'] = $question;
+                $reply = $this->invoker->invoke('custom_document', $params, $userId);
+                $reply = $this->withAiSuggestions($reply, $parsed);
+                $reply = $this->withBadgeColors($reply, $question, $userId);
+
+                return $this->maybeDraft($this->maybeCompose($reply, $question, $history, $userId), $userId);
+            }
+
+            // La composicion fallo porque la IA no respondio (saturacion,
+            // cuota, timeouts): el problema es el servicio, no la
+            // descripcion del usuario — el mensaje debe decirlo.
+            if ($this->aiUnavailable) {
+                return AssistantReply::say(__('assistant.replies.custom_document_unavailable'));
+            }
+        }
+
         // Analisis predictivo y guias de uso: en vez de una plantilla
         // determinista por "foco"/"tema", la IA investiga la base de
         // datos por su cuenta (lookup_data) y compone la respuesta como
         // un REPORTE estructurado de componentes UI. Si la composicion
         // falla o no hay API, cae al camino determinista del invoker.
         if (in_array($intent, ['business_insights', 'app_guide'], true)) {
-            $report = $this->composeReport($question, $history, $digest->toArray(), $userId);
+            $report = $this->composeReport($question, $history, $digest->toArray(), $userId, $intent);
 
             if ($report !== null) {
                 return new AssistantReply(
@@ -814,12 +841,12 @@ PROMPT;
      * @param  array<string, mixed>  $digest
      * @return array{title: string, intro: string, sections: list<array<string, mixed>>, suggestions: list<string>}|null
      */
-    private function composeReport(string $question, array $history, array $digest, int $userId): ?array
+    private function composeReport(string $question, array $history, array $digest, int $userId, string $intent = 'business_insights'): ?array
     {
         $notes = [];
 
         for ($round = 0; $round < 4; $round++) {
-            $parsed = $this->classifyReport($question, $history, $digest, $notes, $userId);
+            $parsed = $this->classifyReport($question, $history, $digest, $notes, $userId, $intent);
 
             if ($parsed === null) {
                 return null;
@@ -837,7 +864,7 @@ PROMPT;
                 continue;
             }
 
-            $report = $this->sanitizeReport($parsed['report'] ?? null);
+            $report = $this->sanitizeReport($parsed['report'] ?? null, $intent === 'app_guide' ? 8 : 6);
 
             if ($report === null) {
                 return null;
@@ -860,7 +887,22 @@ PROMPT;
      * @param  list<string>  $notes
      * @return array<string, mixed>|null
      */
-    private function classifyReport(string $question, array $history, array $digest, array $notes, int $userId): ?array
+    private function classifyReport(string $question, array $history, array $digest, array $notes, int $userId, string $intent = 'business_insights'): ?array
+    {
+        return $this->classifyJson($question, $history, $this->reportSystemPrompt($digest, $userId, $intent), $notes, $userId);
+    }
+
+    /**
+     * Una ronda del compositor JSON: mismo protocolo HTTP que
+     * classify() pero con el system prompt del compositor concreto
+     * (reporte o documento) y las notas de consultas de apoyo ya
+     * ejecutadas anexadas a la pregunta.
+     *
+     * @param  array<int, array{role: string, text: string}>  $history
+     * @param  list<string>  $notes
+     * @return array<string, mixed>|null
+     */
+    private function classifyJson(string $question, array $history, string $systemPrompt, array $notes, int $userId): ?array
     {
         $contents = [];
 
@@ -873,13 +915,13 @@ PROMPT;
 
         $fullQuestion = $notes === []
             ? $question
-            : $question."\n\n".implode("\n", $notes)."\n\nResponde ahora: otra consulta de apoyo ({\"lookup\": ...}) o el reporte final ({\"report\": ...}).";
+            : $question."\n\n".implode("\n", $notes)."\n\nResponde ahora: otra consulta de apoyo ({\"lookup\": ...}) o el resultado final.";
 
         $contents[] = ['role' => 'user', 'parts' => [['text' => $fullQuestion]]];
 
         $body = [
             'system_instruction' => [
-                'parts' => [['text' => $this->reportSystemPrompt($digest, $userId)]],
+                'parts' => [['text' => $systemPrompt]],
             ],
             'contents' => $contents,
             'generationConfig' => [
@@ -900,13 +942,240 @@ PROMPT;
     }
 
     /**
+     * Compositor de documentos personalizados: la IA decide QUE
+     * investigar (lookup_data) y luego redacta la especificacion del
+     * documento — titulo, introduccion, campos y secciones con texto,
+     * campos y tablas — todo con datos reales de la base.
+     *
+     * Devuelve la especificacion saneada o null si el modelo no logra
+     * producir un documento valido (el llamador cae al invoke normal).
+     *
+     * @param  array<string, mixed>  $digest
+     * @return array<string, mixed>|null
+     */
+    private function composeDocumentSpec(string $question, array $history, array $digest, int $userId): ?array
+    {
+        $notes = [];
+
+        for ($round = 0; $round < 4; $round++) {
+            $parsed = $this->classifyJson(
+                $question,
+                $history,
+                $this->documentSystemPrompt($digest, $userId),
+                $notes,
+                $userId,
+            );
+
+            if ($parsed === null) {
+                return null;
+            }
+
+            $lookup = $parsed['lookup'] ?? null;
+
+            if (is_array($lookup) && $lookup !== [] && $round < 3) {
+                $result = $this->invoker->lookupData($lookup, $userId);
+
+                $notes[] = isset($result['rows'])
+                    ? '[Tu consulta de apoyo '.$round.' — RESULTADOS REALES de la base de datos (JSON): '.json_encode(array_slice($result['rows'], 0, 60), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).'. Continúa investigando con otra consulta si hace falta, o devuelve el documento final.]'
+                    : '[Tu consulta de apoyo '.$round.' fue rechazada o fallo: '.($result['error'] ?? 'error desconocido').'. Ajusta params.sql/params.table o responde con lo que ya tienes.]';
+
+                continue;
+            }
+
+            $spec = $this->sanitizeDocumentSpec($parsed['document'] ?? null);
+
+            if ($spec === null) {
+                return null;
+            }
+
+            return $spec;
+        }
+
+        return null;
+    }
+
+    /**
+     * System prompt del compositor de documentos: la IA investiga la
+     * base de datos real y produce la especificacion estructurada del
+     * documento; el vocabulario es el contrato DocumentBody.sections.
+     *
+     * @param  array<string, mixed>  $digest
+     */
+    private function documentSystemPrompt(array $digest, int $userId): string
+    {
+        $sqlRules = 'una sola sentencia SELECT (o WITH...SELECT); dialecto SQL estandar; NUNCA INSERT/UPDATE/DELETE/DDL; tablas de datos del usuario SIEMPRE con filtro user_id = '.$userId.' (las globales ipc_rates, ipc_series, geographies, app_settings no llevan user_id); la tabla users se filtra por users.id = '.$userId.'; evita columnas password/remember_token; LIMIT 50 por defecto; alias en espanol para columnas calculadas; JOINs, GROUP BY, agregados (SUM/COUNT/AVG), subconsultas y CTEs permitidos';
+
+        return implode("\n", [
+            'Eres el REDACTOR de documentos del copiloto de Prometheus, una app de gestion de arriendos informales urbanos en Colombia (Ley 820).',
+            'El usuario pide un DOCUMENTO personalizado: un PDF/texto/JSON que el catalogo estandar no cubre — una carta, un reporte del portafolio, un estado de cuenta especial, un documento para entregar a un tercero. Tu trabajo NO es clasificar: es INVESTIGAR la base de datos real del usuario y componer el documento que mejor responda a lo pedido.',
+            'El documento debe sentirse como un documento de negocio real: titulo claro, introduccion breve que enmarque el contenido, y secciones ordenadas con lo que el lector necesita (texto narrativo, campos clave-valor y tablas para lo tabular).',
+            'El usuario puede escribir en ESPAÑOL o en INGLES: el documento va en el MISMO idioma del usuario.',
+            '',
+            'PROCESO (obligatorio):',
+            '1. PIENDA que datos necesita el documento para ser util y verdadero. Si te falta un dato que la base puede darte, devuelve PRIMERO una consulta de apoyo y espera los resultados reales.',
+            '2. Puedes hacer hasta 3 consultas de apoyo encadenadas: cada respuesta tuya puede ser {"lookup":{...}} o el documento final.',
+            '3. Con los datos reales en la mano, devuelve el documento final. NUNCA inventes cifras ni entidades: todo numero, nombre y fecha del documento debe venir de una consulta ejecutada o del CONTEXTO DEL PORTAFOLIO.',
+            '',
+            'CONSULTA DE APOYO (lookup):',
+            '- {"lookup":{"sql":"SELECT ..."}} — '.$sqlRules.'.',
+            '- {"lookup":{"table":"nombre_tabla"}} — ficha completa de la tabla: columnas, tipos, enums, relaciones, total de filas del usuario.',
+            '- Los resultados vuelven como JSON en el siguiente paso, dentro de las notas de tu pregunta.',
+            '',
+            'FORMATO DE RESPUESTA FINAL (un solo objeto JSON, sin markdown):',
+            '{"document":{"title":"...","intro":"...","fields":{"Etiqueta":"valor"},"sections":[{"title":"...","text":"...","fields":{"Etiqueta":"valor"},"table":{"headers":["Col1"],"rows":[["a","b"]]}}]}}',
+            '',
+            'REGLAS DEL DOCUMENTO:',
+            '- title: nombre del documento, corto y descriptivo (ej: "Estado de cuenta — portafolio a noviembre 2026").',
+            '- intro: 1-2 frases que presenten el documento al lector (a quien va dirigido, que contiene, periodo cubierto).',
+            '- fields: datos de encabezado clave-valor (periodo, fecha de generacion, negocio, destinatario) — max 8.',
+            '- sections: de 2 a 6 secciones ordenadas lógicamente. Cada seccion puede llevar title, text (parrafo), fields y/o table. Omite lo que no aplique; no todas necesitan tabla.',
+            '- table: SOLO datos tabulares reales de las consultas (headers max 8, filas max 30). Nunca una tabla de texto narrativo.',
+            '- El tono es formal de documento de negocio: directo, preciso, sin emojis ni markdown. Cifras con formato $1.234.567 (COP); fechas legibles.',
+            '',
+            'CONTEXTO DEL PORTAFOLIO DEL USUARIO:',
+            json_encode($digest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            '',
+            'ESQUEMA DE LA BASE DE DATOS (para tus consultas lookup.sql; [filtrar user_id] = tabla del usuario, [global] = sin user_id):',
+            $this->schema->forPrompt(),
+            '',
+            'Hoy es '.now()->format('Y-m-d').'.',
+        ]);
+    }
+
+    /**
+     * Normaliza la especificacion del documento del modelo a la
+     * estructura que CustomDocument sabe renderizar. Rechaza specs sin
+     * secciones ni campos utiles.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function sanitizeDocumentSpec(mixed $raw): ?array
+    {
+        if (! is_array($raw)) {
+            return null;
+        }
+
+        $title = $this->cleanReportText($raw['title'] ?? '', 140);
+        $intro = $this->cleanReportText($raw['intro'] ?? '', 2000, true);
+
+        $sections = [];
+
+        foreach (array_slice(is_array($raw['sections'] ?? null) ? $raw['sections'] : [], 0, 8) as $section) {
+            if (! is_array($section)) {
+                continue;
+            }
+
+            $clean = array_filter([
+                'title' => $this->cleanReportText($section['title'] ?? '', 100),
+                'text' => $this->cleanReportText($section['text'] ?? '', 3000, true),
+            ], fn (string $value): bool => $value !== '');
+
+            $fields = $this->sanitizeSpecFields($section['fields'] ?? null);
+
+            if ($fields !== []) {
+                $clean['fields'] = $fields;
+            }
+
+            $table = $this->sanitizeSpecTable($section['table'] ?? null);
+
+            if ($table !== null) {
+                $clean['table'] = $table;
+            }
+
+            if ($clean === []) {
+                continue;
+            }
+
+            $sections[] = $clean;
+        }
+
+        $fields = $this->sanitizeSpecFields($raw['fields'] ?? null);
+
+        if ($title === '' && $sections === [] && $fields === []) {
+            return null;
+        }
+
+        $spec = array_filter([
+            'title' => $title,
+            'intro' => $intro,
+            'fields' => $fields,
+            'sections' => $sections,
+        ], fn (mixed $value): bool => $value !== '' && $value !== []);
+
+        return $spec === [] ? null : $spec;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function sanitizeSpecFields(mixed $raw): array
+    {
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        $fields = [];
+
+        foreach ($raw as $label => $value) {
+            if (count($fields) >= 12) {
+                break;
+            }
+
+            $label = $this->cleanReportText($label, 60);
+            $value = $this->cleanReportText($value, 300);
+
+            if ($label === '' || $value === '') {
+                continue;
+            }
+
+            $fields[$label] = $value;
+        }
+
+        return $fields;
+    }
+
+    /**
+     * @return array{headers: list<string>, rows: list<list<string>>}|null
+     */
+    private function sanitizeSpecTable(mixed $raw): ?array
+    {
+        if (! is_array($raw) || ! isset($raw['headers']) || ! is_array($raw['headers']) || ! isset($raw['rows']) || ! is_array($raw['rows'])) {
+            return null;
+        }
+
+        $headers = array_values(array_filter(array_map(
+            fn (mixed $header): string => $this->cleanReportText($header, 60),
+            array_slice($raw['headers'], 0, 10),
+        ), fn (string $header): bool => $header !== ''));
+
+        if ($headers === []) {
+            return null;
+        }
+
+        $rows = [];
+
+        foreach (array_slice($raw['rows'], 0, 30) as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+
+            $rows[] = array_map(
+                fn (mixed $cell): string => $this->cleanReportText($cell, 300),
+                array_slice(array_values($row), 0, count($headers)),
+            );
+        }
+
+        return $rows === [] ? null : ['headers' => $headers, 'rows' => $rows];
+    }
+
+    /**
      * Normaliza el reporte del modelo a la estructura que el Blade
      * sabe pintar. Cualquier bloque o accion fuera del vocabulario
      * permitido se descarta; si no queda nada util, null (fallback).
      *
      * @return array{title: string, intro: string, sections: list<array<string, mixed>>}|null
      */
-    private function sanitizeReport(mixed $raw): ?array
+    private function sanitizeReport(mixed $raw, int $maxSections = 6): ?array
     {
         if (! is_array($raw) || ! isset($raw['sections']) || ! is_array($raw['sections'])) {
             return null;
@@ -916,7 +1185,7 @@ PROMPT;
         $intro = $this->cleanReportText($raw['intro'] ?? '', 800);
         $sections = [];
 
-        foreach (array_slice($raw['sections'], 0, 6) as $section) {
+        foreach (array_slice($raw['sections'], 0, $maxSections) as $section) {
             if (! is_array($section)) {
                 continue;
             }
@@ -1311,22 +1580,48 @@ PROMPT;
      *
      * @param  array<string, mixed>  $digest
      */
-    private function reportSystemPrompt(array $digest, int $userId): string
+    private function reportSystemPrompt(array $digest, int $userId, string $intent = 'business_insights'): string
     {
         $sqlRules = 'una sola sentencia SELECT (o WITH...SELECT); dialecto SQL estandar; NUNCA INSERT/UPDATE/DELETE/DDL; tablas de datos del usuario SIEMPRE con filtro user_id = '.$userId.' (las globales ipc_rates, ipc_series, geographies, app_settings no llevan user_id); la tabla users se filtra por users.id = '.$userId.'; evita columnas password/remember_token; LIMIT 50 por defecto; alias en espanol para columnas calculadas; JOINs, GROUP BY, agregados (SUM/COUNT/AVG), subconsultas y CTEs permitidos';
 
+        // El intent decide la identidad del compositor: un ANALISTA
+        // evalua el negocio con cifras y conclusiones; un GUIA ensena a
+        // operarlo con pasos accionables. Sin esta separacion las guias
+        // salian con framing de analisis (metricas, "tres pilares") y los
+        // analisis podian salir como listas de pasos.
+        $isGuide = $intent === 'app_guide';
+
+        $role = $isGuide
+            ? 'Eres el GUIA del copiloto de Prometheus, una app de gestion de arriendos informales urbanos en Colombia (Ley 820).'
+            : 'Eres el ANALISTA del copiloto de Prometheus, una app de gestion de arriendos informales urbanos en Colombia (Ley 820).';
+
+        $mission = $isGuide
+            ? 'El usuario te pide una GUIA DE USO de la app: ensenarle a operarla. Tu trabajo NO es clasificar ni evaluar su negocio: es investigar su estado REAL (que ya tiene registrado, que le falta) y construir una guia accionable en el formato JSON de reporte que se indica abajo. Si pide una guia completa/de la app, cubre TODOS los modulos: registro de inquilinos/propiedades/arriendos, facturacion, cobros y pagos, reajustes IPC, actas de entrega, documentos y ajustes — organizado en secciones por modulo, cada una con pasos concretos.'
+            : 'El usuario te pide un ANALISIS del negocio. Tu trabajo NO es clasificar ni ensenar a usar la app: es INVESTIGAR la base de datos real del usuario y construir la respuesta que mejor lo ayude a decidir, en el formato JSON de reporte que se indica abajo.';
+
+        $depth = $isGuide
+            ? 'Piensa como un instructor: que necesita aprender el usuario para operar la app con confianza, en que orden conviene ensenarselo, y que atajos (botones que navegan o ejecutan la accion) puede ofrecerle en cada paso. No inventes funcionalidades: cada paso debe corresponder a algo que la app realmente hace (el ESQUEMA y la lista de targets de acciones te dicen que existe).'
+            : 'Investiga como un analista: que datos importan para ESTA pregunta concreta, que relaciones del esquema los unen, que comparaciones o tendencias revelan algo, y que recomendarias con evidencia. No hay una plantilla fija: tu criterio decide que secciones y componentes incluye el reporte.';
+
+        $cross = $isGuide
+            ? 'Personaliza con datos reales: menciona sus entidades por nombre cuando aporten (ej: "tu arriendo de Camila Torres ya tiene 2 facturas vencidas: empieza por cobrar esas"). Una guia completa debe reflejar el estado del usuario, no ser un manual generico.'
+            : 'Analiza con PROFUNDIDAD, no con una sola consulta superficial: busca CRUCES que revelen lo que una tabla suelta no muestra — por ejemplo, cruzar facturas vencidas con el canon y el historial de pagos de cada inquilino para ver si la mora se concentra en pocos o es generalizada; comparar el periodo actual contra el anterior para ver tendencias reales; segmentar por propiedad o tipo de arriendo para encontrar focos de riesgo u oportunidad; detectar patrones (quien paga siempre tarde, propiedades sin facturar, canon desalineado con el mercado del sector). Si una conclusion necesita dos tablas relacionadas, juntalas en la misma consulta con JOIN/CTE en vez de asumir.';
+
+        $guideStep = $isGuide
+            ? '4. La guia se construye sobre el estado REAL del usuario: prioriza lo que le falta por configurar o lo que tiene pendiente, y cierra con pasos hacia las funciones avanzadas que aun no usa.'
+            : '4. Si la pregunta pide una guia de uso, investiga el estado REAL del usuario (que ya tiene registrado, que le falta) y arma los pasos con acciones concretas que pueda ejecutar desde el chat.';
+
         return implode("\n", [
-            'Eres el ANALISTA del copiloto de Prometheus, una app de gestion de arriendos informales urbanos en Colombia (Ley 820).',
-            'El usuario te pide un ANALISIS o una GUIA personalizada. Tu trabajo NO es clasificar: es INVESTIGAR la base de datos real del usuario y construir la respuesta que mejor lo ayude a decidir, en el formato JSON de reporte que se indica abajo.',
-            'Investiga como un analista: que datos importan para ESTA pregunta concreta, que relaciones del esquema los unen, que comparaciones o tendencias revelan algo, y que recomendarías con evidencia. No hay una plantilla fija: tu criterio decide que secciones y componentes incluye el reporte.',
-            'Analiza con PROFUNDIDAD, no con una sola consulta superficial: busca CRUCES que revelen lo que una tabla suelta no muestra — por ejemplo, cruzar facturas vencidas con el canon y el historial de pagos de cada inquilino para ver si la mora se concentra en pocos o es generalizada; comparar el periodo actual contra el anterior para ver tendencias reales; segmentar por propiedad o tipo de arriendo para encontrar focos de riesgo u oportunidad; detectar patrones (quien paga siempre tarde, propiedades sin facturar, canon desalineado con el mercado del sector). Si una conclusion necesita dos tablas relacionadas, juntalas en la misma consulta con JOIN/CTE en vez de asumir.',
+            $role,
+            $mission.' '.$depth,
+            $cross,
             'El usuario puede escribir en ESPAÑOL o en INGLES: el reporte va en el MISMO idioma del usuario.',
             '',
             'PROCESO (obligatorio):',
             '1. PIENSA que necesitas saber para responder bien. Si te falta un dato que la base de datos puede darte, devuelve PRIMERO una consulta de apoyo y espera los resultados reales.',
-            '2. Puedes hacer hasta 3 consultas de apoyo encadenadas: cada respuesta tuya puede ser {"lookup":{...}} o el reporte final. No te limites a una sola consulta si el analisis lo amerita.',
-            '3. Con los datos reales en la mano, devuelve el reporte final. NUNCA inventes cifras: todo numero del reporte debe venir de una consulta ejecutada o del CONTEXTO DEL PORTAFOLIO.',
-            '4. Si la pregunta pide una guia de uso, investiga el estado REAL del usuario (que ya tiene registrado, que le falta) y arma los pasos con acciones concretas que pueda ejecutar desde el chat.',
+            '2. Puedes hacer hasta 3 consultas de apoyo encadenadas: cada respuesta tuya puede ser {"lookup":{...}} o el reporte final. No te limites a una sola consulta si el caso lo amerita.',
+            '3. Con los datos reales en la mano, devuelve el reporte final. NUNCA inventes cifras ni funcionalidades: todo numero del reporte debe venir de una consulta ejecutada o del CONTEXTO DEL PORTAFOLIO, y toda funcion mencionada debe existir en la app.',
+            $guideStep,
             '',
             'CONSULTA DE APOYO (lookup):',
             '- {"lookup":{"sql":"SELECT ..."}} — '.$sqlRules.'.',
@@ -1347,9 +1642,11 @@ PROMPT;
             '',
             'REGLAS DEL REPORTE:',
             '- title: corto y descriptivo (max ~8 palabras). intro: 1-2 frases que enmarcan lo que el usuario va a ver.',
-            '- sections: max 6, orden logico (primero lo que el usuario pidio, luego el detalle). Cada section: title corto + blocks.',
+            '- sections: '.($isGuide ? 'max 8' : 'max 6').', orden logico (primero lo que el usuario pidio, luego el detalle). Cada section: title corto + blocks.',
             '- Tono de ASESOR profesional: directo, con evidencia, con recomendaciones accionables cuando la pregunta lo pida.',
-            '- Si la pregunta es de GUIA (como usar la app, que hacer primero, paso a paso): los pasos deben ser concretos para ESTE usuario — menciona sus entidades reales cuando aporten (ej: "tu arriendo de Camila Torres ya tiene 2 facturas vencidas: cobra primero esas").',
+            $isGuide
+                ? '- GUIA: el bloque "steps" es el corazon del reporte — cada paso debe tener action (url a la seccion o prompt que lanza la accion guiada por el chat) siempre que exista una forma de ejecutar ese paso desde la app. Estructura sugerida para una guia completa: una seccion de texto de introduccion personalizada, luego una seccion por modulo (Registro, Facturacion, Cobros, Reajustes IPC, Actas, Documentos, Ajustos) cada una con 2-5 pasos en bloque steps. metrics/chart solo si aportan contexto (ej: "tienes N facturas vencidas"); evita charts decorativos.'
+                : '- Si la pregunta es de GUIA (como usar la app, que hacer primero, paso a paso): los pasos deben ser concretos para ESTE usuario — menciona sus entidades reales cuando aporten (ej: "tu arriendo de Camila Torres ya tiene 2 facturas vencidas: cobra primero esas").',
             '- Cifras con formato $1.234.567 (COP). Fechas en lenguaje natural o YYYY-MM.',
             '- suggestions: 2-3 preguntas de seguimiento CORTAS (max 60 chars) en el idioma del usuario, concretas segun lo que mostraste.',
             '',
@@ -1421,6 +1718,15 @@ PROMPT;
      */
     private ?float $geminiDeadline = null;
 
+    /**
+     * true cuando la ULTIMA llamada a generate() agoto todos los
+     * modelos sin respuesta (saturacion, cuota o timeouts). Los
+     * consumidores lo usan para distinguir "la IA no respondio" de
+     * "la IA respondio pero no pudo componer": el mensaje al usuario
+     * es distinto en cada caso.
+     */
+    private bool $aiUnavailable = false;
+
     private function generate(array $body, ?int $timeout = null, ?int $userId = null): string
     {
         $key = (string) config('services.gemini.key');
@@ -1428,6 +1734,8 @@ PROMPT;
         if ($key === '') {
             return '';
         }
+
+        $this->aiUnavailable = false;
 
         // El timeout por llamada queda por debajo del presupuesto total:
         // si la API se cuelga, el request de Livewire no puede esperar
@@ -1444,6 +1752,8 @@ PROMPT;
             $remaining = $this->geminiDeadline - microtime(true);
 
             if ($remaining <= 0.5) {
+                $this->aiUnavailable = true;
+
                 return '';
             }
 
@@ -1455,6 +1765,8 @@ PROMPT;
                 return $text;
             }
         }
+
+        $this->aiUnavailable = true;
 
         return '';
     }
@@ -1656,6 +1968,7 @@ PROMPT;
             '',
             'REGLAS DURAS:',
             '- PIENSA ANTES DE RESPONDER: para cada pregunta razona que datos hacen falta, que herramienta los da y si la pregunta nombra entidades concretas. Resuelve SIEMPRE por razonamiento: primero el CONTEXTO DEL PORTAFOLIO, luego el historial, luego lookup_data contra la base de datos completa si falta algo. Solo pregunta al usuario cuando despues de todo eso el dato siga siendo genuinamente ambiguo o el usuario debe decidir (nunca pidas un dato que puedas consultar).',
+            '- COMPARA LAS HERRAMIENTAS ANTES DE ELEGIR: nunca te quedes con la primera que matchee. Identifica los 2-3 intents candidatos y evalua cual se adapta MEJOR al matiz exacto de la peticion: la herramienta especifica aporta preview, confirmacion, campos editables y navegacion que la generica no tiene (prefierela cuando cubre el caso), pero si dos candidatas cubren el mismo caso elige la que produce la respuesta mas completa y correcta para lo que el usuario pidio realmente (ej: "dame las facturas" es list_invoices, pero "como van mis facturas este mes" puede ser income_period o business_insights segun si pide cifras o analisis; "genera el documento" de algo que el catalogo no tiene es custom_document, no generate_document). Si dudas entre una lectura y un analisis, piensa si el usuario quiere datos o conclusiones.',
             '- ENRIQUECE CON RELACIONES: cuando la pregunta se responde con una herramienta pero la respuesta seria mas completa y util consultando datos relacionados del esquema (ej: "cuentame del inquilino X" gana si tambien ves sus facturas pendientes y su arriendo), puedes hacer lookup_data primero para traerte esas relaciones y luego responder o proponer con el panorama completo. No te limites a la respuesta minima si una consulta barata la mejora.',
             '- RESPONDE EXACTAMENTE LO PEDIDO: si el usuario nombra una entidad (un inquilino, un arriendo, una factura, un acta), la respuesta se limita a ESA entidad. Nunca devuelvas el listado general cuando pidieron uno especifico; si la entidad no tiene el dato pedido, dilo con claridad ("esa acta no registra items danados") en vez de mostrar datos de otros.',
             '- "peores/mayores deudores", "mas morosos", "peor pagador" NO son palabras ofensivas ni ambiguas: significan los inquilinos con mayor saldo vencido o peor comportamiento de pago. Interpretalas siempre asi y responde con la tabla ordenada por ese criterio.',
@@ -1696,8 +2009,9 @@ PROMPT;
             '- "lista/muestra los reajustes registrados" -> list_adjustments. "como va el reajuste/la cadena de reajustes del arriendo X" -> adjustment_detail. "que IPC aplicaria/porcentaje saldria para X en fecha Y" -> preview_adjustment_ipc.',
             '- "registra/propone un reajuste para el arriendo X" -> record_adjustment (params.rental_name, effective_from, new_rent si lo menciona). "aplica el reajuste N" -> apply_adjustment (params.adjustment_id o number). "marca el reajuste N como notificado" -> mark_adjustment_notified (params.adjustment_id/number + notified_on + notification_method: postal|contractual|in_person|email). "recalcula la cadena de reajustes" -> recalculate_adjustments.',
             '- "anula/cancela la factura N" -> annul_invoice (params.invoice_number o invoice_id; si es referencia relativa, resuelvela desde pending_invoices igual que en pagos).',
-            '- "dame/pasame/genera el documento/el comprobante/la carta/el estado de cuenta" -> generate_document (params.doc_type: rent_invoice|payment_receipt|adjustment_letter|monthly_statement + invoice_number|rental_name|adjustment_id|period + format text|pdf|json). Referencias de factura relativas se resuelven desde pending_invoices como en pagos. Solo cuando el usuario pide GENERAR el documento ahora; si pide uno que no existe en el catalogo (documento del portafolio completo, carta personalizada, reporte en PDF) responde con general_answer explicando que documentos hay y que ese no esta disponible.',
-            '- PREGUNTAS DE CAPACIDAD O POSIBILIDAD (razonamiento, no ejecucion): "puedes/es posible/se puede...?, soporta/hace/maneja X?, es muy complejo?, como genero/hago X?" preguntan SI se puede o COMO, no piden ejecutarlo en este mensaje -> general_answer. En params.answer escribe TÚ la respuesta completa y honesta en el idioma del usuario: que puede hacer el asistente, que documentos/formatos existen (factura de arriendo, comprobante de pago, carta de reajuste y estado de cuenta en texto, PDF o JSON; NO hay documentos personalizados ni del portafolio completo por ahora) y, si aplica, el comando o paso sugerido para lograrlo. Reserva generate_document y demas intents de escritura para cuando el usuario pide la accion concreta ("generame la factura de X", "registrame un pago").',
+            '- "dame/pasame/genera el documento/el comprobante/la carta/el estado de cuenta" -> generate_document (params.doc_type: rent_invoice|payment_receipt|adjustment_letter|monthly_statement + invoice_number|rental_name|adjustment_id|period + format text|pdf|json). Referencias de factura relativas se resuelven desde pending_invoices como en pagos. Solo cuando el usuario pide GENERAR el documento ahora.',
+            '- DOCUMENTO PERSONALIZADO O FUERA DEL CATALOGO -> custom_document: cuando el usuario pide un documento que NO es uno de los cuatro del catalogo — una carta o comunicacion especial, un reporte/estado del portafolio completo en PDF, un documento para entregar a un tercero, "un pdf con X", "un documento personalizado de Y" — o pide explicitamente algo personalizado. params.format = text|pdf|json si lo menciona (default pdf si dice "pdf/documento", text si no). La IA investiga la BD y compone el contenido; tu solo clasificas. Si la solicitud de documento es ambigua sobre SU CONTENIDO ("hazme un documento del arriendo de X" sin decir que debe llevar), igual usa custom_document: el compositor decidira la estructura.',
+            '- PREGUNTAS DE CAPACIDAD O POSIBILIDAD (razonamiento, no ejecucion): "puedes/es posible/se puede...?, soporta/hace/maneja X?, es muy complejo?, como genero/hago X?" preguntan SI se puede o COMO, no piden ejecutarlo en este mensaje -> general_answer. En params.answer escribe TÚ la respuesta completa y honesta en el idioma del usuario: que puede hacer el asistente y, si aplica, el comando o paso sugerido para lograrlo. Los documentos disponibles son: factura de arriendo, comprobante de pago, carta de reajuste y estado de cuenta (catalogo, text|pdf|json) MAS documentos personalizados compuestos por la IA (cartas, reportes del portafolio, documentos para terceros — cualquier cosa que el catalogo no cubra). Reserva generate_document/custom_document y demas intents de escritura para cuando el usuario pide la accion concreta ("generame la factura de X", "hazme un pdf del estado de mi portafolio").',
             '- "factura/genera la factura del arriendo de X para el periodo Y" -> bill_single_rental (params.rental_name + period "YYYY-MM").',
             '- "cartera vencida por rangos/rangos de dias/aging" -> aging_report. "quienes son mis peores/mayores deudores" -> top_debtors. "cuanto recaudare por cada metodo/por nequi/por transferencia" -> payments_by_method. "tasa de recaudo/dias promedio de atraso/cobranza" -> collection_rate.',
             '- "crea/llena un acta de entrega" -> create_delivery_act (params.rental_name si lo menciona; si no, el sistema guia paso a paso).',
@@ -1715,9 +2029,10 @@ PROMPT;
             '  * params.table = el nombre de una tabla del esquema -> el sistema te devuelve su FICHA completa: columnas con tipo/null/default, enums, relaciones y total de filas del usuario. Usalo cuando dudes de una columna, una relacion o quieras aprender una tabla mas alla del resumen.',
             '  El sistema ejecuta tu consulta o ficha y te devuelve los resultados REALES en el siguiente paso; con eso devuelves el intent final con los params completos y correctos. Usala siempre que una referencia sea resoluble en la BD pero no en el contexto (numero exacto de factura, relacion entre tablas, dato que el digest no trae). NO la uses para responder lecturas al usuario (eso es query_data) ni para pedir datos que ya estan en el contexto. Maximo dos consultas de apoyo por mensaje: si tras los resultados algo sigue ambiguo, pregunta.',
             '- CONSULTA PARA EL USUARIO (query_data): para CUALQUIER pregunta de datos del negocio que ninguna herramienta especifica responda — cruces de tablas, comparaciones entre periodos, rankings personalizados, "cuantos dias en promedio tarda en pagar X" — devuelve intent=query_data con params.sql = un SELECT de solo lectura ('.$sqlRules.' params.question = la pregunta original). El resultado se muestra al usuario como tabla. OJO: si la pregunta pide analisis/evolucion/conclusiones/recomendaciones ("como evoluciona X", "que genera mas Y", "analiza Z"), NO es query_data: es business_insights. Si necesitas datos intermedios para RAZONAR antes de responder o proponer una accion, usa lookup_data; si la pregunta ES la consulta, usa query_data.',
+            '- ANIDAR RELACIONES EN query_data (OBLIGATORIO cuando la pregunta combina una entidad con SUS registros relacionados — "mis inquilinos y por cada uno sus facturas", "propiedades con sus arriendos", "facturas con sus pagos", "el arriendo de X con su acta e inventario", igual para relaciones 1:1 o 1:N): escribe el JOIN/SELECT plano de siempre y ADEMÁS params.nest = {"parent":[alias de columnas que identifican al padre],"child":[alias de columnas que son del hijo],"as":"nombre_de_la_relacion"} para UNA sola relacion, o {"parent":[...],"children":[{"as":"inquilino","columns":[...]},{"as":"propiedad","columns":[...]}]} cuando el registro tiene VARIAS entidades relacionadas (ej: arriendo -> inquilino Y propiedad: cada una va en SU propia tabla anidada, NUNCA combinadas en una sola fila de columnas mezcladas). El sistema agrupa las filas por los valores del padre y muestra una fila por entidad con sus relacionados como tablas expandibles — NUNCA devuelvas la lista plana del JOIN para estos casos. Reglas del nest: las columnas deben ser los alias EXACTOS del SELECT (usa alias claros en español o los nombres de columna); parent lleva las columnas del registro principal (ej: arriendo, canon); child/columns las del relacionado; "as" es el nombre de la tabla anidada que vera el usuario (ej: "facturas", "inquilino", "propiedad"). IMPORTANTE: para CADA entidad relacionada selecciona sus campos utiles y completos (nombre, documento/contacto, direccion, valores, fechas) — no te limites a dos columnas ni dejes la mitad de la informacion fuera; si la entidad tiene mas datos relevantes en el esquema, traelos. Si una entidad no tiene registros relacionados la fila igual aparece con la tabla vacia — para lograrlo usa LEFT JOIN desde el padre. No uses nest para preguntas de una sola entidad o sin relacion ("lista mis facturas" queda plana), ni para consultas agregadas (GROUP BY, SUM/COUNT por grupo: "total facturado por inquilino" va plana — ahi cada fila ya ES el resumen).',
             '- JERARQUIA: si existe una herramienta especifica para el caso (listados, updates, pagos, documentos, ajustes...), PREFIERELA: trae previews, confirmaciones, campos editables y navegacion que la consulta libre no tiene. La consulta libre es para lecturas; NUNCA la uses para proponer cambios (los writes siempre van por sus intents con confirmacion).',
             '- Si ninguna herramienta ni query_data aplican y la pregunta es del dominio pero muy ambigua, o es una pregunta de capacidad/uso, general_answer es la respuesta: escribe la respuesta completa en params.answer (texto plano, mismo idioma del usuario, honesto sobre lo que el sistema soporta).',
-            '- GUIA DE USO (app_guide): cuando el usuario pregunta COMO usar la app, que hacer primero, es nuevo, quiere que lo guies, o pide "paso a paso"/"tutorial"/"how do I" de una funcionalidad -> app_guide. El sistema investiga el estado real del usuario y compone una guia personalizada con pasos accionables; no hace falta params.topic.',
+            '- GUIA DE USO (app_guide): cuando el usuario pide que le ENSENES a usar la app — "hazme/crea/dame una guia o manual de como X", "guia completa/de la app", "guia de la plataforma/sistema", "manual de usuario", "como usar la app/plataforma", "tutorial", "que hacer primero", "soy nuevo, quiero aprender", "quiero que me guies/ensenen", "ensename a usar" -> app_guide. RAZONA la frontera asi: ¿el usuario quiere APRENDER a operar la app o EVALUAR su negocio? Aprender/ensenar/tour/paso a paso/manual = app_guide; medir/diagnosticar/comparar/cifras/conclusiones del negocio = business_insights. Una guia es INSTRUCCIONAL aunque use cifras del estado del usuario como contexto o pida "completa" — eso sigue siendo app_guide. "Guia completa de la app" NO es business_insights aunque suene a "reporte": es el manual entero. business_insights es para EVALUAR el negocio (analisis, diagnostico, proyeccion, conclusiones, graficas de evolucion), nunca para ensenar a operarlo. Si el usuario pide "un analisis/reporte/estudio de mis finanzas/cartera" es business_insights; si pide "una guia/manual de como usar/registrar X" es app_guide. Ante la duda entre las dos, fijate en el VERBO del pedido: "ensenar/guia/paso a paso" -> app_guide; "analizar/evaluar/comparar/proyectar" -> business_insights.',
             '',
             'VARIAS COSAS EN UN MENSAJE (batch):',
             '- Si el usuario pide DOS O MAS cosas distintas en el mismo mensaje (ej: "muéstrame mis inquilinos y mis propiedades", "registra estos 3 inquilinos y 2 propiedades", "cuánto me deben y lista las facturas"), llena `requests` con UN elemento por cada peticion, cada uno con su intent y sus params completos.',

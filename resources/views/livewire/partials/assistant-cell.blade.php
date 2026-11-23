@@ -8,12 +8,15 @@
 @if (is_array($cell) && $cell === [])
     <span class="text-gray-400 dark:text-gray-500">—</span>
 @elseif ($isNestedRows && ($allowExpand ?? true))
+    {{-- Cada celda anidada tiene su propia llave en el estado `open`
+         del tbody: una fila puede tener varias tablas hijas (ej:
+         inquilino + propiedad) y cada una se abre/colapsa sola. --}}
     <button
         type="button"
-        x-on:click="open = ! open"
+        x-on:click="open[{{ Js::from($expandKey ?? 'default') }}] = ! open[{{ Js::from($expandKey ?? 'default') }}]"
         class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-600 ring-1 ring-gray-950/5 transition hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-white/15"
     >
-        <span x-text="open ? '▾' : '▸'"></span>
+        <span x-text="open[{{ Js::from($expandKey ?? 'default') }}] ? '▾' : '▸'"></span>
         {{ __('assistant.nested.count', ['count' => count($cell)]) }}
     </button>
 @elseif (is_array($cell))

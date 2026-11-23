@@ -50,46 +50,45 @@
                                 );
                             @endphp
                             <tbody
-                                x-data="{ open: false }"
+                                x-data="{ open: {} }"
                                 class="border-t border-gray-950/5 dark:border-white/5"
                             >
                                 <tr>
                                     @foreach ($row as $column => $cell)
                                         <td class="px-2.5 py-1.5">
-                                            @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => is_string($column) ? $column : null, 'aiColor' => $tableColors[is_string($column) ? $column : ''] ?? null])
+                                            @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => is_string($column) ? $column : null, 'aiColor' => $tableColors[is_string($column) ? $column : ''] ?? null, 'expandKey' => is_string($column) ? $column : 'default'])
                                         </td>
                                     @endforeach
                                 </tr>
-                                @if ($nestedCells->isNotEmpty())
-                                    <tr x-show="open">
+                                {{-- Una fila expandible POR relacion anidada:
+                                     cada una se abre/colapsa de forma
+                                     independiente con su propia llave. --}}
+                                @foreach ($nestedCells as $nestedKey => $nestedRows)
+                                    <tr x-show="open[{{ Js::from($nestedKey) }}]">
                                         <td colspan="{{ count($columns) }}" class="bg-gray-50/60 px-3 py-2.5 dark:bg-white/5">
-                                            <div class="space-y-2">
-                                                @foreach ($nestedCells as $nestedRows)
-                                                    <table class="w-full text-[11px]">
-                                                        <thead>
-                                                            <tr>
-                                                                @foreach (array_keys($nestedRows[0]) as $nestedColumn)
-                                                                    <th class="whitespace-nowrap px-2 py-1 text-left font-semibold text-gray-400 dark:text-gray-500">
-                                                                        {{ __("assistant.columns.{$nestedColumn}") !== "assistant.columns.{$nestedColumn}" ? __("assistant.columns.{$nestedColumn}") : str_replace('_', ' ', ucfirst($nestedColumn)) }}
-                                                                    </th>
-                                                                @endforeach
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            @foreach ($nestedRows as $nestedRow)
-                                                                <tr class="border-t border-gray-950/5 dark:border-white/5">
-                                                                    @foreach ($nestedRow as $nestedCellColumn => $nestedCell)
-                                                                        <td class="px-2 py-1">@include('livewire.partials.assistant-cell', ['cell' => $nestedCell, 'column' => is_string($nestedCellColumn) ? $nestedCellColumn : null, 'aiColor' => $tableColors[is_string($nestedCellColumn) ? $nestedCellColumn : ''] ?? null, 'allowExpand' => false])</td>
-                                                                    @endforeach
-                                                                </tr>
+                                            <table class="w-full text-[11px]">
+                                                <thead>
+                                                    <tr>
+                                                        @foreach (array_keys($nestedRows[0]) as $nestedColumn)
+                                                            <th class="whitespace-nowrap px-2 py-1 text-left font-semibold text-gray-400 dark:text-gray-500">
+                                                                {{ __("assistant.columns.{$nestedColumn}") !== "assistant.columns.{$nestedColumn}" ? __("assistant.columns.{$nestedColumn}") : str_replace('_', ' ', ucfirst($nestedColumn)) }}
+                                                            </th>
+                                                        @endforeach
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach ($nestedRows as $nestedRow)
+                                                        <tr class="border-t border-gray-950/5 dark:border-white/5">
+                                                            @foreach ($nestedRow as $nestedCellColumn => $nestedCell)
+                                                                <td class="px-2 py-1">@include('livewire.partials.assistant-cell', ['cell' => $nestedCell, 'column' => is_string($nestedCellColumn) ? $nestedCellColumn : null, 'aiColor' => $tableColors[is_string($nestedCellColumn) ? $nestedCellColumn : ''] ?? null, 'allowExpand' => false])</td>
                                                             @endforeach
-                                                        </tbody>
-                                                    </table>
-                                                @endforeach
-                                            </div>
+                                                        </tr>
+                                                    @endforeach
+                                                </tbody>
+                                            </table>
                                         </td>
                                     </tr>
-                                @endif
+                                @endforeach
                             </tbody>
                         @endforeach
                     </table>
