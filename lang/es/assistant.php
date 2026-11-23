@@ -26,6 +26,8 @@ return [
     'quick_prompts' => 'Preguntas rápidas',
     'input_hint' => 'Enter envía · Shift + Enter salto de línea',
     'resize' => 'Arrastra para ajustar el ancho',
+    'resize_messages' => 'Arrastra para ajustar la altura del chat · doble clic para restablecer',
+    'resize_wizard' => 'Arrastra para ajustar la altura del formulario guiado',
     'scroll_down' => 'Bajar al final de la conversación',
     'today' => 'Hoy',
     'yesterday' => 'Ayer',

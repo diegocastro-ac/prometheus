@@ -26,6 +26,8 @@ return [
     'quick_prompts' => 'Quick prompts',
     'input_hint' => 'Enter to send · Shift + Enter for a new line',
     'resize' => 'Drag to resize',
+    'resize_messages' => 'Drag to resize the chat height · double-click to reset',
+    'resize_wizard' => 'Drag to resize the guided form height',
     'scroll_down' => 'Scroll to the latest message',
     'today' => 'Today',
     'yesterday' => 'Yesterday',

@@ -48,6 +48,15 @@
         resizing: false,
         resizeStartX: 0,
         resizeStartWidth: 0,
+        // Resize vertical, mismo patron que el drawer: una sola medida
+        // explicita. El compositor tiene altura fija; el chat es flex-1 y
+        // absorbe todo el resto, asi el reparto siempre suma la altura del
+        // panel y nunca aparece un hueco entre ambos.
+        composerHeight: null,
+        wizardHeight: null,
+        vMode: null,
+        vStartY: 0,
+        vStartHeight: 0,
         // Indicador de pensamiento: rota frases mientras `sending` este
         // activo y muestra el boton cancelar solo tras 10 segundos.
         thinkingSteps: @js(__('assistant.thinking_steps')),
@@ -98,6 +107,92 @@
             try {
                 localStorage.setItem('assistant.drawerWidth', String(this.drawerWidth));
             } catch (e) { /* storage lleno/bloqueado: el resize sigue funcionando en sesion */ }
+        },
+        // Altura actual del objetivo ('composer' | 'wizard').
+        vHeightFor(mode) {
+            return mode === 'wizard' ? this.wizardHeight : this.composerHeight;
+        },
+        // Limites: el compositor deja siempre 200px para el chat; el wizard
+        // no pasa del 60% del viewport. El presupuesto es chat + compositor
+        // (constante durante el arrastre), nunca solo el chat: medir solo el
+        // chat haria que el maximo se encogiera mientras el compositor crece.
+        vMaxFor(mode) {
+            if (mode === 'wizard') return Math.round(window.innerHeight * 0.6);
+            const chat = this.$refs.chatPane?.offsetHeight ?? 0;
+            const composer = this.$refs.composer?.offsetHeight ?? 0;
+            if (chat <= 0) return 110;
+            return Math.max(110, chat + composer - 200);
+        },
+        applyVHeight(mode, height) {
+            const min = mode === 'wizard' ? 160 : 110;
+            const value = Math.round(Math.min(this.vMaxFor(mode), Math.max(min, height)));
+            if (mode === 'wizard') this.wizardHeight = value;
+            else this.composerHeight = value;
+        },
+        // Igual que startResize del drawer: mide al empezar y persiste al
+        // soltar. Solo el compositor cambia de altura; el chat es flex-1.
+        startVResize(event, mode) {
+            const ref = mode === 'wizard' ? this.$refs.wizardCard : this.$refs.composer;
+            if (! ref) return;
+            this.vMode = mode;
+            this.vStartY = event.clientY;
+            this.vStartHeight = this.vHeightFor(mode) ?? ref.offsetHeight;
+            document.body.style.userSelect = 'none';
+            event.preventDefault();
+        },
+        vResizeMove(event) {
+            if (! this.vMode) return;
+            const moved = event.clientY - this.vStartY;
+            // El handle sigue al cursor: subir agranda el compositor y el
+            // chat (flex-1) se encoge; bajar hace lo contrario. En el wizard
+            // el handle esta abajo, asi que bajar agranda la tarjeta.
+            const delta = this.vMode === 'wizard' ? moved : -moved;
+            this.applyVHeight(this.vMode, this.vStartHeight + delta);
+        },
+        endVResize() {
+            if (! this.vMode) return;
+            const mode = this.vMode;
+            this.vMode = null;
+            document.body.style.userSelect = '';
+            this.persistVHeight(mode);
+        },
+        vResizeKey(mode, delta) {
+            const ref = mode === 'wizard' ? this.$refs.wizardCard : this.$refs.composer;
+            if (! ref) return;
+            this.applyVHeight(mode, (this.vHeightFor(mode) ?? ref.offsetHeight) + delta);
+            this.persistVHeight(mode);
+        },
+        persistVHeight(mode) {
+            const value = this.vHeightFor(mode);
+            if (value === null) return;
+            try {
+                localStorage.setItem(
+                    mode === 'wizard' ? 'assistant.wizardHeight' : 'assistant.composerSize',
+                    String(value),
+                );
+            } catch (e) { /* storage lleno/bloqueado: la altura sigue aplicando en sesion */ }
+        },
+        clampVHeights() {
+            const pane = this.$refs.chatPane;
+            // Con el drawer cerrado o en la vista de chats el panel no tiene
+            // altura util: no se tocan los valores guardados.
+            if (! pane || pane.clientHeight <= 0) return;
+            if (this.composerHeight !== null) {
+                this.composerHeight = Math.min(this.composerHeight, this.vMaxFor('composer'));
+            }
+            if (this.wizardHeight !== null) {
+                this.wizardHeight = Math.min(this.wizardHeight, this.vMaxFor('wizard'));
+            }
+        },
+        resetComposerHeight() {
+            this.composerHeight = null;
+            try {
+                localStorage.removeItem('assistant.composerSize');
+            } catch (e) { /* sin storage: se queda el default */ }
+        },
+        onWindowResize() {
+            if (window.innerWidth < 1024) this.drawerWidth = null;
+            this.clampVHeights();
         },
         toggleSuggest() {
             this.suggestOpen = ! this.suggestOpen;
@@ -239,8 +334,8 @@
         sendSuggestion(text) {
             return this.echoAndSend(text, () => this.$wire.askSuggestion(text));
         },
-        // Botones de prompt dentro del modal de preview ("Hazlo
-        // conmigo", pasos de guia): cierran el modal al instante y el
+        // Botones de prompt dentro del modal de preview (Hazlo
+        // conmigo, pasos de guia): cierran el modal al instante y el
         // envio pasa por echoAndSend — el mensaje del usuario aparece
         // de una vez y el indicador de pensamiento cubre la espera de
         // la IA, sin congelar la vista.
@@ -322,10 +417,14 @@
                 this.chatView = value;
             });
             // Al abrir el drawer el foco va al input: el usuario puede
-            // escribir de una vez sin hacer click extra.
+            // escribir de una vez sin hacer click extra. Con el drawer ya
+            // visible se ajustan las alturas guardadas al espacio real.
             this.$watch('drawerOpen', (open) => {
                 if (open) {
-                    this.$nextTick(() => this.$refs.chatInput?.focus());
+                    this.$nextTick(() => {
+                        this.clampVHeights();
+                        this.$refs.chatInput?.focus();
+                    });
                 }
             });
             // La rueda fuera del drawer sigue moviendo el scroll del chat.
@@ -337,7 +436,17 @@
                 if (savedWidth >= 360 && savedWidth <= window.innerWidth * 0.75) {
                     this.drawerWidth = savedWidth;
                 }
-            } catch (e) { /* sin storage: ancho por defecto */ }
+                const savedComposer = parseInt(localStorage.getItem('assistant.composerSize') || '', 10);
+                // Se descarta un valor desproporcionado (p. ej. de una version
+                // anterior): el compositor nunca debe comerse media pantalla.
+                if (savedComposer >= 110 && savedComposer <= window.innerHeight * 0.6) {
+                    this.composerHeight = savedComposer;
+                }
+                const savedWizard = parseInt(localStorage.getItem('assistant.wizardHeight') || '', 10);
+                if (savedWizard >= 160 && savedWizard <= window.innerHeight * 0.6) {
+                    this.wizardHeight = savedWizard;
+                }
+            } catch (e) { /* sin storage: alturas por defecto */ }
             // Rota el texto del indicador de pensamiento mientras haya
             // una respuesta en curso; un solo intervalo para toda la vida
             // del componente.
@@ -358,9 +467,9 @@
             switcher._x_dataStack[0].theme = $event.detail.theme;
         }
     "
-    x-on:mousemove.window="resizeMove($event)"
-    x-on:mouseup.window="endResize()"
-    x-on:resize.window="window.innerWidth < 1024 && (drawerWidth = null)"
+    x-on:mousemove.window="resizeMove($event); vResizeMove($event)"
+    x-on:mouseup.window="endResize(); endVResize()"
+    x-on:resize.window="onWindowResize()"
     class="pointer-events-none fixed inset-0 z-40"
 >
     {{-- FAB --}}
@@ -673,16 +782,18 @@
             {{-- Conversacion --}}
             <div
                 wire:ignore.self
+                x-ref="chatPane"
                 x-show="chatView === 'chat'"
                 class="relative flex min-h-0 flex-1 flex-col"
             >
             <div
+                wire:ignore.self
                 x-ref="messagesScroll"
                 x-init="$nextTick(() => { $el.scrollTop = $el.scrollHeight })"
                 x-on:assistant-scroll.window="$nextTick(() => { if (atBottom) { $el.scrollTop = $el.scrollHeight } })"
                 x-on:scroll.passive="updateAtBottom()"
                 aria-live="polite"
-                class="assistant-scroll flex-1 space-y-4 overflow-y-auto bg-gray-50 px-4 py-4 [overscroll-behavior:contain] dark:bg-gray-950/60"
+                class="assistant-scroll min-h-0 flex-1 space-y-4 overflow-y-auto bg-gray-50 px-4 py-4 [overscroll-behavior:contain] dark:bg-gray-950/60"
             >
                 @php
                     $lastAssistantIndex = -1;
@@ -1286,11 +1397,41 @@
             </button>
             </div>
 
+        {{-- Splitter vertical: el chat es flex-1 y el compositor tiene
+             altura propia; arrastrar arriba agranda el chat, abajo el
+             compositor. Doble clic restablece el reparto. --}}
+        <div
+            x-show="chatView === 'chat'"
+            x-ref="vHandleMessages"
+            x-on:mousedown="startVResize($event, 'composer')"
+            x-on:keydown.up.prevent="vResizeKey('composer', 24)"
+            x-on:keydown.down.prevent="vResizeKey('composer', -24)"
+            x-on:dblclick="resetComposerHeight()"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="{{ __('assistant.resize_messages') }}"
+            aria-valuemin="110"
+            :aria-valuemax="vMaxFor('composer')"
+            :aria-valuenow="composerHeight ?? 160"
+            tabindex="0"
+            title="{{ __('assistant.resize_messages') }}"
+            class="group flex h-2 w-full shrink-0 cursor-row-resize items-center justify-center bg-gray-100 transition hover:bg-primary-500/30 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-white/5 dark:hover:bg-primary-500/20"
+            :class="vMode === 'composer' && 'bg-primary-500/40'"
+        >
+            <span class="h-1 w-12 rounded-full bg-gray-300 transition group-hover:bg-primary-500 group-focus:bg-primary-500 dark:bg-white/20"></span>
+        </div>
+
         {{-- Input (solo visible en vista de chat) --}}
         <div
             wire:ignore.self
             x-show="chatView === 'chat'"
-            class="border-t border-gray-200 bg-white px-3 pb-3 pt-2 dark:border-white/10 dark:bg-gray-900"
+            x-ref="composer"
+            :style="composerHeight !== null ? 'height: ' + composerHeight + 'px; flex: none' : ''"
+            class="flex min-h-0 shrink-0 flex-col overflow-hidden bg-white dark:bg-gray-900"
+        >
+        <div
+            :class="composerHeight !== null && 'min-h-0 flex-1'"
+            class="flex flex-col border-t border-gray-200 bg-white px-3 pb-3 pt-2 dark:border-white/10 dark:bg-gray-900"
             style="padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px))"
         >
                 {{-- Sugerencias contextuales + centro de ayuda: los chips
@@ -1315,6 +1456,14 @@
                             'generate_invoices' => 'M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z',
                         ];
                     @endphp
+                    {{-- Zona desplazable: sugerencias, ayuda y formulario
+                         guiado. El campo de texto queda anclado abajo, asi
+                         al reducir el compositor se oculta lo de arriba y
+                         nunca desaparece el input. --}}
+                    <div
+                        :class="composerHeight !== null && 'min-h-0 flex-1'"
+                        class="assistant-scroll overflow-y-auto"
+                    >
                     <div class="mb-2">
                         <div class="mb-1.5 flex items-center justify-between px-0.5">
                             <button
@@ -1413,7 +1562,13 @@
                         $wizardStep = max(1, min((int) ($pendingForm['step'] ?? 1), (int) ($pendingForm['total_steps'] ?? 1)));
                         $wizardTotal = max(1, (int) ($pendingForm['total_steps'] ?? 1));
                     @endphp
-                    <div class="mb-2 rounded-xl bg-primary-50 p-3 ring-1 ring-primary-600/15 dark:bg-primary-500/10 dark:ring-primary-400/25" x-data="{ open: true }">
+                    <div
+                        wire:ignore.self
+                        x-data="{ open: true }"
+                        x-ref="wizardCard"
+                        :style="wizardHeight !== null ? 'height: ' + wizardHeight + 'px' : ''"
+                        class="mb-2 flex min-h-0 flex-col rounded-xl bg-primary-50 p-3 ring-1 ring-primary-600/15 dark:bg-primary-500/10 dark:ring-primary-400/25"
+                    >
                         <div class="flex items-center justify-between gap-2">
                             <p class="flex min-w-0 items-center gap-1.5 text-xs font-bold text-primary-700 dark:text-primary-300">
                                 <svg class="h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
@@ -1444,7 +1599,7 @@
                                 </button>
                             </span>
                         </div>
-                        <div x-show="open" x-transition.opacity.duration.150ms>
+                        <div x-show="open" x-transition.opacity.duration.150ms class="flex min-h-0 flex-1 flex-col">
                         <div class="mt-2 flex items-center gap-1">
                             @for ($stepIndex = 1; $stepIndex <= $wizardTotal; $stepIndex++)
                                 <span
@@ -1473,7 +1628,8 @@
                             <form
                                 wire:key="wf-{{ $pendingForm['form'] ?? 'x' }}-{{ $pendingForm['step'] ?? 1 }}-{{ $pendingForm['total_steps'] ?? 1 }}-{{ md5(json_encode([$pendingForm['prompt'] ?? '', $wfFields])) }}"
                                 x-on:submit.prevent="$wire.submitForm(Object.fromEntries(new FormData($el).entries()))"
-                                class="mt-2 grid max-h-72 gap-2 overflow-y-auto overscroll-contain pr-1 sm:grid-cols-2"
+                                :class="wizardHeight !== null ? '' : 'max-h-72'"
+                                class="mt-2 grid min-h-0 flex-1 gap-2 overflow-y-auto overscroll-contain pr-1 sm:grid-cols-2"
                             >
                                 {{-- Discriminador de sesion: en un batch mixto
                                      pueden coexistir cola de creacion y de
@@ -1639,13 +1795,33 @@
                                 @endforeach
                             </div>
                         @endif
+
+                        {{-- Splitter de la tarjeta: crece el formulario y
+                             el historial se desplaza dentro del scroll. --}}
+                        <div
+                            x-on:mousedown="startVResize($event, 'wizard')"
+                            x-on:keydown.up.prevent="vResizeKey('wizard', -24)"
+                            x-on:keydown.down.prevent="vResizeKey('wizard', 24)"
+                            role="separator"
+                            aria-orientation="horizontal"
+                            aria-label="{{ __('assistant.resize_wizard') }}"
+                            aria-valuemin="160"
+                            :aria-valuemax="vMaxFor('wizard')"
+                            :aria-valuenow="wizardHeight ?? 160"
+                            tabindex="0"
+                            title="{{ __('assistant.resize_wizard') }}"
+                            class="mx-auto mt-1 h-1.5 w-10 shrink-0 cursor-row-resize rounded-full bg-primary-600/30 transition hover:bg-primary-600/60 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                            :class="vMode === 'wizard' && 'bg-primary-600/80'"
+                        ></div>
                         </div>
                     </div>
                 @endif
 
+                </div>
+
                 <form
                     x-on:submit.prevent="sendNow()"
-                    class="flex items-end gap-2"
+                    class="flex shrink-0 items-end gap-2"
                 >
                     <textarea
                         x-ref="chatInput"
@@ -1682,6 +1858,7 @@
                 <p class="mt-0.5 px-1 text-center text-[10px] leading-tight text-gray-400 dark:text-gray-500">
                     {{ __('assistant.disclaimer') }}
                 </p>
+        </div>
         </div>
 
         {{-- Modal de preview: acciones por confirmar o tablas expandidas.
