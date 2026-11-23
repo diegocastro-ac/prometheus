@@ -18,7 +18,26 @@ use Illuminate\Support\Str;
 final class AssistantStatusBadge
 {
     /** Columnas donde un valor tipo estado merece badge. */
-    private const STATUS_COLUMNS = ['status', 'state', 'payment_status', 'invoice_status', 'type'];
+    private const STATUS_COLUMNS = [
+        'status', 'state', 'payment_status', 'invoice_status', 'type',
+        'method', 'cadence', 'billing_cadence', 'rental_type', 'act_type',
+        'kind', 'basis', 'pactado',
+    ];
+
+    /** Columnas booleanas: si/no se pintan como badge de exito/peligro. */
+    private const YES_NO_COLUMNS = ['is_active', 'pactado', 'active'];
+
+    /**
+     * ¿La columna puede mostrar un badge de estado? Lo usa el colorista
+     * de la IA para no gastar tokens en columnas que nunca se pintan
+     * (montos, nombres, fechas). Las booleanas quedan fuera a proposito:
+     * su color ya lo decide la logica si/no, la IA nunca las pisa.
+     */
+    public static function isStatusColumn(?string $column): bool
+    {
+        return $column !== null
+            && in_array(Str::lower($column), self::STATUS_COLUMNS, true);
+    }
 
     /** Tipos de alerta del analisis financiero (columna `type`). */
     private const ALERT_TYPES = [
@@ -27,14 +46,28 @@ final class AssistantStatusBadge
     ];
 
     /**
+     * @param  string|null  $aiColor  color propuesto por la IA para esta
+     *                               columna ({tabla: {columna: color}} del
+     *                               reply). Solo se usa cuando el valor
+     *                               no matchea ningun enum ni alerta
+     *                               conocida; el color de dominio siempre
+     *                               tiene prioridad.
      * @return array{label: string, classes: string}|null
      */
-    public static function for(?string $column, mixed $value): ?array
+    public static function for(?string $column, mixed $value, ?string $aiColor = null): ?array
     {
-        if ($column === null || ! in_array(Str::lower($column), self::STATUS_COLUMNS, true)) {
+        $columnKey = Str::lower($column);
+
+        if (! in_array($columnKey, self::STATUS_COLUMNS, true)
+            && ! in_array($columnKey, self::YES_NO_COLUMNS, true)) {
             return null;
         }
         if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        // "—" y vacios visuales no son estados: se dejan como texto plano.
+        if (in_array(trim($value), ['—', '-', '–'], true)) {
             return null;
         }
 
@@ -64,7 +97,22 @@ final class AssistantStatusBadge
             ];
         }
 
-        return null;
+        // Columnas si/no (is_active, pactado): el valor llega traducido
+        // ("Sí"/"No") o crudo; se decide por el contenido.
+        if (in_array($columnKey, self::YES_NO_COLUMNS, true)) {
+            $affirmative = in_array($key, ['si', 'sí', 'yes', 'true', '1', 'activo', 'active'], true);
+
+            return [
+                'label' => $value,
+                'classes' => self::classes($affirmative ? 'success' : 'danger'),
+            ];
+        }
+
+        // Estado reconocido por nombre pero no por enum (p.ej. un metodo de
+        // pago o cadencia en texto libre): si la IA propuso un color
+        // coherente para la columna se usa; si no, gris por defecto para
+        // que la tabla se vea pareja en vez de texto suelto.
+        return ['label' => $value, 'classes' => self::classes($aiColor ?? 'default')];
     }
 
     private static function paymentColor(PaymentStatus $status): string

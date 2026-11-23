@@ -5,6 +5,7 @@ namespace App\Infrastructure\Ai;
 use App\Contracts\DataAssistantInterface;
 use App\Dto\AssistantReply;
 use App\Models\User;
+use App\Services\Assistant\AssistantFormSession;
 use App\Services\Assistant\AssistantKeywordMatcher;
 use App\Services\Assistant\AssistantToolInvoker;
 use App\Services\Assistant\PortfolioContextBuilder;
@@ -29,6 +30,9 @@ use Throwable;
 class GeminiDataAssistant implements DataAssistantInterface
 {
     private const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+
+    /** Colores de badge que AssistantStatusBadge sabe pintar. */
+    private const BADGE_COLORS = ['success', 'info', 'warning', 'danger', 'default'];
 
     /**
      * Catalogo de intenciones que el modelo puede devolver. El enum del schema
@@ -61,6 +65,32 @@ class GeminiDataAssistant implements DataAssistantInterface
         'create_rental',
         'show_profile',
         'propose_update_profile',
+        'update_tenant',
+        'update_property',
+        'update_rental',
+        'list_adjustments',
+        'adjustment_detail',
+        'preview_adjustment_ipc',
+        'record_adjustment',
+        'apply_adjustment',
+        'mark_adjustment_notified',
+        'recalculate_adjustments',
+        'annul_invoice',
+        'generate_document',
+        'bill_single_rental',
+        'aging_report',
+        'top_debtors',
+        'payments_by_method',
+        'collection_rate',
+        'create_delivery_act',
+        'form_field',
+        'cancel_form',
+        'show_settings',
+        'update_settings',
+        'ipc_status',
+        'sync_ipc',
+        'entity_detail',
+        'export_csv',
         'navigate',
         'unknown',
     ];
@@ -69,10 +99,22 @@ class GeminiDataAssistant implements DataAssistantInterface
         private readonly AssistantToolInvoker $invoker,
         private readonly PortfolioContextBuilder $context,
         private readonly AssistantKeywordMatcher $matcher,
+        private readonly AssistantFormSession $forms,
     ) {}
 
     public function ask(string $question, array $history, int $userId): AssistantReply
     {
+        // Wizard en curso (acta de entrega, etc.): TODA respuesta va al
+        // handler del formulario. Si pasara por el matcher/Gemini, una
+        // respuesta como "entrega" o "sí" seria reclasificada como un
+        // listado nuevo y el wizard nunca avanzaria. El handler detecta
+        // "cancela" por su cuenta; para salir hay que decirlo explicitamente.
+        if ($this->forms->form($userId) !== null) {
+            $reply = $this->invoker->handleFormField($question, $userId);
+
+            return $this->maybeDraft($this->withBadgeColors($reply, $question, $userId), $userId);
+        }
+
         // Sin API key el chat degrada al matcher local para no quedar mudo.
         // Con key, TODO pasa por Gemini: el historial y la guia de dominio le
         // dan el contexto para interpretar matices, follow-ups y extracciones.
@@ -80,7 +122,7 @@ class GeminiDataAssistant implements DataAssistantInterface
             $local = $this->matcher->match($question);
 
             if ($local !== null) {
-                return $this->resolveLocal($local, $userId);
+                return $this->resolveLocal($local, $userId, $question);
             }
 
             return AssistantReply::say(__('assistant.unavailable'));
@@ -97,7 +139,7 @@ class GeminiDataAssistant implements DataAssistantInterface
             $local = $this->matcher->match($question);
 
             if ($local !== null) {
-                return $this->resolveLocal($local, $userId);
+                return $this->resolveLocal($local, $userId, $question);
             }
 
             return AssistantReply::say(__('assistant.error'));
@@ -114,7 +156,11 @@ class GeminiDataAssistant implements DataAssistantInterface
         $requests = $this->extractRequests($parsed);
 
         if (count($requests) > 1) {
-            return $this->maybeDraft($this->invoker->invokeBatch($requests, $userId), $userId);
+            $batch = $this->invoker->invokeBatch($requests, $userId);
+            $batch = $this->withAiSuggestions($batch, $parsed);
+            $batch = $this->withBadgeColors($batch, $question, $userId);
+
+            return $this->maybeDraft($batch, $userId);
         }
 
         $intent = $requests[0]['intent'];
@@ -125,8 +171,50 @@ class GeminiDataAssistant implements DataAssistantInterface
         }
 
         $reply = $this->invoker->invoke($intent, $params, $userId);
+        $reply = $this->withAiSuggestions($reply, $parsed);
+        $reply = $this->withBadgeColors($reply, $question, $userId);
 
         return $this->maybeDraft($reply, $userId);
+    }
+
+    /**
+     * Sugerencias de seguimiento generadas por la IA: el modelo devuelve
+     * 2-3 preguntas cortas relacionadas con lo que el usuario pidio. Se
+     * sanitizan (texto plano, max 80 chars, max 4) y solo se aplican si
+     * quedaron algunas; si no, las sugerencias del invoker se conservan.
+     *
+     * @param  array<string, mixed>  $parsed
+     */
+    private function withAiSuggestions(AssistantReply $reply, array $parsed): AssistantReply
+    {
+        $raw = $parsed['suggestions'] ?? null;
+
+        if (! is_array($raw)) {
+            return $reply;
+        }
+
+        $suggestions = [];
+
+        foreach ($raw as $item) {
+            if (! is_string($item)) {
+                continue;
+            }
+
+            // Sin markdown ni comillas: son chips que se envian tal cual.
+            $item = trim(preg_replace('/[*_`#>]+/u', '', $item) ?? $item);
+
+            if ($item === '' || mb_strlen($item) > 80 || in_array($item, $suggestions, true)) {
+                continue;
+            }
+
+            $suggestions[] = $item;
+
+            if (count($suggestions) >= 4) {
+                break;
+            }
+        }
+
+        return $suggestions === [] ? $reply : $reply->withSuggestions($suggestions);
     }
 
     /**
@@ -179,7 +267,7 @@ class GeminiDataAssistant implements DataAssistantInterface
      *
      * @param  array{intent: string, params: array<string, mixed>}  $local
      */
-    private function resolveLocal(array $local, int $userId): AssistantReply
+    private function resolveLocal(array $local, int $userId, string $question): AssistantReply
     {
         if ($local['intent'] === 'greeting') {
             return AssistantReply::say(
@@ -189,8 +277,161 @@ class GeminiDataAssistant implements DataAssistantInterface
         }
 
         $reply = $this->invoker->invoke($local['intent'], $local['params'], $userId);
+        $reply = $this->withBadgeColors($reply, $question, $userId);
 
         return $this->maybeDraft($reply, $userId);
+    }
+
+    /**
+     * Colores de badge propuestos por la IA. Cuando la respuesta trae
+     * tablas, una segunda llamada barata (timeout corto, solo JSON) mira
+     * las columnas categoricas y sus valores de ejemplo para asignar un
+     * color coherente con el contexto. El resultado viaja en el payload
+     * del mensaje y AssistantStatusBadge solo lo usa cuando el valor no
+     * matchea un enum conocido: el color de dominio siempre gana.
+     *
+     * Es cosmetico: cualquier fallo devuelve el reply intacto y las
+     * celdas caen al gris por defecto.
+     */
+    private function withBadgeColors(AssistantReply $reply, string $question, int $userId): AssistantReply
+    {
+        if (! $this->isConfigured() || $reply->badgeColors !== null) {
+            return $reply;
+        }
+
+        $tables = $this->badgeTableSamples($reply);
+
+        if ($tables === []) {
+            return $reply;
+        }
+
+        $body = [
+            'system_instruction' => [
+                'parts' => [['text' => $this->badgeColorPrompt()]],
+            ],
+            'contents' => [[
+                'role' => 'user',
+                'parts' => [['text' => json_encode([
+                    'pregunta' => $question,
+                    'tablas' => $tables,
+                ], JSON_UNESCAPED_UNICODE)]],
+            ]],
+            'generationConfig' => [
+                'responseMimeType' => 'application/json',
+                'temperature' => 0.1,
+            ],
+        ];
+
+        // Timeout mas corto que el de clasificacion: es adorno, no debe
+        // estirar la respuesta del chat.
+        $text = $this->generate($body, 6, $userId);
+
+        if ($text === '') {
+            return $reply;
+        }
+
+        $decoded = json_decode($text, true);
+
+        if (! is_array($decoded)) {
+            return $reply;
+        }
+
+        $colors = [];
+
+        foreach ($tables as $key => $columns) {
+            foreach (array_keys($columns) as $column) {
+                $color = $decoded[$key][$column] ?? null;
+
+                if (is_string($color) && in_array($color, self::BADGE_COLORS, true)) {
+                    $colors[$key][$column] = $color;
+                }
+            }
+        }
+
+        return $colors === [] ? $reply : $reply->withBadgeColors($colors);
+    }
+
+    /**
+     * Extrae {tabla: {columna: [valores de ejemplo]}} de las tablas del
+     * reply (data simple y secciones batch). Solo columnas con pocos
+     * valores distintos y cortos: son las unicas que pueden ser badges.
+     *
+     * @return array<string, array<string, list<string>>>
+     */
+    private function badgeTableSamples(AssistantReply $reply): array
+    {
+        $sources = [];
+
+        if (is_array($reply->data)) {
+            $sources[] = $reply->data;
+        }
+
+        foreach ($reply->sections ?? [] as $section) {
+            if (is_array($section['data'] ?? null)) {
+                $sources[] = $section['data'];
+            }
+        }
+
+        $tables = [];
+
+        foreach ($sources as $data) {
+            foreach ($data as $key => $rows) {
+                if (! is_array($rows) || $rows === [] || ! isset($rows[0]) || ! is_array($rows[0])) {
+                    continue;
+                }
+
+                foreach (array_keys($rows[0]) as $column) {
+                    // Solo columnas que el renderer pintaria como badge:
+                    // el resto del muestreo seria tokens tirados.
+                    if (! \App\Support\AssistantStatusBadge::isStatusColumn($column)) {
+                        continue;
+                    }
+
+                    $values = [];
+
+                    foreach (array_slice($rows, 0, 30) as $row) {
+                        $value = $row[$column] ?? null;
+
+                        if (is_string($value) && trim($value) !== ''
+                            && mb_strlen($value) <= 40
+                            && ! in_array($value, $values, true)) {
+                            $values[] = $value;
+                        }
+
+                        if (count($values) > 10) {
+                            break;
+                        }
+                    }
+
+                    // Mas de 10 valores distintos no es una categoria:
+                    // no tiene sentido pintarla como badge.
+                    if ($values !== [] && count($values) <= 10) {
+                        $tables[(string) $key][$column] = $values;
+                    }
+                }
+            }
+        }
+
+        return $tables;
+    }
+
+    private function badgeColorPrompt(): string
+    {
+        return <<<'PROMPT'
+Eres un experto en diseno de interfaces. Recibes tablas de datos de un sistema de administracion de arriendos y la pregunta del usuario.
+
+Para CADA columna que contenga estados o categorias cortas (ej: status, state, method, type, cadence, estado de pago), elige el color de badge mas coherente con el significado de sus valores:
+
+- success: positivo, pagado, activo, entregado, firmado, correcto
+- info: informativo, pendiente neutro, programado, en proceso
+- warning: atencion, proximo a vencer, parcial, reparable, no entregado
+- danger: critico, vencido, anulado, impago, rechazado, extraviado, inactivo
+- default: neutro, sin semantica clara, metodos de pago o tipos sin carga emocional
+
+Responde SOLO con JSON valido: {"nombre_tabla":{"nombre_columna":"color"}}.
+No incluyas columnas que no sean categoricas (nombres, montos, fechas, numeros, textos largos).
+Si una columna no merece badge, omitela. No agregues explicaciones.
+PROMPT;
     }
 
     private function isConfigured(): bool
@@ -320,6 +561,8 @@ class GeminiDataAssistant implements DataAssistantInterface
             suggestions: $reply->suggestions,
             intent: $reply->intent,
             sections: $reply->sections,
+            pendingForm: $reply->pendingForm,
+            badgeColors: $reply->badgeColors,
         );
     }
 
@@ -491,7 +734,21 @@ class GeminiDataAssistant implements DataAssistantInterface
             '- "llevame/muestrame/ir a la seccion de..." -> navigate (params.target: invoices, rentals, tenants, properties, delivery_acts, adjustments, finances, documents, profile; params.filter OPCIONAL con el estado pedido en minusculas: vencida, pagada, emitida, anulada, activo, inactivo). Si la seccion no admite ese filtro, el sistema lo dice y muestra los datos en el chat.',
             '- "mis datos de cuenta / mi perfil / que correo tengo registrado" -> show_profile.',
             '- "cambia/actualiza mi nombre, correo, documento, telefono o tipo de documento" -> propose_update_profile (params SOLO con los campos mencionados: name, email, document, document_type CC|TI|CE|PAS|NIT, phone_number). La contrasena NUNCA se cambia por el chat: para eso usa navigate a profile.',
+            '- "cambia/actualiza/edita el telefono/correo/direccion/nombre del inquilino/propiedad/arriendo X" -> update_tenant/update_property/update_rental (params: nombre de la entidad + SOLO los campos mencionados con su nuevo valor). "desactiva/pausa el arriendo de X" -> update_rental con is_active=false. "sube/baja el canon/monto del arriendo" -> update_rental con monthly_amount.',
+            '- "lista/muestra los reajustes registrados" -> list_adjustments. "como va el reajuste/la cadena de reajustes del arriendo X" -> adjustment_detail. "que IPC aplicaria/porcentaje saldria para X en fecha Y" -> preview_adjustment_ipc.',
+            '- "registra/propone un reajuste para el arriendo X" -> record_adjustment (params.rental_name, effective_from, new_rent si lo menciona). "aplica el reajuste N" -> apply_adjustment (params.adjustment_id o number). "marca el reajuste N como notificado" -> mark_adjustment_notified (params.adjustment_id/number + notified_on + notification_method: postal|contractual|in_person|email). "recalcula la cadena de reajustes" -> recalculate_adjustments.',
+            '- "anula/cancela la factura N" -> annul_invoice (params.invoice_number o invoice_id).',
+            '- "dame/pasame/genera el documento/el comprobante/la carta/el estado de cuenta" -> generate_document (params.doc_type: rent_invoice|payment_receipt|adjustment_letter|monthly_statement + invoice_number|rental_name|adjustment_id|period + format text|pdf|json).',
+            '- "factura/genera la factura del arriendo de X para el periodo Y" -> bill_single_rental (params.rental_name + period "YYYY-MM").',
+            '- "cartera vencida por rangos/rangos de dias/aging" -> aging_report. "quienes son mis peores/mayores deudores" -> top_debtors. "cuanto recaudare por cada metodo/por nequi/por transferencia" -> payments_by_method. "tasa de recaudo/dias promedio de atraso/cobranza" -> collection_rate.',
+            '- "crea/llena un acta de entrega" -> create_delivery_act (params.rental_name si lo menciona; si no, el sistema guia paso a paso).',
+            '- "cancela/sal de/olvida el formulario/el acta" -> cancel_form.',
+            '- "mis ajustes/datos del negocio/configuracion de facturas" -> show_settings. "cambia el nombre comercial/NIT/direccion del negocio/pie legal" -> update_settings.',
+            '- "esta actualizado el IPC/sincroniza el IPC/actualiza los indices" -> ipc_status o sync_ipc.',
+            '- "cuentame del arriendo/de la propiedad/del inquilino/detalle de X" -> entity_detail (params.entity_type: rental|property|tenant|invoice|adjustment + name/number).',
+            '- "pásame la tabla a CSV/exporta/descarga en excel" -> export_csv.',
             '- "hola/buenas/buenos dias/hello/hi" -> greeting (saludos y cortesia pura, sin peticion de datos).',
+            '- NAVEGACION CON BUSQUEDA: "llévame al inquilino Camila / a la factura FV-2026-0003 / al arriendo de X" -> navigate con params.target + params.search (el nombre o numero a buscar). La seccion buscara el termino.',
             '',
             'VARIAS COSAS EN UN MENSAJE (batch):',
             '- Si el usuario pide DOS O MAS cosas distintas en el mismo mensaje (ej: "muéstrame mis inquilinos y mis propiedades", "registra estos 3 inquilinos y 2 propiedades", "cuánto me deben y lista las facturas"), llena `requests` con UN elemento por cada peticion, cada uno con su intent y sus params completos.',
@@ -546,6 +803,12 @@ class GeminiDataAssistant implements DataAssistantInterface
             '- Si el usuario responde con datos sueltos ("cc 123, tel 300"), correlacionalos con la ultima peticion pendiente del historial y completa los params faltantes.',
             '- Si pide "la tabla", "esos datos", "listalos", "muestramelos", "genera una tabla" tras un listado: re-emite el intent de listado correspondiente (el sistema re-ejecuta y muestra los datos frescos).',
             '- Si cambia de tema (menciona otra entidad), trata la pregunta como nueva.',
+            '',
+            'SUGERENCIAS DE SEGUIMIENTO (clave "suggestions" del JSON):',
+            '- Incluye SIEMPRE "suggestions": una lista de 2 a 3 preguntas de seguimiento CORTAS (max 60 caracteres cada una), en el MISMO idioma del usuario, que el arrendador podria hacer a continuacion.',
+            '- Deben ser concretas y utiles segun la respuesta: si mostraste deudas, sugiere "genera un recordatorio para X" o "quiénes son mis mayores deudores"; si mostraste reajustes, sugiere "aplica el reajuste pendiente"; si fue un listado, sugiere filtrar o ver el detalle de una entidad.',
+            '- NO repitas la pregunta del usuario ni des respuestas, solo las preguntas siguientes.',
+            '- Sin markdown, sin comillas, sin numeracion: texto plano.',
         ]);
     }
 

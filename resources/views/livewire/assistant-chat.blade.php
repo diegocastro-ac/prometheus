@@ -6,6 +6,9 @@
     x-data="{
         drawerOpen: false,
         helpOpen: false,
+        // Chips de sugerencias colapsables: el usuario que ya conoce los
+        // prompts libera espacio; la preferencia persiste entre sesiones.
+        suggestOpen: localStorage.getItem('assistant.suggestOpen') !== '0',
         modelOpen: false,
         // Vista interna del drawer ('chat' | 'chats'). La controla Alpine
         // para que cambiar de panel sea instantaneo; el servidor la refleja
@@ -50,6 +53,10 @@
             if (! this.resizing) return;
             this.resizing = false;
             document.body.style.userSelect = '';
+        },
+        toggleSuggest() {
+            this.suggestOpen = ! this.suggestOpen;
+            localStorage.setItem('assistant.suggestOpen', this.suggestOpen ? '1' : '0');
         },
         // true cuando el scroll esta pegado al fondo; la flecha de bajada
         // solo aparece si el usuario subio a leer historial.
@@ -297,6 +304,15 @@
                         <span wire:ignore.self x-show="chatView === 'chats'">{{ __('assistant.chats_title') }}</span>
                     </h2>
                     <p class="truncate text-xs text-gray-500 dark:text-gray-400">{{ __('assistant.subtitle') }}</p>
+                    @if ($pendingForm !== null)
+                        <p class="mt-0.5 flex items-center gap-1 truncate text-[10px] font-semibold text-primary-600 dark:text-primary-400">
+                            <svg class="h-3 w-3 shrink-0 animate-pulse" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
+                            </svg>
+                            {{ $pendingForm['form'] === 'delivery_act' ? __('act.navigation_label') : $pendingForm['form'] }}
+                            · {{ __('assistant.wizard.step_of', ['step' => $pendingForm['step'], 'total' => $pendingForm['total_steps']]) }}
+                        </p>
+                    @endif
                 </div>
             </div>
             <div class="flex shrink-0 items-center gap-1">
@@ -580,26 +596,101 @@
                                         @if (! empty($section['text']))
                                             <div class="assistant-md leading-relaxed {{ $loop->first ? '' : 'mt-3' }}">{!! \Illuminate\Support\Str::markdown($section['text'], ['html_input' => 'escape', 'allow_unsafe_links' => false]) !!}</div>
                                         @endif
-                                        @include('livewire.partials.assistant-tables', ['data' => $section['data'] ?? null, 'messageIndex' => $index])
+                                        @include('livewire.partials.assistant-tables', ['data' => $section['data'] ?? null, 'messageIndex' => $index, 'badgeColors' => $message['badge_colors'] ?? []])
                                     @endforeach
                                 @else
                                     <div class="assistant-md leading-relaxed">{!! \Illuminate\Support\Str::markdown($message['text'], ['html_input' => 'escape', 'allow_unsafe_links' => false]) !!}</div>
 
                                     {{-- Datos estructurados: tabla compacta cuando el
                                          intent devolvio filas. --}}
-                                    @include('livewire.partials.assistant-tables', ['data' => $message['data'] ?? null, 'messageIndex' => $index])
+                                    @include('livewire.partials.assistant-tables', ['data' => $message['data'] ?? null, 'messageIndex' => $index, 'badgeColors' => $message['badge_colors'] ?? []])
                                 @endif
 
-                                {{-- Accion propuesta: la IA propone, el humano confirma. --}}
+                                {{-- Archivo generado por una accion (documento
+                                     o CSV): tarjeta con descarga directa. --}}
+                                @if (! empty($message['data']['file']['token']))
+                                    @php $file = $message['data']['file']; @endphp
+                                    <div class="mt-3 overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-950/10 dark:bg-gray-800 dark:ring-white/10">
+                                        <button
+                                            type="button"
+                                            wire:click="downloadFile('{{ $file['token'] }}')"
+                                            wire:loading.attr="disabled"
+                                            class="flex w-full items-center gap-3 px-3.5 py-3 text-left transition hover:bg-cyan-50 dark:hover:bg-cyan-500/10"
+                                        >
+                                            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-100 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300">
+                                                <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                                </svg>
+                                            </span>
+                                            <span class="min-w-0 flex-1">
+                                                <span class="block truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{{ $file['filename'] }}</span>
+                                                <span class="block text-[10px] text-gray-500 dark:text-gray-400">{{ __('assistant.download_file') }}</span>
+                                            </span>
+                                            <svg class="h-4 w-4 shrink-0 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                            </svg>
+                                        </button>
+                                        @if (! empty($file['preview']))
+                                            <pre class="max-h-48 overflow-auto border-t border-gray-950/5 bg-gray-50 p-3 text-[11px] leading-relaxed text-gray-600 [overscroll-behavior:contain] dark:border-white/5 dark:bg-black/20 dark:text-gray-300">{{ $file['preview'] }}</pre>
+                                        @endif
+                                    </div>
+                                @endif
+
+                                {{-- Accion propuesta: la IA propone, el humano
+                                     confirma. El color/icono identifica el
+                                     tipo de operacion de un vistazo. --}}
                                 @if (! empty($message['action']))
-                                    <div class="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-gray-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-                                        <p class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide">
+                                    @php
+                                        $actionType = (string) ($message['action']['type'] ?? '');
+                                        $actionMeta = match (true) {
+                                            str_starts_with($actionType, 'create_') => ['create', 'M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z'],
+                                            str_starts_with($actionType, 'update_') || str_starts_with($actionType, 'record_adjustment') || str_starts_with($actionType, 'apply_adjustment') || str_starts_with($actionType, 'mark_adjustment') || str_starts_with($actionType, 'recalculate') => ['update', 'M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10'],
+                                            str_contains($actionType, 'payment') => ['payment', 'M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z'],
+                                            str_contains($actionType, 'annul') || str_contains($actionType, 'deactivate') => ['danger', 'M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.008v.008H12v-.008Z'],
+                                            str_contains($actionType, 'document') || str_contains($actionType, 'export') || str_contains($actionType, 'bill') || str_contains($actionType, 'invoice') => ['document', 'M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z'],
+                                            str_contains($actionType, 'ipc') || str_contains($actionType, 'settings') => ['settings', 'M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z'],
+                                            default => ['default', 'M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.008v.008H12v-.008Z'],
+                                        };
+                                        [$actionTone, $actionIcon] = $actionMeta;
+                                        $actionToneClasses = match ($actionTone) {
+                                            'create' => 'border-emerald-300 bg-emerald-50 dark:border-emerald-500/40 dark:bg-emerald-500/10',
+                                            'update' => 'border-sky-300 bg-sky-50 dark:border-sky-500/40 dark:bg-sky-500/10',
+                                            'payment' => 'border-amber-300 bg-amber-50 dark:border-amber-500/40 dark:bg-amber-500/10',
+                                            'danger' => 'border-red-300 bg-red-50 dark:border-red-500/40 dark:bg-red-500/10',
+                                            'document' => 'border-cyan-300 bg-cyan-50 dark:border-cyan-500/40 dark:bg-cyan-500/10',
+                                            'settings' => 'border-violet-300 bg-violet-50 dark:border-violet-500/40 dark:bg-violet-500/10',
+                                            default => 'border-gray-300 bg-gray-50 dark:border-white/15 dark:bg-white/5',
+                                        };
+                                        $actionTextClasses = match ($actionTone) {
+                                            'create' => 'text-emerald-700 dark:text-emerald-300',
+                                            'update' => 'text-sky-700 dark:text-sky-300',
+                                            'payment' => 'text-amber-700 dark:text-amber-300',
+                                            'danger' => 'text-red-700 dark:text-red-300',
+                                            'document' => 'text-cyan-700 dark:text-cyan-300',
+                                            'settings' => 'text-violet-700 dark:text-violet-300',
+                                            default => 'text-gray-700 dark:text-gray-300',
+                                        };
+                                    @endphp
+                                    <div class="mt-3 rounded-xl border p-3 {{ $actionToneClasses }}">
+                                        <p class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide {{ $actionTextClasses }}">
                                             <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.008v.008H12v-.008Z" />
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="{{ $actionIcon }}" />
                                             </svg>
                                             {{ __('assistant.action_proposed') }}
                                         </p>
-                                        <p class="mt-1.5 text-sm font-medium">{{ $message['action']['summary'] ?? '' }}</p>
+                                        <p class="mt-1.5 text-sm font-medium text-gray-900 dark:text-white">{{ $message['action']['summary'] ?? '' }}</p>
+                                        @if (! empty($message['action']['warnings']))
+                                            <ul class="mt-2 space-y-1">
+                                                @foreach ($message['action']['warnings'] as $warning)
+                                                    <li class="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+                                                        <svg class="mt-0.5 h-3 w-3 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.008v.008H12v-.008Z" />
+                                                        </svg>
+                                                        {{ $warning }}
+                                                    </li>
+                                                @endforeach
+                                            </ul>
+                                        @endif
                                         <div class="mt-2.5">
                                             <button
                                                 type="button"
@@ -825,11 +916,20 @@
                     @endphp
                     <div class="mb-2">
                         <div class="mb-1.5 flex items-center justify-between px-0.5">
-                            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-                                {{ __('assistant.quick_prompts') }}
-                            </p>
                             <button
                                 type="button"
+                                x-on:click="toggleSuggest()"
+                                :aria-expanded="suggestOpen"
+                                class="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 transition hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+                            >
+                                <svg class="h-3 w-3 transition-transform duration-200" :class="suggestOpen && 'rotate-90'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                                </svg>
+                                {{ __('assistant.quick_prompts') }}
+                            </button>
+                            <button
+                                type="button"
+                                x-show="suggestOpen"
                                 x-on:click="helpOpen = ! helpOpen"
                                 :aria-expanded="helpOpen"
                                 class="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-primary-600 transition hover:bg-primary-50 dark:text-primary-400 dark:hover:bg-primary-500/10"
@@ -844,6 +944,7 @@
                             </button>
                         </div>
 
+                        <div x-show="suggestOpen" x-transition.opacity.duration.150ms>
                         @if (! empty($contextSuggestions))
                             <div class="flex gap-1.5 overflow-x-auto px-0.5 pb-1 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                                 @foreach ($contextSuggestions as $key)
@@ -899,7 +1000,55 @@
                                 @endforeach
                             </div>
                         </div>
+                        </div>
                     </div>
+
+                {{-- Wizard guiado en curso: progreso, campo actual,
+                     respuestas rapidas y cancelacion. --}}
+                @if ($pendingForm !== null)
+                    @php
+                        $wizardStep = max(1, min((int) ($pendingForm['step'] ?? 1), (int) ($pendingForm['total_steps'] ?? 1)));
+                        $wizardTotal = max(1, (int) ($pendingForm['total_steps'] ?? 1));
+                        $wizardPct = (int) round((($wizardStep - 1) / $wizardTotal) * 100);
+                    @endphp
+                    <div class="mb-2 rounded-xl bg-primary-50 p-3 ring-1 ring-primary-600/15 dark:bg-primary-500/10 dark:ring-primary-400/25">
+                        <div class="flex items-center justify-between gap-2">
+                            <p class="flex min-w-0 items-center gap-1.5 text-xs font-bold text-primary-700 dark:text-primary-300">
+                                <svg class="h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
+                                </svg>
+                                <span class="truncate">
+                                    {{ $pendingForm['form'] === 'delivery_act' ? __('act.navigation_label') : $pendingForm['form'] }}
+                                    · {{ __('assistant.wizard.step_of', ['step' => $wizardStep, 'total' => $wizardTotal]) }}
+                                </span>
+                            </p>
+                            <button
+                                type="button"
+                                wire:click="cancelForm"
+                                class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold text-red-600 transition hover:bg-red-100 dark:text-red-400 dark:hover:bg-red-500/15"
+                            >
+                                {{ __('assistant.wizard.cancel') }}
+                            </button>
+                        </div>
+                        <div class="mt-2 h-1 overflow-hidden rounded-full bg-primary-600/10 dark:bg-white/10">
+                            <div class="h-full rounded-full bg-primary-600 transition-all duration-300 dark:bg-primary-400" style="width: {{ $wizardPct }}%"></div>
+                        </div>
+                        <p class="mt-2 text-xs font-medium text-gray-700 dark:text-gray-200">{{ $pendingForm['prompt'] ?? '' }}</p>
+                        @if (! empty($pendingForm['quick_replies']))
+                            <div class="mt-2 flex flex-wrap gap-1.5">
+                                @foreach ($pendingForm['quick_replies'] as $reply)
+                                    <button
+                                        type="button"
+                                        x-on:click="sendSuggestion('{{ addslashes($reply) }}')"
+                                        class="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-primary-700 ring-1 ring-primary-600/20 transition hover:bg-primary-600 hover:text-white dark:bg-white/10 dark:text-primary-300 dark:ring-primary-400/30 dark:hover:bg-primary-500/30"
+                                    >
+                                        {{ $reply }}
+                                    </button>
+                                @endforeach
+                            </div>
+                        @endif
+                    </div>
+                @endif
 
                 <form x-on:submit.prevent="sendNow()" class="flex items-end gap-2">
                     <textarea
@@ -957,20 +1106,120 @@
 
                 <div x-ref="previewScroll" class="min-h-0 flex-1 overflow-y-auto px-4 py-4 [overscroll-behavior:contain]">
                     @if ($preview['kind'] === 'action')
+                        @php
+                            $previewAction = $preview['action'] ?? [];
+                            $previewWarnings = is_array($previewAction['warnings'] ?? null) ? $previewAction['warnings'] : [];
+                            $previewEditable = is_array($previewAction['editable'] ?? null) ? $previewAction['editable'] : [];
+                            // Las filas con before/after son diffs; el resto
+                            // son resumen campo:valor.
+                            $previewDiffs = array_values(array_filter(
+                                $preview['rows'],
+                                fn (array $row): bool => array_key_exists('before', $row) || array_key_exists('after', $row),
+                            ));
+                            $previewPlainRows = array_values(array_filter(
+                                $preview['rows'],
+                                fn (array $row): bool => ! array_key_exists('before', $row) && ! array_key_exists('after', $row),
+                            ));
+                        @endphp
                         <p class="mb-3 text-sm font-medium text-gray-700 dark:text-gray-300">{{ $preview['title'] }}</p>
 
-                        <dl class="space-y-2.5 rounded-xl bg-gray-50 p-3 ring-1 ring-gray-950/5 dark:bg-white/5 dark:ring-white/10">
-                            @foreach ($preview['rows'] as $row)
-                                @if ($row['section'] ?? false)
-                                    <div class="pt-2 text-[11px] font-bold uppercase tracking-wider text-primary-600 first:pt-0 dark:text-primary-400">{{ $row['label'] }}</div>
-                                @else
-                                    <div class="flex items-start justify-between gap-3 text-sm {{ ($row['item'] ?? false) ? 'pl-3' : '' }}">
-                                        <dt class="shrink-0 {{ ($row['item'] ?? false) ? 'text-gray-400 dark:text-gray-500' : 'text-gray-500 dark:text-gray-400' }}">{{ $row['label'] }}</dt>
-                                        <dd class="text-right font-medium text-gray-900 dark:text-white">{{ $row['value'] }}</dd>
-                                    </div>
-                                @endif
-                            @endforeach
-                        </dl>
+                        {{-- 1. Warnings: nunca enterrados, van primero. --}}
+                        @if ($previewWarnings !== [])
+                            <div class="mb-3 space-y-1.5 rounded-xl border border-amber-300 bg-amber-50 p-3 dark:border-amber-500/40 dark:bg-amber-500/10">
+                                @foreach ($previewWarnings as $warning)
+                                    <p class="flex items-start gap-1.5 text-xs leading-relaxed text-amber-800 dark:text-amber-300">
+                                        <svg class="mt-0.5 h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.008v.008H12v-.008Z" />
+                                        </svg>
+                                        {{ $warning }}
+                                    </p>
+                                @endforeach
+                            </div>
+                        @endif
+
+                        {{-- 2. Diff before/after: lo viejo tachado, lo nuevo
+                             resaltado. Valores null se muestran como "—". --}}
+                        @if ($previewDiffs !== [])
+                            <div class="mb-3 overflow-hidden rounded-xl ring-1 ring-gray-950/10 dark:ring-white/10">
+                                <div class="border-b border-gray-950/5 bg-gray-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:border-white/5 dark:bg-white/5 dark:text-gray-500">
+                                    {{ __('assistant.preview.changes_title') }}
+                                </div>
+                                <dl class="divide-y divide-gray-950/5 dark:divide-white/5">
+                                    @foreach ($previewDiffs as $row)
+                                        <div class="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                                            <dt class="shrink-0 text-gray-500 dark:text-gray-400">{{ $row['label'] }}</dt>
+                                            <dd class="flex min-w-0 items-center gap-1.5 text-right">
+                                                @if (($row['before'] ?? null) !== null)
+                                                    <span class="truncate text-gray-400 line-through dark:text-gray-500">{{ $row['before'] }}</span>
+                                                @endif
+                                                <svg class="h-3 w-3 shrink-0 text-gray-300 dark:text-gray-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+                                                </svg>
+                                                <span class="truncate font-semibold {{ ($row['after'] ?? null) === null ? 'text-red-500 line-through' : 'text-emerald-600 dark:text-emerald-400' }}">
+                                                    {{ ($row['after'] ?? null) ?? '—' }}
+                                                </span>
+                                            </dd>
+                                        </div>
+                                    @endforeach
+                                </dl>
+                            </div>
+                        @endif
+
+                        {{-- 3. Resumen plano (creaciones, acciones sin diff). --}}
+                        @if ($previewPlainRows !== [])
+                            <dl class="space-y-2.5 rounded-xl bg-gray-50 p-3 ring-1 ring-gray-950/5 dark:bg-white/5 dark:ring-white/10">
+                                @foreach ($previewPlainRows as $row)
+                                    @if ($row['section'] ?? false)
+                                        <div class="pt-2 text-[11px] font-bold uppercase tracking-wider text-primary-600 first:pt-0 dark:text-primary-400">{{ $row['label'] }}</div>
+                                    @else
+                                        <div class="flex items-start justify-between gap-3 text-sm {{ ($row['item'] ?? false) ? 'pl-3' : '' }}">
+                                            <dt class="shrink-0 {{ ($row['item'] ?? false) ? 'text-gray-400 dark:text-gray-500' : 'text-gray-500 dark:text-gray-400' }}">{{ $row['label'] }}</dt>
+                                            <dd class="text-right font-medium text-gray-900 dark:text-white">{{ $row['value'] }}</dd>
+                                        </div>
+                                    @endif
+                                @endforeach
+                            </dl>
+                        @endif
+
+                        {{-- 4. Campos editables: lo que el usuario puede
+                             corregir antes de confirmar. --}}
+                        @if ($previewEditable !== [])
+                            <div class="mt-3">
+                                <p class="mb-1.5 px-0.5 text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                                    {{ __('assistant.preview.editable_title') }}
+                                </p>
+                                <div class="grid gap-2 rounded-xl bg-gray-50 p-3 ring-1 ring-gray-950/5 dark:bg-white/5 dark:ring-white/10 sm:grid-cols-2">
+                                    @foreach ($previewEditable as $field)
+                                        @php $editKey = (string) ($field['key'] ?? ''); @endphp
+                                        <label class="block text-xs">
+                                            <span class="mb-0.5 block font-medium text-gray-500 dark:text-gray-400">{{ $field['label'] ?? $editKey }}</span>
+                                            @if (($field['kind'] ?? 'text') === 'textarea')
+                                                <textarea
+                                                    wire:model.blur="previewEdits.{{ $editKey }}"
+                                                    rows="2"
+                                                    class="w-full rounded-lg border-0 bg-white px-2.5 py-1.5 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10"
+                                                ></textarea>
+                                            @elseif (($field['kind'] ?? 'text') === 'select' && is_array($field['options'] ?? null) && $field['options'] !== [])
+                                                <select
+                                                    wire:model.blur="previewEdits.{{ $editKey }}"
+                                                    class="w-full rounded-lg border-0 bg-white px-2.5 py-1.5 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10"
+                                                >
+                                                    @foreach ($field['options'] as $option)
+                                                        <option value="{{ $option['value'] ?? $option }}">{{ $option['label'] ?? $option }}</option>
+                                                    @endforeach
+                                                </select>
+                                            @else
+                                                <input
+                                                    type="{{ in_array($field['kind'] ?? 'text', ['number', 'date'], true) ? $field['kind'] : 'text' }}"
+                                                    wire:model.blur="previewEdits.{{ $editKey }}"
+                                                    class="w-full rounded-lg border-0 bg-white px-2.5 py-1.5 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10"
+                                                >
+                                            @endif
+                                        </label>
+                                    @endforeach
+                                </div>
+                            </div>
+                        @endif
 
                         <p class="mt-3 flex items-start gap-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
                             <svg class="mt-0.5 h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
@@ -1014,9 +1263,14 @@
                                                 >
                                                     <tr>
                                                         @foreach ($row as $cellColumn => $cell)
-                                                            @php $badgeColumn = is_string($cellColumn) ? $cellColumn : ($table['columns'][$loop->index] ?? null); @endphp
+                                                            @php
+                                                                $badgeColumn = is_string($cellColumn) ? $cellColumn : ($table['columns'][$loop->index] ?? null);
+                                                                $cellColors = $preview['kind'] === 'data_all'
+                                                                    ? ($table['badge_colors'] ?? [])
+                                                                    : ($preview['badge_colors'] ?? []);
+                                                            @endphp
                                                             <td class="px-2.5 py-1.5">
-                                                                @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => $badgeColumn])
+                                                                @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => $badgeColumn, 'aiColor' => $cellColors[$badgeColumn] ?? null])
                                                             </td>
                                                         @endforeach
                                                     </tr>
@@ -1039,7 +1293,7 @@
                                                                                 @foreach ($nestedRows as $nestedRow)
                                                                                     <tr class="border-t border-gray-950/5 dark:border-white/5">
                                                                                         @foreach ($nestedRow as $nestedCellColumn => $nestedCell)
-                                                                                            <td class="px-2 py-1">@include('livewire.partials.assistant-cell', ['cell' => $nestedCell, 'column' => is_string($nestedCellColumn) ? $nestedCellColumn : null, 'allowExpand' => false])</td>
+                                                                                            <td class="px-2 py-1">@include('livewire.partials.assistant-cell', ['cell' => $nestedCell, 'column' => is_string($nestedCellColumn) ? $nestedCellColumn : null, 'aiColor' => $cellColors[is_string($nestedCellColumn) ? $nestedCellColumn : ''] ?? null, 'allowExpand' => false])</td>
                                                                                         @endforeach
                                                                                     </tr>
                                                                                 @endforeach

@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\InvoiceResource\Pages;
 
 use App\Enums\InvoiceStatus;
+use App\Filament\Concerns\AssistantTableSearch;
 use App\Filament\Pages\DocumentsPage;
 use App\Filament\Resources\InvoiceResource;
 use Filament\Actions;
@@ -10,10 +11,13 @@ use Filament\Resources\Pages\ListRecords;
 
 class ListInvoices extends ListRecords
 {
+    use AssistantTableSearch;
+
     protected static string $resource = InvoiceResource::class;
 
     public function bootedInteractsWithTable(): void
     {
+        $this->applyAssistantTableSearch();
         parent::bootedInteractsWithTable();
 
         // Deep-link del copiloto: ?af[status]=VENCIDA aplica el filtro de

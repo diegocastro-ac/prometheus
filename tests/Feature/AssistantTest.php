@@ -246,7 +246,11 @@ class AssistantTest extends TestCase
         config()->set('services.gemini.model', 'gemini-test');
 
         Http::fake(function ($request) use (&$captured) {
-            $captured = $request->body();
+            // La llamada del colorista de badges tambien va a Gemini;
+            // el digest viaja en la de clasificacion.
+            if (! str_contains($request->body(), 'diseno de interfaces')) {
+                $captured = $request->body();
+            }
 
             return Http::response([
                 'candidates' => [['content' => ['parts' => [['text' => json_encode([
@@ -712,6 +716,16 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
+    public function manage_records_aplica_table_search_de_la_url(): void
+    {
+        $this->actingAs($this->user);
+
+        Livewire::withQueryParams(['tableSearch' => 'camila'])
+            ->test(\App\Filament\Resources\TenantResource\Pages\ManageTenants::class)
+            ->assertSet('tableSearch', 'camila');
+    }
+
+    #[Test]
     public function las_actas_de_entrega_listan_datos_reales_e_inventario_relevante(): void
     {
         $this->actingAs($this->user);
@@ -774,8 +788,10 @@ class AssistantTest extends TestCase
             ->call('send')
             ->assertSet('messages.3.data.acts.0.tenant', 'María Gómez');
 
-        // Las dos preguntas fueron a Gemini: no hay atajo local.
-        Http::assertSentCount(2);
+        // Las dos preguntas fueron a Gemini: no hay atajo local. Cada
+        // respuesta con tabla de estados dispara ademas la llamada del
+        // colorista de badges: 2 classify + 2 colorist.
+        Http::assertSentCount(4);
     }
 
     #[Test]
@@ -1081,7 +1097,11 @@ class AssistantTest extends TestCase
         $reply = $this->assistant()->ask('¿cómo va mi portafolio?', [], $this->user->id);
 
         $this->assertNotSame('No pude responder en este momento. Intenta de nuevo en un momento.', $reply->text);
-        Http::assertSentCount(2);
+
+        // 2 del classify (saturado 503 -> respaldo 200) + 2 del colorista
+        // de badges, que recorre los mismos candidatos.
+        Http::assertSentCount(4);
+        Http::assertSent(fn ($request): bool => str_contains($request->url(), 'gemini-respaldo'));
     }
 
     #[Test]
@@ -1192,5 +1212,248 @@ class AssistantTest extends TestCase
 
         $this->assertStringContainsString('ya está registrado', $result->text);
         $this->assertNotSame('ocupado@correo.com', $this->user->fresh()->email);
+    }
+
+    // ---------------------------------------------------------------
+    // Revision de interaccion: wizard, lifecycle local y diffs
+    // ---------------------------------------------------------------
+
+    #[Test]
+    public function update_rental_desactiva_con_booleano_falso_real(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'update_rental',
+            'params' => ['rental_name' => 'Local norte', 'is_active' => false],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('desactiva el arriendo de Local norte', [], $this->user->id);
+
+        $this->assertSame('update_rental', $reply->action['type']);
+        $this->assertFalse($reply->action['params']['is_active']);
+
+        app(AssistantActionExecutor::class)->execute($reply->action, $this->user->id);
+
+        $this->assertFalse((bool) $this->rental->fresh()->is_active);
+    }
+
+    #[Test]
+    public function update_rental_normaliza_alias_de_cadencia(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'update_rental',
+            'params' => ['rental_name' => 'Local norte', 'billing_cadence' => 'quincenal'],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('cambia la periodicidad del arriendo a quincenal', [], $this->user->id);
+
+        $this->assertSame('QUINCENAL', $reply->action['params']['billing_cadence']);
+    }
+
+    #[Test]
+    public function el_wizard_del_acta_no_guarda_listo_como_elemento(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_delivery_act',
+            'params' => ['rental_name' => 'Local norte'],
+            'confidence' => 0.9,
+        ]);
+
+        $this->assistant()->ask('crea un acta de entrega para Local norte', [], $this->user->id);
+        $this->assistant()->ask('entrega', [], $this->user->id);
+        // "siguiente" cierra medidores + inventario vacio + extras en el
+        // mismo turno: la propuesta llega ya en esta respuesta.
+        $last = $this->assistant()->ask('siguiente', [], $this->user->id);
+
+        $this->assertSame('create_delivery_act', $last->action['type'] ?? null);
+        $this->assertSame([], $last->action['params']['items']);
+    }
+
+    #[Test]
+    public function item_sin_espacio_con_un_solo_espacio_se_asigna_solo(): void
+    {
+        $space = \App\Models\Space::factory()->create(['user_id' => $this->user->id, 'name' => 'Sala']);
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_delivery_act',
+            'params' => ['rental_name' => 'Local norte'],
+            'confidence' => 0.9,
+        ]);
+
+        $this->assistant()->ask('crea un acta de entrega para Local norte', [], $this->user->id);
+        $this->assistant()->ask('entrega', [], $this->user->id);
+        // Las lecturas cierran medidores y NO deben convertirse en item.
+        $this->assistant()->ask('agua 10, energia 20', [], $this->user->id);
+        $this->assistant()->ask('nevera bueno', [], $this->user->id);
+        $last = $this->assistant()->ask('listo', [], $this->user->id);
+
+        $items = $last->action['params']['items'] ?? [];
+
+        $this->assertCount(1, $items);
+        $this->assertSame('nevera', $items[0]['name'] ?? null);
+        $this->assertSame((int) $space->id, (int) $items[0]['space_id']);
+        $this->assertSame('Sala', $items[0]['space']);
+    }
+
+    #[Test]
+    public function item_sin_espacio_con_varios_espacios_se_descarta_con_aviso(): void
+    {
+        \App\Models\Space::factory()->create(['user_id' => $this->user->id, 'name' => 'Sala']);
+        \App\Models\Space::factory()->create(['user_id' => $this->user->id, 'name' => 'Cocina']);
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_delivery_act',
+            'params' => ['rental_name' => 'Local norte'],
+            'confidence' => 0.9,
+        ]);
+
+        $this->assistant()->ask('crea un acta de entrega para Local norte', [], $this->user->id);
+        $this->assistant()->ask('entrega', [], $this->user->id);
+        $this->assistant()->ask('agua 10', [], $this->user->id); // cierra medidores
+        $this->assistant()->ask('nevera bueno', [], $this->user->id); // item sin espacio
+        $reply = $this->assistant()->ask('listo', [], $this->user->id);
+
+        // El item sin espacio resoluble se descarta con aviso, no tumba el acta.
+        $this->assertStringContainsString('nevera', $reply->text);
+        $this->assertNotNull($reply->pendingForm);
+
+        // El wizard sigue vivo: "listo" otra vez cierra con items vacios.
+        $last = $this->assistant()->ask('listo', [], $this->user->id);
+        $this->assertSame('create_delivery_act', $last->action['type'] ?? null);
+        $this->assertSame([], $last->action['params']['items']);
+    }
+
+    #[Test]
+    public function matcher_local_anula_factura_y_desactiva_arriendo(): void
+    {
+        config()->set('services.gemini.key', null);
+        Http::fake();
+
+        Invoice::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'number' => 'FV-2026-0042',
+            'amount' => 800000,
+            'status' => InvoiceStatus::EMITIDA,
+            'issued_at' => today()->toDateString(),
+            'due_at' => today()->addDays(5)->toDateString(),
+            'period' => today()->format('Y-m'),
+        ]);
+
+        $annul = $this->assistant()->ask('anula la factura FV-2026-0042', [], $this->user->id);
+
+        $this->assertSame('annul_invoice', $annul->action['type']);
+        $this->assertSame((int) Invoice::query()->where('number', 'FV-2026-0042')->value('id'), $annul->action['params']['invoice_id']);
+
+        app(AssistantActionExecutor::class)->execute($annul->action, $this->user->id);
+        $this->assertSame(InvoiceStatus::ANULADA, Invoice::query()->where('number', 'FV-2026-0042')->first()->status);
+
+        $deactivate = $this->assistant()->ask('desactiva el arriendo de Local norte', [], $this->user->id);
+
+        $this->assertSame('update_rental', $deactivate->action['type']);
+        $this->assertFalse($deactivate->action['params']['is_active']);
+        $this->assertSame((int) $this->rental->id, $deactivate->action['params']['rental_id']);
+    }
+
+    #[Test]
+    public function matcher_local_reconoce_estado_y_sincronizacion_ipc(): void
+    {
+        config()->set('services.gemini.key', null);
+        Http::fake();
+
+        $status = $this->assistant()->ask('como esta el ipc', [], $this->user->id);
+        $this->assertSame('ipc_status', $status->intent);
+
+        $sync = $this->assistant()->ask('sincroniza el ipc', [], $this->user->id);
+        $this->assertSame('sync_ipc', $sync->action['type']);
+    }
+
+    #[Test]
+    public function matcher_local_cubre_update_documento_metricas_ajustes_export_y_ficha(): void
+    {
+        config()->set('services.gemini.key', null);
+        Http::fake();
+
+        $tenantName = (string) $this->rental->tenant->name;
+
+        // Update puntual de inquilino.
+        $update = $this->assistant()->ask("cambia el telefono del inquilino {$tenantName} a 3009998877", [], $this->user->id);
+        $this->assertSame('update_tenant', $update->action['type']);
+        $this->assertSame('3009998877', $update->action['params']['phone_number']);
+
+        // Documento descargable por matcher local.
+        Invoice::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'number' => 'FV-2026-0077',
+            'amount' => 800000,
+            'status' => InvoiceStatus::PAGADA,
+            'issued_at' => today()->toDateString(),
+            'due_at' => today()->addDays(5)->toDateString(),
+            'period' => today()->format('Y-m'),
+        ]);
+
+        $doc = $this->assistant()->ask('descarga el comprobante de la factura FV-2026-0077', [], $this->user->id);
+        $this->assertSame('generate_document', $doc->action['type']);
+        $this->assertSame('receipt', $doc->action['params']['kind']);
+
+        // Metricas financieras.
+        $debtors = $this->assistant()->ask('quiénes son mis peores deudores', [], $this->user->id);
+        $this->assertSame('top_debtors', $debtors->intent);
+
+        $rate = $this->assistant()->ask('cual es mi tasa de recaudo', [], $this->user->id);
+        $this->assertSame('collection_rate', $rate->intent);
+
+        // Ciclo de vida de reajustes. Sin series IPC en el fixture el
+        // preview falla con un mensaje claro (no action), pero el intent
+        // ya quedo clasificado correctamente.
+        $record = $this->assistant()->ask('registra un reajuste para Local norte', [], $this->user->id);
+        $this->assertSame('record_adjustment', $record->intent);
+
+        // Settings y exportacion.
+        $settings = $this->assistant()->ask('como estan mis ajustes del negocio', [], $this->user->id);
+        $this->assertSame('show_settings', $settings->intent);
+
+        $export = $this->assistant()->ask('exporta la tabla a csv', [], $this->user->id);
+        $this->assertSame('export_csv', $export->action['type']);
+
+        // Ficha de entidad.
+        $detail = $this->assistant()->ask('cuéntame del arriendo de Local norte', [], $this->user->id);
+        $this->assertSame('entity_detail', $detail->intent);
+        $this->assertSame('Local norte', $detail->data['rental_detail'][0]['name'] ?? null);
+    }
+
+    #[Test]
+    public function generate_document_acepta_doc_type_canonico_de_gemini(): void
+    {
+        $invoice = Invoice::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'number' => 'FV-2026-0099',
+            'amount' => 800000,
+            'status' => InvoiceStatus::PAGADA,
+            'issued_at' => today()->toDateString(),
+            'due_at' => today()->addDays(5)->toDateString(),
+            'period' => today()->format('Y-m'),
+        ]);
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'generate_document',
+            'params' => ['doc_type' => 'payment_receipt', 'invoice_number' => 'FV-2026-0099', 'format' => 'text'],
+            'confidence' => 0.9,
+        ]);
+
+        $reply = $this->assistant()->ask('dame el comprobante de la factura FV-2026-0099', [], $this->user->id);
+
+        $this->assertSame('generate_document', $reply->action['type']);
+        $this->assertSame('receipt', $reply->action['params']['kind']);
+        $this->assertSame((int) $invoice->id, $reply->action['params']['invoice_id']);
     }
 }

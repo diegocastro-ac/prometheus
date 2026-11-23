@@ -43,6 +43,21 @@ class AssistantChat extends Component
     /** 'chat' muestra la conversacion, 'chats' el historial de conversaciones. */
     public string $view = 'chat';
 
+    /**
+     * Formulario guiado en curso (acta de entrega, etc.): {form, step,
+     * total_steps, field, prompt, quick_replies?}. Se limpia al completar,
+     * cancelar o cambiar de chat.
+     */
+    public ?array $pendingForm = null;
+
+    /**
+     * Valores editados en el modal de preview antes de confirmar: se
+     * siembran desde action.editable y se fusionan sobre action.params.
+     *
+     * @var array<string, mixed>
+     */
+    public array $previewEdits = [];
+
     public string $input = '';
 
     public bool $open = false;
@@ -180,6 +195,8 @@ class AssistantChat extends Component
         $this->messages = [];
         $this->view = 'chat';
         $this->hasUnread = false;
+        $this->pendingForm = null;
+        $this->previewEdits = [];
 
         session()->put('assistant.chat_id', $chat->id);
         $this->loadMessages();
@@ -197,6 +214,8 @@ class AssistantChat extends Component
         $this->messagesLoaded = true;
         $this->view = 'chat';
         $this->hasUnread = false;
+        $this->pendingForm = null;
+        $this->previewEdits = [];
 
         session()->put('assistant.chat_id', null);
         $this->dispatch('assistant-scroll');
@@ -245,11 +264,26 @@ class AssistantChat extends Component
         $theme = $this->detectThemeCommand($question);
         if ($theme !== null) {
             $this->dispatch('assistant-theme', theme: $theme);
+
+            // Si habia un wizard en curso (acta de entrega), el comando de
+            // tema no debe tumbarlo: la sesion sigue viva y la barra se
+            // restaura desde el ultimo mensaje que la traia.
+            $wizardAlive = app(\App\Services\Assistant\AssistantFormSession::class)
+                ->form($this->userId()) !== null;
+
             $this->pushReply(AssistantReply::say(match ($theme) {
                 'dark' => __('assistant.replies.theme_dark'),
                 'light' => __('assistant.replies.theme_light'),
                 default => __('assistant.replies.theme_system'),
             }));
+
+            if ($wizardAlive) {
+                $this->pendingForm = collect($this->messages)
+                    ->reverse()
+                    ->first(fn (array $message): bool => ($message['role'] ?? '') === 'assistant'
+                        && ($message['pending_form'] ?? null) !== null)['pending_form'] ?? null;
+            }
+
             $this->dispatch('assistant-scroll');
 
             return;
@@ -288,6 +322,26 @@ class AssistantChat extends Component
     }
 
     /**
+     * Descarga el archivo que una accion del chat dejo en cache (documento
+     * generado, CSV exportado). El token viaja en data.file del mensaje;
+     * sin el es imposible adivinar que archivo pedir.
+     */
+    public function downloadFile(string $token)
+    {
+        $file = app(AssistantActionExecutor::class)->fileForDownload($token, $this->userId());
+
+        if ($file === null) {
+            return null;
+        }
+
+        return response()->streamDownload(
+            fn () => print($file['content']),
+            $file['filename'],
+            ['Content-Type' => $file['mime']],
+        );
+    }
+
+    /**
      * Confirmacion humana de una accion propuesta. Es el unico camino por el
      * que una intencion de la IA escribe en el sistema.
      */
@@ -300,6 +354,8 @@ class AssistantChat extends Component
             return;
         }
 
+        $this->pendingForm = null;
+        $this->previewEdits = [];
         $reply = app(AssistantActionExecutor::class)->execute($action, $this->userId());
 
         $this->resolveAction($index);
@@ -315,8 +371,27 @@ class AssistantChat extends Component
             return;
         }
 
+        $this->pendingForm = null;
+        $this->previewEdits = [];
         $this->resolveAction($index);
         $this->pushReply(AssistantReply::say(__('assistant.action_cancelled')));
+        $this->dispatch('assistant-scroll');
+    }
+
+    /**
+     * Cancela el formulario guiado en curso (acta de entrega, etc.):
+     * limpia la sesion del borrador y avisa en el chat.
+     */
+    public function cancelForm(): void
+    {
+        if ($this->pendingForm === null) {
+            return;
+        }
+
+        app(\App\Services\Assistant\AssistantFormSession::class)->clear($this->userId());
+        $this->pendingForm = null;
+        $this->previewEdits = [];
+        $this->pushReply(AssistantReply::say(__('assistant.form_cancelled')));
         $this->dispatch('assistant-scroll');
     }
 
@@ -335,6 +410,15 @@ class AssistantChat extends Component
         if ($action === null) {
             return;
         }
+
+        // Campos editables: los valores por defecto salen del payload de
+        // la accion y el usuario puede corregirlos antes de confirmar.
+        $this->previewEdits = collect(is_array($action['editable'] ?? null) ? $action['editable'] : [])
+            ->mapWithKeys(fn (array $field): array => [
+                (string) ($field['key'] ?? '') => $field['value'] ?? null,
+            ])
+            ->filter(fn ($value, string $key): bool => $key !== '')
+            ->all();
 
         $this->preview = [
             'kind' => 'action',
@@ -381,6 +465,8 @@ class AssistantChat extends Component
             'rows' => array_values(array_slice($rows, 0, 200)),
             'action_index' => null,
             'action' => null,
+            // Colores de badge propuestos por la IA para esta tabla.
+            'badge_colors' => $this->messages[$messageIndex]['badge_colors'][$key] ?? [],
         ];
     }
 
@@ -420,6 +506,7 @@ class AssistantChat extends Component
                         array_keys($rows[0]),
                     ),
                     'rows' => array_values(array_slice($rows, 0, 200)),
+                    'badge_colors' => $this->messages[$messageIndex]['badge_colors'][$key] ?? [],
                 ];
             }
         }
@@ -450,8 +537,81 @@ class AssistantChat extends Component
             return;
         }
 
+        // Aplica las ediciones del modal sobre los params de la accion y
+        // las persiste en el mensaje: lo que se confirma es exactamente lo
+        // que el usuario reviso en pantalla.
+        $message = $this->messages[$index] ?? null;
+
+        if (is_array($message) && is_array($message['action'] ?? null) && $this->previewEdits !== []) {
+            $edited = $this->applyPreviewEdits($message['action']);
+            $this->messages[$index]['action'] = $edited;
+            $this->persistActionEdits($index, $edited);
+        }
+
         $this->preview = null;
+        $this->previewEdits = [];
         $this->confirmAction($index);
+    }
+
+    /**
+     * Fusiona previewEdits sobre action.params segun la lista
+     * `editable` (key -> param name). Campos editables que el usuario
+     * dejo vacios se omiten del params.
+     *
+     * @param  array<string, mixed>  $action
+     * @return array<string, mixed>
+     */
+    private function applyPreviewEdits(array $action): array
+    {
+        $editable = is_array($action['editable'] ?? null) ? $action['editable'] : [];
+
+        foreach ($editable as $field) {
+            if (! is_array($field) || ! isset($field['key'])) {
+                continue;
+            }
+
+            $key = (string) $field['key'];
+            $param = (string) ($field['param'] ?? $key);
+
+            if (! array_key_exists($key, $this->previewEdits)) {
+                continue;
+            }
+
+            $value = $this->previewEdits[$key];
+
+            // Vacios se guardan como null para que el executor decida si
+            // el campo es opcional o falta (valida de nuevo al ejecutar).
+            $action['params'][$param] = is_string($value) && trim($value) === '' ? null : $value;
+        }
+
+        return $action;
+    }
+
+    /**
+     * Persiste la accion ya editada en el mensaje guardado, para que un
+     * reload del historial muestre lo que realmente se ejecuto.
+     *
+     * @param  array<string, mixed>  $action
+     */
+    private function persistActionEdits(int $index, array $action): void
+    {
+        $message = $this->messages[$index] ?? null;
+
+        if ($message === null || ! isset($message['id'])) {
+            return;
+        }
+
+        $stored = AssistantMessage::query()
+            ->whereKey($message['id'])
+            ->where('user_id', $this->userId())
+            ->first();
+
+        if ($stored === null) {
+            return;
+        }
+
+        $stored->payload = array_merge($stored->payload ?? [], ['action' => $action]);
+        $stored->save();
     }
 
     /**
@@ -459,10 +619,16 @@ class AssistantChat extends Component
      * salen de los params guardados en la propuesta, no de texto libre.
      *
      * @param  array<string, mixed>  $action
-     * @return list<array{label: string, value: string}>
+     * @return list<array<string, mixed>>
      */
     private function actionPreviewRows(array $action): array
     {
+        // Acciones con diff before/after (updates, records con valores
+        // actuales): el payload ya trae las filas formateadas.
+        if (isset($action['changes']) && is_array($action['changes'])) {
+            return $action['changes'];
+        }
+
         $params = is_array($action['params'] ?? null) ? $action['params'] : [];
         $type = (string) ($action['type'] ?? '');
 
@@ -536,6 +702,7 @@ class AssistantChat extends Component
             foreach ($this->actionPreviewRows([
                 'type' => $type,
                 'params' => is_array($item['params'] ?? null) ? $item['params'] : [],
+                'changes' => $item['changes'] ?? null,
             ]) as $fieldRow) {
                 $fieldRow['item'] = true;
                 $fieldRow['_type'] = $type;
@@ -901,11 +1068,20 @@ class AssistantChat extends Component
                 'suggestions' => $message->payload['suggestions'] ?? [],
                 'intent' => $message->payload['intent'] ?? null,
                 'sections' => $message->payload['sections'] ?? null,
+                'pending_form' => $message->payload['pending_form'] ?? null,
+                'badge_colors' => $message->payload['badge_colors'] ?? null,
                 'table_count' => $message->payload['table_count'] ?? $this->countTables($message->payload ?? []),
                 'at' => $message->created_at?->toIso8601String(),
             ])
             ->values()
             ->all();
+
+        // El wizard guiado se restaura desde la ultima respuesta del
+        // asistente: si el usuario recarga a mitad de un acta, la barra
+        // de pasos vuelve a aparecer.
+        $this->pendingForm = collect($this->messages)
+            ->reverse()
+            ->first(fn (array $message): bool => ($message['role'] ?? '') === 'assistant')['pending_form'] ?? null;
 
         $this->messagesLoaded = true;
     }
@@ -967,18 +1143,83 @@ class AssistantChat extends Component
 
     private function pushReply(AssistantReply $reply): void
     {
+        $action = $reply->action;
+
+        // export_csv necesita las filas de la ultima tabla mostrada: se
+        // capturan aqui, en el momento de la propuesta, para que la
+        // confirmacion exporte exactamente lo que el usuario vio.
+        if (is_array($action) && ($action['type'] ?? '') === 'export_csv'
+            && ! isset($action['params']['tables'])) {
+            $action['params']['tables'] = $this->lastTablesForExport();
+        }
+
         $this->messages[] = $this->persist('assistant', $reply->text, [
             'data' => $reply->data,
-            'action' => $reply->action,
+            'action' => $action,
             'redirect' => $reply->redirect,
             'suggestions' => $reply->suggestions,
             'intent' => $reply->intent,
             'sections' => $reply->sections,
+            'pending_form' => $reply->pendingForm,
+            'badge_colors' => $reply->badgeColors,
         ]);
+
+        $this->pendingForm = $reply->pendingForm;
 
         if (! $this->open) {
             $this->hasUnread = true;
         }
+    }
+
+    /**
+     * Tablas del ultimo mensaje del asistente con datos, en el formato que
+     * espera el exportador ({headers, rows}). Recorre secciones batch.
+     *
+     * @return list<array{headers: list<string>, rows: list<array<string, mixed>>}>
+     */
+    private function lastTablesForExport(): array
+    {
+        $tables = [];
+
+        for ($i = count($this->messages) - 1; $i >= 0; $i--) {
+            $message = $this->messages[$i] ?? null;
+
+            if (($message['role'] ?? '') !== 'assistant') {
+                continue;
+            }
+
+            $sources = [];
+
+            foreach ($message['sections'] ?? [] as $section) {
+                if (is_array($section['data'] ?? null)) {
+                    $sources[] = $section['data'];
+                }
+            }
+
+            if (is_array($message['data'] ?? null)) {
+                $sources[] = $message['data'];
+            }
+
+            foreach ($sources as $data) {
+                foreach ($data as $key => $rows) {
+                    if (! is_array($rows) || $rows === [] || ! isset($rows[0]) || ! is_array($rows[0])) {
+                        continue;
+                    }
+
+                    $tables[] = [
+                        'key' => (string) $key,
+                        'headers' => array_keys($rows[0]),
+                        'rows' => array_values(array_slice($rows, 0, 500)),
+                    ];
+                }
+            }
+
+            // Solo la respuesta mas reciente: exportar tablas de hace tres
+            // mensajes seria sorprender al usuario.
+            break;
+        }
+
+        return $tables;
     }
 
     /**
@@ -1011,6 +1252,8 @@ class AssistantChat extends Component
             'suggestions' => $payload['suggestions'],
             'intent' => $payload['intent'] ?? null,
             'sections' => $payload['sections'] ?? null,
+            'pending_form' => $payload['pending_form'] ?? null,
+            'badge_colors' => $payload['badge_colors'] ?? null,
             'table_count' => $this->countTables($payload),
             'at' => $stored->created_at?->toIso8601String(),
         ];

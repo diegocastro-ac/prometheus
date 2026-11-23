@@ -39,12 +39,29 @@ class AssistantKeywordMatcher
         return $this->matchDraft($q)
             ?? $this->matchActions($q)
             ?? $this->matchOverdue($q)
+            // Documentos antes que balance: "genera el estado de cuenta"
+            // es una descarga; "cuanto me deben" sigue siendo balance.
+            ?? $this->matchDocuments($q)
             ?? $this->matchBalance($q)
+            // Metricas antes que income/balance: "tasa de recaudo" y
+            // "peores deudores" contienen palabras que esos matchers
+            // genericos capturarian primero.
+            ?? $this->matchMetrics($q)
             ?? $this->matchIncome($q)
             ?? $this->matchAnalysis($q)
+            ?? $this->matchIpc($q)
+            // Settings antes que reajustes: "ajustes del negocio" contiene
+            // "ajustes" y el matcher generico lo capturaria primero.
+            ?? $this->matchSettings($q)
+            // El ciclo de vida va ANTES del matcher generico de reajustes:
+            // "aplica el reajuste" contiene "reajuste" y sin este orden
+            // caeria en next_adjustments.
+            ?? $this->matchAdjustmentLifecycle($q)
             ?? $this->matchAdjustments($q)
             ?? $this->matchContracts($q)
             ?? $this->matchPortfolio($q)
+            ?? $this->matchLifecycle($q)
+            ?? $this->matchDomainOps($q)
             ?? $this->matchCreates($q)
             ?? $this->matchActs($q)
             ?? $this->matchNavigate($q)
@@ -57,6 +74,13 @@ class AssistantKeywordMatcher
      */
     private function matchDraft(string $q): ?array
     {
+        // Los documentos descargables ("carta de reajuste", "comprobante",
+        // "estado de cuenta") no son redacciones: los resuelve
+        // matchDocuments en matchDomainOps.
+        if ($this->hasAny($q, ['comprobante', 'recibo', 'estado de cuenta', 'documento', 'pdf', 'carta de reajuste', 'receipt'])) {
+            return null;
+        }
+
         $reminder = $this->hasAny($q, ['recordatorio', 'recordar', 'reminder', 'collect', 'payment reminder', 'mensaje de cobro', 'carta de cobro'])
             || ($this->hasAny($q, ['redact', 'escrib', 'write', 'draft']) && $this->hasAny($q, ['cobro', 'pago', 'debe', 'deben', 'saldo']));
         $notice = $this->hasAny($q, ['aviso', 'notificacion', 'notificación', 'carta', 'notice', 'notification'])
@@ -81,8 +105,24 @@ class AssistantKeywordMatcher
      */
     private function matchActions(string $q): ?array
     {
-        if ($this->hasAny($q, ['genera', 'generar', 'genera las', 'crear', 'cree', 'haz las', 'hacer', 'saca', 'emitir', 'generate', 'create', 'issue'])
+        // "genera la factura DEL arriendo de X para 2027-01": facturacion
+        // de un solo alquiler, no el barrido del portafolio.
+        if ($this->hasAny($q, ['genera', 'generar', 'crear', 'cree', 'haz', 'emitir', 'generate', 'create', 'issue'])
             && $this->hasAny($q, ['factura', 'facturas', 'invoice', 'invoices'])) {
+            $rentalName = $this->captureAfter($this->source ?? $q,
+                '/\bfactura\s+(?:del|de la|de)\s+(?:arriendo|alquiler|rental|contrato)?\s*(?:de\s+|del\s+|para\s+)?(.+?)(?=\s+(?:para|de|en|por|con)\b|[.,;!?]|$)/iu');
+
+            // Solo es bill_single si hay un arriendo explicito; "genera las
+            // facturas de 2027-02" sigue siendo el barrido general.
+            if ($rentalName !== null
+                && ! $this->hasAny($rentalName, ['todas', 'todos', 'mes', 'periodo', 'año', 'ano'])
+                && preg_match('/^\d{4}(-\d{2})?$/', $rentalName) !== 1) {
+                $params = ['rental_name' => $rentalName];
+                $params += $this->extractPeriod($q);
+
+                return ['intent' => 'bill_single_rental', 'params' => $params];
+            }
+
             return ['intent' => 'propose_generate_invoices', 'params' => $this->extractPeriod($q)];
         }
 
@@ -147,11 +187,416 @@ class AssistantKeywordMatcher
             : null;
     }
 
+    /**
+     * Estado de la serie IPC: "sincroniza el ipc" ejecuta la sincronizacion,
+     * "como esta el ipc" muestra el estado. Va antes de matchAdjustments,
+     * que captura cualquier mencion de "ipc".
+     *
+     * @return array{intent: string, params: array<string, mixed>}|null
+     */
+    private function matchIpc(string $q): ?array
+    {
+        if (! Str::contains($q, 'ipc')) {
+            return null;
+        }
+
+        if ($this->hasAny($q, ['sincroniza', 'actualiza', 'actualizar', 'sync', 'update', 'refresca'])) {
+            return ['intent' => 'sync_ipc', 'params' => []];
+        }
+
+        if ($this->hasAny($q, ['estado', 'status', 'actualizado', 'al dia', 'al día', 'como esta', 'cómo está', 'revisa', 'fresco', 'desactualizado'])) {
+            return ['intent' => 'ipc_status', 'params' => []];
+        }
+
+        // "que IPC aplicaria el reajuste de X": preview legal, no el listado.
+        if ($this->hasAny($q, ['aplic', 'aplicaría', 'aplicaria', 'seria', 'sería', 'preview', 'cuanto subiria', 'cuánto subiría'])) {
+            $params = [];
+            $name = $this->captureAfter($this->source ?? $q, '/\b(?:de|del|para)\s+(.+?)(?=\s+(?:en|el|la|por|con|a)\b|[.,;!?]|$)/iu');
+
+            if ($name !== null) {
+                $params['rental_name'] = $name;
+            }
+
+            return ['intent' => 'preview_adjustment_ipc', 'params' => $params];
+        }
+
+        return null;
+    }
+
     private function matchAdjustments(string $q): ?array
     {
-        return $this->hasAny($q, ['reajuste', 'reajustes', 'ajuste', 'ajustes', 'incremento', 'incrementos', 'ipc', 'subida', 'adjustment', 'increase'])
-            ? ['intent' => 'next_adjustments', 'params' => []]
-            : null;
+        if (! $this->hasAny($q, ['reajuste', 'reajustes', 'ajuste', 'ajustes', 'incremento', 'incrementos', 'ipc', 'subida', 'adjustment', 'increase'])) {
+            return null;
+        }
+
+        // "lista los reajustes" pide los REGISTROS (RentAdjustment), no las
+        // fechas proximas: con verbos de listado va a list_adjustments.
+        if ($this->hasAny($q, ['lista', 'listado', 'historial', 'todos los', 'todas las', 'muéstrame', 'muestrame', 'muéstreme', 'dame', 'enumera', 'show me', 'list '])
+            && ! $this->hasAny($q, ['próxim', 'proxim', 'cuando', 'vence', 'vencen', 'pendiente', 'falta', 'toca'])) {
+            return ['intent' => 'list_adjustments', 'params' => []];
+        }
+
+        return ['intent' => 'next_adjustments', 'params' => []];
+    }
+
+    /**
+     * Ciclo de vida con patrones simples y deterministas: anular facturas,
+     * activar/desactivar arriendos y actualizar un campo puntual. Los
+     * updates complejos multi-campo siguen yendo por Gemini.
+     *
+     * @return array{intent: string, params: array<string, mixed>}|null
+     */
+    private function matchLifecycle(string $q): ?array
+    {
+        // "anula la factura FAC-001" / "anular factura 123"
+        if ($this->hasAny($q, ['anula', 'anular', 'anulado', 'void', 'cancelar la factura'])
+            && $this->hasAny($q, ['factura', 'invoice'])) {
+            $params = [];
+
+            if (preg_match('/factura\s+([a-z0-9][a-z0-9\-_]*)/iu', $q, $m) === 1) {
+                $params['invoice_number'] = $m[1];
+            }
+
+            return ['intent' => 'annul_invoice', 'params' => $params];
+        }
+
+        // "desactiva el arriendo de Camila" / "pausa el alquiler de X".
+        // \b en los verbos para que "activa" no case dentro de "desactiva".
+        if (preg_match('/\b(?:desactiva|desactivar|inactiva|pausa|pausar|suspende)\w*\b/iu', $q) === 1
+            && $this->hasAny($q, ['arriendo', 'arriendos', 'alquiler', 'alquileres', 'rental', 'rentals', 'contrato'])) {
+            $params = ['is_active' => false];
+            $name = $this->extractAfter($q, '/\b(?:arriendo|alquiler|rental|contrato)\s+(?:de|del|para|de la)\s+(.+?)(?:\s+(?:a|por|en|con)\b|[.?!]|$)/iu');
+
+            if ($name !== null) {
+                $params['rental_name'] = $name;
+            }
+
+            return ['intent' => 'update_rental', 'params' => $params];
+        }
+
+        // "reactiva el arriendo de Camila" / "activa el alquiler de X"
+        if (preg_match('/\b(?:reactiva|reactivar|activa|activar|reanuda)\w*\b/iu', $q) === 1
+            && ! Str::contains(Str::lower($q), 'desactiva')
+            && $this->hasAny($q, ['arriendo', 'arriendos', 'alquiler', 'alquileres', 'rental', 'rentals', 'contrato'])) {
+            $params = ['is_active' => true];
+            $name = $this->extractAfter($q, '/\b(?:arriendo|alquiler|rental|contrato)\s+(?:de|del|para|de la)\s+(.+?)(?:\s+(?:a|por|en|con)\b|[.?!]|$)/iu');
+
+            if ($name !== null) {
+                $params['rental_name'] = $name;
+            }
+
+            return ['intent' => 'update_rental', 'params' => $params];
+        }
+
+        return null;
+    }
+
+    /**
+     * Operaciones de dominio que el matcher cubre sin Gemini: documentos,
+     * ajustes del negocio, exportacion, metricas financieras, ficha de
+     * entidad, updates puntuales y ciclo de vida de reajustes. Los updates
+     * multi-campo complejos siguen siendo territorio de Gemini.
+     *
+     * @return array{intent: string, params: array<string, mixed>}|null
+     */
+    private function matchDomainOps(string $q): ?array
+    {
+        return $this->matchExport($q)
+            ?? $this->matchEntityDetail($q)
+            ?? $this->matchUpdates($q);
+    }
+
+    /**
+     * Documentos descargables. Exige verbo de generacion/descarga para no
+     * robar consultas ("cuanto debe X" no es un estado de cuenta pedido).
+     */
+    private function matchDocuments(string $q): ?array
+    {
+        // Verbo de documento o sustantivo inequivoco. Sin "dame/muestrame"
+        // sueltos: "dame las facturas" es un listado, no un PDF.
+        $explicit = $this->hasAny($q, ['genera', 'generar', 'descarga', 'descargar', 'pdf', 'documento', 'generate', 'download', 'exporta']);
+        $noun = $this->hasAny($q, ['comprobante', 'recibo', 'carta de reajuste', 'estado de cuenta', 'receipt']);
+
+        if (! $explicit && ! $noun) {
+            return null;
+        }
+
+        // "lista/muestra los comprobantes" es consulta, no descarga.
+        if (! $explicit && $this->hasAny($q, ['lista', 'listado', 'muéstrame', 'muestrame', 'muéstreme', 'muestreme', 'cuántos', 'cuantos', 'ver '])) {
+            return null;
+        }
+
+        $params = [];
+        $number = $this->captureAfter($this->source ?? $q, '/\b(?:factura|invoice|n[°º.]*)\s*[:#]?\s*([a-z0-9][a-z0-9\-_]{2,})/iu')
+            ?? $this->captureAfter($this->source ?? $q, '/\b(?:n[°º.]*)\s*[:#]?\s*([a-z0-9][a-z0-9\-_]{2,})/iu');
+
+        // "factura del arriendo" capturaria "del" como numero: se descarta.
+        if ($number !== null && ! in_array(Str::lower($number), ['del', 'de', 'la', 'el', 'para', 'con', 'por'], true)) {
+            $params['number'] = $number;
+        }
+
+        if ($this->hasAny($q, ['comprobante', 'recibo', 'receipt'])) {
+            return ['intent' => 'generate_document', 'params' => $params + ['document_type' => 'payment_receipt']];
+        }
+
+        if ($this->hasAny($q, ['carta de reajuste', 'carta de ajuste', 'adjustment letter'])
+            || ($this->hasAny($q, ['carta']) && $this->hasAny($q, ['reajuste', 'adjustment']))) {
+            return ['intent' => 'generate_document', 'params' => $params + ['document_type' => 'adjustment_letter']];
+        }
+
+        if ($this->hasAny($q, ['estado de cuenta', 'statement'])) {
+            $rental = $this->captureAfter($this->source ?? $q, '/\b(?:de|del|para)\s+(.+?)(?=\s+(?:del|de|en|por|para|del periodo|del período)\b|[.,;!?]|$)/iu');
+
+            if ($rental !== null && ! $this->hasAny($rental, ['estado', 'cuenta', 'periodo', 'mes'])) {
+                $params['rental_name'] = $rental;
+            }
+
+            $params += $this->extractPeriod($q);
+
+            return ['intent' => 'generate_document', 'params' => $params + ['document_type' => 'monthly_statement']];
+        }
+
+        if ($this->hasAny($q, ['factura', 'invoice'])) {
+            return ['intent' => 'generate_document', 'params' => $params + ['document_type' => 'rent_invoice']];
+        }
+
+        return null;
+    }
+
+    private function matchSettings(string $q): ?array
+    {
+        // Frases inequivocas: "ajustes" suelto tambien aparece dentro de
+        // "reajustes" y "nit" es un dato de tenant, no del negocio.
+        if (! $this->hasAny($q, ['ajustes del negocio', 'ajustes de la empresa', 'configuracion', 'configuración', 'settings', 'datos del negocio', 'informacion del negocio', 'información del negocio', 'pie legal', 'nombre del negocio', 'datos fiscales'])) {
+            return null;
+        }
+
+        if ($this->hasAny($q, ['cambia', 'cambiar', 'actualiza', 'actualizar', 'modifica', 'modificar', 'edita', 'corrige', 'pon', 'poner', 'update', 'change', 'set'])) {
+            $params = [];
+
+            if ($this->hasAny($q, ['pie legal', 'footer', 'legal'])) {
+                $params['legal_footer'] = $this->captureAfter($this->source ?? $q, '/(?:pie legal|footer|legal)[^a-z0-9]*[:\-]?\s*(.+?)(?=\s+(?:y|ademas|además)\b|[.,;!?]|$)/iu') ?? '';
+            }
+
+            if ($this->hasAny($q, ['nit', 'tax']) && preg_match('/\bnit\s*[:#]?\s*([\w.-]{3,})/iu', $this->source ?? $q, $m) === 1) {
+                $params['tax_id'] = $m[1];
+            }
+
+            return ['intent' => 'update_settings', 'params' => $params];
+        }
+
+        return ['intent' => 'show_settings', 'params' => []];
+    }
+
+    private function matchExport(string $q): ?array
+    {
+        if (! $this->hasAny($q, ['exporta', 'exportar', 'descarga', 'descargar', 'pásame', 'pasame', 'excel', 'csv', 'export', 'download'])) {
+            return null;
+        }
+
+        return ['intent' => 'export_csv', 'params' => []];
+    }
+
+    private function matchMetrics(string $q): ?array
+    {
+        if ($this->hasAny($q, ['peores deudores', 'mas morosos', 'más morosos', 'top deudores', 'quiénes deben más', 'quienes deben mas', 'mayores deudores'])) {
+            return ['intent' => 'top_debtors', 'params' => []];
+        }
+
+        if ($this->hasAny($q, ['recaudo por', 'por metodo de pago', 'por método de pago', 'por medio de pago', 'payments by method'])) {
+            return ['intent' => 'payments_by_method', 'params' => []];
+        }
+
+        if ($this->hasAny($q, ['tasa de recaudo', 'porcentaje de recaudo', 'collection rate', 'dias promedio de atraso', 'días promedio de atraso'])) {
+            return ['intent' => 'collection_rate', 'params' => []];
+        }
+
+        if ($this->hasAny($q, ['cartera vencida', 'antigüedad', 'antiguedad', 'aging', 'rangos? de d[ií]as', 'bucket'])) {
+            return ['intent' => 'aging_report', 'params' => []];
+        }
+
+        return null;
+    }
+
+    /**
+     * "cuéntame del arriendo de X", "ficha del inquilino Y": pide la ficha
+     * completa de una entidad, no el listado.
+     */
+    private function matchEntityDetail(string $q): ?array
+    {
+        if (! $this->hasAny($q, ['cuéntame', 'cuentame', 'detallame', 'detállame', 'ficha', 'háblame', 'hablame', 'info de', 'información de', 'informacion de', 'datos de', 'tell me about'])) {
+            return null;
+        }
+
+        $entityType = match (true) {
+            $this->hasAny($q, ['inquilino', 'inquilinos', 'tenant', 'arrendatario']) => 'tenant',
+            $this->hasAny($q, ['propiedad', 'inmueble', 'property']) => 'property',
+            $this->hasAny($q, ['factura', 'invoice']) => 'invoice',
+            $this->hasAny($q, ['reajuste', 'adjustment']) => 'adjustment',
+            default => 'rental',
+        };
+
+        $name = $this->captureAfter($this->source ?? $q,
+            '/\b(?:del|de la|de|para)\s+(?:el\s+|la\s+)?(?:arriendo|alquiler|rental|contrato|inquilino|inquilina|arrendatario|propiedad|inmueble|factura|invoice|reajuste)?\s*(?:de\s+|del\s+)?(.+?)(?=[.,;!?]|$)/iu');
+
+        // Sin nombre o con un sustantivo generico no es ficha de entidad:
+        // "cuentame del portafolio" es portfolio_summary, no un rental.
+        if ($name === null
+            || $this->hasAny($name, ['todo', 'todos', 'general', 'resumen', 'negocio', 'portafolio', 'portfolio', 'finanzas', 'sistema', 'cuenta', 'ajustes'])) {
+            return null;
+        }
+
+        $params = ['entity_type' => $entityType, 'name' => $name];
+
+        return ['intent' => 'entity_detail', 'params' => $params];
+    }
+
+    /**
+     * Updates puntuales de un campo: "cambia el teléfono del inquilino X
+     * a 300...", "actualiza la dirección de la propiedad Y". El valor se
+     * extrae tras "a|por|en"; si falta, el invocador igual propone con lo
+     * que haya y el usuario corrige en el modal editable.
+     */
+    private function matchUpdates(string $q): ?array
+    {
+        if (! $this->hasAny($q, ['cambia', 'cambiar', 'actualiza', 'actualizar', 'modifica', 'modificar', 'edita', 'editar', 'corrige', 'corregir', 'cámbiale', 'update', 'change', 'set'])) {
+            return null;
+        }
+
+        $value = $this->captureAfter($this->source ?? $q,
+            '/\b(?:a|por|en|con)\s+(.+?)(?=\s+(?:por favor|porfa|please|gracias)\b|[.,;!?]|$)/iu');
+
+        // Arriendo: canon/monto/periodicidad/fechas.
+        if ($this->hasAny($q, ['arriendo', 'arriendos', 'alquiler', 'alquileres', 'rental', 'rentals', 'contrato'])) {
+            $params = [];
+
+            $rentalName = $this->captureAfter($this->source ?? $q,
+                '/\b(?:arriendo|alquiler|rental|contrato)\s+(?:de|del|para|de la)\s+(.+?)(?:\s+(?:a|por|en|con|que|a)\b|[.,;!?]|$)/iu');
+
+            if ($rentalName !== null) {
+                $params['rental_name'] = $rentalName;
+            }
+
+            $amount = null;
+
+            if (preg_match('/\$\s?(\d[\d.,]*)/u', $this->source ?? $q, $m) === 1) {
+                $amount = $m[1];
+            } elseif ($value !== null && preg_match('/\d/', $value) === 1) {
+                $amount = $value;
+            }
+
+            if ($this->hasAny($q, ['canon', 'monto', 'arriendo', 'precio', 'cuota', 'valor']) && $amount !== null) {
+                $params['monthly_amount'] = $amount;
+            } elseif ($this->hasAny($q, ['periodicidad', 'cadencia', 'frecuencia', 'mensual', 'quincenal', 'anticipo'])) {
+                $params['billing_cadence'] = $this->hasAny($q, ['quincenal']) ? 'QUINCENAL'
+                    : ($this->hasAny($q, ['anticipo']) ? 'ANTICIPO' : 'MENSUAL');
+            } else {
+                return null;
+            }
+
+            return ['intent' => 'update_rental', 'params' => $params];
+        }
+
+        // Inquilino: telefono, correo, documento.
+        if ($this->hasAny($q, ['inquilino', 'inquilinos', 'tenant', 'arrendatario'])) {
+            $field = match (true) {
+                $this->hasAny($q, ['telefono', 'teléfono', 'celular', 'phone', 'tel', 'whatsapp']) => 'phone_number',
+                $this->hasAny($q, ['correo', 'email', 'mail']) => 'email',
+                $this->hasAny($q, ['documento', 'cedula', 'cédula', 'cc', 'nit']) => 'document',
+                default => null,
+            };
+
+            if ($field === null) {
+                return null;
+            }
+
+            $params = [$field => $value ?? ''];
+            $name = $this->captureAfter($this->source ?? $q,
+                '/\b(?:inquilino|inquilina|arrendatario|tenant)\s+(?:de|del|para|de la)?\s*(.+?)(?:\s+(?:a|por|en|con)\b|[.,;!?]|$)/iu');
+
+            if ($name !== null) {
+                $params['tenant_name'] = $name;
+            }
+
+            return ['intent' => 'update_tenant', 'params' => $params];
+        }
+
+        // Propiedad: direccion.
+        if ($this->hasAny($q, ['propiedad', 'inmueble', 'property', 'apto', 'apartamento'])
+            && $this->hasAny($q, ['direccion', 'dirección', 'address', 'ubicacion', 'ubicación'])) {
+            $params = ['address' => $value ?? ''];
+            $name = $this->captureAfter($this->source ?? $q,
+                '/\b(?:propiedad|inmueble|apto|apartamento|local|oficina)\s+(?:de|del|para|de la)?\s*(.+?)(?:\s+(?:a|por|en|con)\b|[.,;!?]|$)/iu');
+
+            if ($name !== null) {
+                $params['property_name'] = $name;
+            }
+
+            return ['intent' => 'update_property', 'params' => $params];
+        }
+
+        return null;
+    }
+
+    /**
+     * Ciclo de vida de reajustes: registrar, aplicar, notificar y
+     * recalcular. El "ultimo del arriendo" lo resuelve el invocador cuando
+     * no hay numero.
+     *
+     * @return array{intent: string, params: array<string, mixed>}|null
+     */
+    private function matchAdjustmentLifecycle(string $q): ?array
+    {
+        $hasAdjustment = $this->hasAny($q, ['reajuste', 'reajustes', 'ajuste', 'ajustes', 'incremento', 'adjustment', 'cadena de reajustes']);
+
+        if (! $hasAdjustment) {
+            return null;
+        }
+
+        $params = [];
+
+        $rentalName = $this->captureAfter($this->source ?? $q,
+            '/\b(?:de|del|para)\s+(.+?)(?=\s+(?:a|por|en|con|desde|el)\b|[.,;!?]|$)/iu');
+
+        if ($rentalName !== null && ! $this->hasAny($rentalName, ['reajuste', 'cadena', 'ipc'])) {
+            $params['rental_name'] = $rentalName;
+        }
+
+        if ($this->hasAny($q, ['registra', 'registrar', 'propón', 'propon', 'proponer', 'programa', 'agrega', 'añade', 'anade'])) {
+            $from = $this->captureAfter($this->source ?? $q,
+                '/\b(?:desde|a partir del|a partir de|el|para el)\s+(\d{4}-\d{2}-\d{2}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|[a-záéíóú]+\s+\d{4})/iu');
+
+            if ($from !== null) {
+                $params['effective_from'] = $from;
+            }
+
+            return ['intent' => 'record_adjustment', 'params' => $params];
+        }
+
+        if ($this->hasAny($q, ['aplica', 'aplicar', 'aplicalo', 'poner en vigencia', 'deja vigente'])) {
+            return ['intent' => 'apply_adjustment', 'params' => $params];
+        }
+
+        if ($this->hasAny($q, ['notificad', 'notificado', 'notificada', 'avisa', 'avisar'])) {
+            $params['method'] = $this->hasAny($q, ['correo', 'email', 'mail']) ? 'email'
+                : ($this->hasAny($q, ['presencial', 'en persona', 'in person']) ? 'in_person'
+                : ($this->hasAny($q, ['cart', 'postal']) ? 'postal' : 'contractual'));
+
+            $on = $this->captureAfter($this->source ?? $q,
+                '/\b(?:del|de|el)\s+(\d{4}-\d{2}-\d{2}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|[a-záéíóú]+\s+\d{4})/iu');
+
+            if ($on !== null) {
+                $params['notified_on'] = $on;
+            }
+
+            return ['intent' => 'mark_adjustment_notified', 'params' => $params];
+        }
+
+        if ($this->hasAny($q, ['recalcula', 'recalcular', 'reprocesa', 'actualiza la cadena'])) {
+            return ['intent' => 'recalculate_adjustments', 'params' => $params];
+        }
+
+        return null;
     }
 
     private function matchPortfolio(string $q): ?array
@@ -264,9 +709,20 @@ class AssistantKeywordMatcher
             return null;
         }
 
-        // "crea un acta" no es un listado; lo resuelve Gemini o cae en unknown.
+        // "crea un acta" inicia el wizard guiado; el arriendo puede venir
+        // en la misma frase ("...para Local norte") o pedirse en el paso 1.
         if ($this->hasAny($q, ['crea', 'crear', 'agrega', 'agregar', 'nueva', 'nuevo', 'registra', 'add', 'create', 'new'])) {
-            return null;
+            $params = [];
+            // "para X" es la forma natural; "de X" solo si no es parte de
+            // "acta de entrega/recepción" (ahi 'de' introduce el tipo).
+            $rental = $this->extractAfter($q, '/\bpara\s+(.+?)(?:[.?!]|$)/u')
+                ?? $this->extractAfter($q, '/\b(?:del|de)\s+(?!entrega|recepci|recepción|inventario|acta)(.+?)(?:[.?!]|$)/u');
+
+            if ($rental !== null && ! $this->hasAny($rental, ['acta', 'entrega', 'recepción', 'recepcion', 'inventario'])) {
+                $params['rental_name'] = $rental;
+            }
+
+            return ['intent' => 'create_delivery_act', 'params' => $params];
         }
 
         if ($this->hasAny($q, ['llévame', 'llevame', 'ir a', 'sección', 'seccion', 'pantalla', 'page', 'open', 'go to'])) {

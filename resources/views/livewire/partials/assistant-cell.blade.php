@@ -3,7 +3,7 @@
      pinta como control de expansion dentro del x-data del tbody padre. --}}
 @php
     $isNestedRows = is_array($cell) && isset($cell[0]) && is_array($cell[0]);
-    $badge = is_array($cell) ? null : \App\Support\AssistantStatusBadge::for($column ?? null, $cell);
+    $badge = is_array($cell) ? null : \App\Support\AssistantStatusBadge::for($column ?? null, $cell, $aiColor ?? null);
 @endphp
 @if (is_array($cell) && $cell === [])
     <span class="text-gray-400 dark:text-gray-500">—</span>

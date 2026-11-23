@@ -2,15 +2,12 @@
 
 namespace App\Filament\Resources\DeliveryActResource\Pages;
 
-use App\Enums\ActItemState;
 use App\Filament\Resources\DeliveryActResource;
 use App\Models\DeliveryAct;
-use App\Models\Rental;
-use App\Services\Acts\DeliveryActBuilder;
 use App\Services\Acts\DeliveryActDraft;
+use App\Services\Acts\DeliveryActRecorder;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\CreateRecord;
-use Illuminate\Support\Carbon;
 use RuntimeException;
 
 /**
@@ -96,99 +93,17 @@ class CreateDeliveryAct extends CreateRecord
     }
 
     /**
+     * El ensamblado vive en DeliveryActRecorder: la pantalla y el asistente
+     * de chat comparten la misma fuente de reglas del Builder.
+     *
      * @param  array<string, mixed>  $data
      */
     private function assemble(array $data): DeliveryAct
     {
-        $rental = Rental::findOrFail($data['rental_id']);
-
-        $builder = app(DeliveryActBuilder::class)
-            ->forRental($rental, $data['landlord_name'], $data['tenant_name'])
-            ->ofType($data['type'])
-            ->onDate(
-                Carbon::parse($data['occurred_at']),
-                $this->blankToNull($data['scheduled_at'] ?? null),
-            )
-            ->withParties([
-                'landlord_document' => $this->blankToNull($data['landlord_document'] ?? null),
-                'tenant_document' => $this->blankToNull($data['tenant_document'] ?? null),
-            ]);
-
-        // Seccion de medidores: solo si el arrendador escribio al menos uno.
-        $readings = array_filter([
-            'water' => $this->blankToNull($data['water_reading'] ?? null),
-            'energy' => $this->blankToNull($data['energy_reading'] ?? null),
-            'gas' => $this->blankToNull($data['gas_reading'] ?? null),
-        ], fn ($value): bool => $value !== null);
-
-        if ($readings !== []) {
-            $builder = $builder->withMeterReadings($readings);
-        }
-
-        // Seccion de inventario: solo si hay elementos con referencia de
-        // catalogo o, por compatibilidad, con un nombre suelto.
-        $items = array_values(array_filter(
-            (array) ($data['items'] ?? []),
-            fn (array $item): bool => $this->blankToNull($item['master_inventory_item_id'] ?? null) !== null
-                || trim((string) ($item['name'] ?? '')) !== '',
-        ));
-
-        if ($items !== []) {
-            $builder = $builder->withInventory(array_map(fn (array $item): array => [
-                'space_id' => $item['space_id'] ?? null,
-                'space' => $item['space'] ?? null,
-                'master_inventory_item_id' => $item['master_inventory_item_id'] ?? null,
-                'name' => $item['name'] ?? '',
-                'state' => $this->blankToNull($item['state'] ?? null) ?? ActItemState::BUENO->value,
-                'note' => $this->blankToNull($item['note'] ?? null),
-                'photo_path' => $this->firstPath($item['photo_path'] ?? null),
-            ], $items));
-        }
-
-        // Seccion de compromisos: solo si hay texto.
-        $commitments = $this->blankToNull($data['commitments'] ?? null);
-        $observations = $this->blankToNull($data['observations'] ?? null);
-
-        if ($commitments !== null || $observations !== null) {
-            $builder = $builder->withCommitments($commitments, $observations);
-        }
-
-        // Seccion de firmas: solo si hay al menos una firma.
-        $landlordSignature = $this->firstPath($data['landlord_signature_path'] ?? null);
-        $tenantSignature = $this->firstPath($data['tenant_signature_path'] ?? null);
-        $signedAt = $this->blankToNull($data['signed_at'] ?? null);
-
-        if ($landlordSignature !== null || $tenantSignature !== null) {
-            $builder = $builder->withSignatures(
-                $landlordSignature,
-                $tenantSignature,
-                $signedAt !== null ? Carbon::parse($signedAt) : null,
-            );
-        }
-
-        return $builder->build();
-    }
-
-    /**
-     * Los campos de archivo y los select vacios llegan como '' o [] y el Builder
-     * los trata como secciones ausentes, no como secciones en blanco.
-     */
-    private function blankToNull(mixed $value): mixed
-    {
-        if ($value === null || $value === '' || $value === []) {
-            return null;
-        }
-
-        return $value;
-    }
-
-    private function firstPath(mixed $value): ?string
-    {
-        if (is_array($value)) {
-            return $value[0] ?? null;
-        }
-
-        return $this->blankToNull($value);
+        return app(DeliveryActRecorder::class)->record(
+            $data,
+            (int) auth()->id(),
+        );
     }
 
     protected function getRedirectUrl(): string

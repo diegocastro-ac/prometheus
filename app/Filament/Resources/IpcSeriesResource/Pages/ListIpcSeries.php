@@ -4,6 +4,7 @@ namespace App\Filament\Resources\IpcSeriesResource\Pages;
 
 use App\Dto\Geography;
 use App\Events\IpcSeriesSynchronized;
+use App\Filament\Concerns\AssistantTableSearch;
 use App\Filament\Resources\IpcSeriesResource;
 use App\Services\Ipc\IpcSeriesRepository;
 use App\Services\Ipc\IpcSynchronizer;
@@ -13,6 +14,8 @@ use Filament\Resources\Pages\ListRecords;
 
 class ListIpcSeries extends ListRecords
 {
+    use AssistantTableSearch;
+
     protected static string $resource = IpcSeriesResource::class;
 
     /**
@@ -44,6 +47,12 @@ class ListIpcSeries extends ListRecords
      * dispara la reconstrucción de tasas y el recálculo de cadenas; un clic
      * accidental no debería lanzar ese trabajo.
      */
+    public function bootedInteractsWithTable(): void
+    {
+        $this->applyAssistantTableSearch();
+        parent::bootedInteractsWithTable();
+    }
+
     protected function getHeaderActions(): array
     {
         $repository = app(IpcSeriesRepository::class);

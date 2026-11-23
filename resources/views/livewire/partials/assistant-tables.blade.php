@@ -15,6 +15,9 @@
                         $tableTitle = __($columnKey) !== $columnKey ? __($columnKey) : ucfirst(str_replace('_', ' ', $key));
                     }
                     $columns = array_keys($rows[0]);
+                    // Colores de badge propuestos por la IA para esta tabla
+                    // ({columna: color}); solo aplican a estados sin enum.
+                    $tableColors = $badgeColors[$key] ?? [];
                 @endphp
                 <div>
                     <p class="mb-1 px-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">{{ $tableTitle }}</p>
@@ -44,7 +47,7 @@
                                 <tr>
                                     @foreach ($row as $column => $cell)
                                         <td class="px-2.5 py-1.5">
-                                            @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => is_string($column) ? $column : null])
+                                            @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => is_string($column) ? $column : null, 'aiColor' => $tableColors[is_string($column) ? $column : ''] ?? null])
                                         </td>
                                     @endforeach
                                 </tr>
@@ -67,7 +70,7 @@
                                                             @foreach ($nestedRows as $nestedRow)
                                                                 <tr class="border-t border-gray-950/5 dark:border-white/5">
                                                                     @foreach ($nestedRow as $nestedCellColumn => $nestedCell)
-                                                                        <td class="px-2 py-1">@include('livewire.partials.assistant-cell', ['cell' => $nestedCell, 'column' => is_string($nestedCellColumn) ? $nestedCellColumn : null, 'allowExpand' => false])</td>
+                                                                        <td class="px-2 py-1">@include('livewire.partials.assistant-cell', ['cell' => $nestedCell, 'column' => is_string($nestedCellColumn) ? $nestedCellColumn : null, 'aiColor' => $tableColors[is_string($nestedCellColumn) ? $nestedCellColumn : ''] ?? null, 'allowExpand' => false])</td>
                                                                     @endforeach
                                                                 </tr>
                                                             @endforeach

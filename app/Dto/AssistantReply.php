@@ -8,7 +8,8 @@ namespace App\Dto;
  * - text: la respuesta en palabras.
  * - data: filas/valores estructurados para pintar como tabla o tarjetas.
  * - action: operacion propuesta que espera confirmacion humana
- *   ({type, params, summary}). Nunca se ejecuta desde aqui.
+ *   ({type, params, summary, changes?, editable?}). Nunca se ejecuta
+ *   desde aqui.
  * - redirect: URL de una pantalla del panel a la que el usuario puede ir.
  * - suggestions: preguntas de seguimiento sugeridas.
  * - intent: la intencion que produjo la respuesta; el chat la guarda para
@@ -16,6 +17,12 @@ namespace App\Dto;
  *   como follow-up sin perder el contexto.
  * - sections: respuestas batch — cada entrada es {text, data} de una
  *   peticion del mensaje, para pintar texto y tablas en el orden pedido.
+ * - pendingForm: formulario guiado en curso ({form, step, total_steps,
+ *   field, prompt, quick_replies?}). El chat lo muestra como barra de
+ *   progreso sobre el input hasta que se completa o se cancela.
+ * - badgeColors: mapa {tabla: {columna: color}} propuesto por la IA
+ *   para pintar badges de estado. Solo aplica cuando el valor no
+ *   matchea un enum conocido; los colores de dominio siempre ganan.
  */
 final class AssistantReply
 {
@@ -25,6 +32,8 @@ final class AssistantReply
      * @param  array{instruction: string, context: array<string, mixed>}|null  $draft
      * @param  list<string>  $suggestions
      * @param  list<array{text: string, data: array<string, mixed>|null}>|null  $sections
+     * @param  array{form: string, step: int, total_steps: int, field: string, prompt: string, quick_replies?: list<string>}|null  $pendingForm
+     * @param  array<string, array<string, string>>|null  $badgeColors
      */
     public function __construct(
         public readonly string $text,
@@ -35,6 +44,8 @@ final class AssistantReply
         public readonly ?array $draft = null,
         public readonly ?string $intent = null,
         public readonly ?array $sections = null,
+        public readonly ?array $pendingForm = null,
+        public readonly ?array $badgeColors = null,
     ) {}
 
     public function withIntent(string $intent): self
@@ -48,6 +59,49 @@ final class AssistantReply
             $this->draft,
             $intent,
             $this->sections,
+            $this->pendingForm,
+            $this->badgeColors,
+        );
+    }
+
+    /**
+     * Reemplaza las sugerencias (las de la IA llegan sanitizadas desde el
+     * adapter; si vienen vacias se conservan las del invoker).
+     *
+     * @param  list<string>  $suggestions
+     */
+    public function withSuggestions(array $suggestions): self
+    {
+        return new self(
+            $this->text,
+            $this->data,
+            $this->action,
+            $this->redirect,
+            $suggestions,
+            $this->draft,
+            $this->intent,
+            $this->sections,
+            $this->pendingForm,
+            $this->badgeColors,
+        );
+    }
+
+    /**
+     * @param  array<string, array<string, string>>|null  $badgeColors
+     */
+    public function withBadgeColors(?array $badgeColors): self
+    {
+        return new self(
+            $this->text,
+            $this->data,
+            $this->action,
+            $this->redirect,
+            $this->suggestions,
+            $this->draft,
+            $this->intent,
+            $this->sections,
+            $this->pendingForm,
+            $badgeColors,
         );
     }
 
