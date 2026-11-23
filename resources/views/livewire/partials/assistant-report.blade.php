@@ -19,7 +19,9 @@
     $fromPreview = $fromPreview ?? false;
     $previewMethod = $previewMethod ?? null;
     $previewIndex = $previewIndex ?? null;
-    $promptMethod = $fromPreview ? 'askFromPreview' : 'askSuggestion';
+    // Los botones prompt van por Alpine (sendSuggestion/sendFromPreview):
+    // echo optimista + cierre instantaneo del modal sin congelar la UI.
+    $alpinePromptMethod = $fromPreview ? 'sendFromPreview' : 'sendSuggestion';
     $iconBtn = 'inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:ring-white/10 dark:hover:bg-white/5';
     // Paleta apagada para graficas: grises primero, acentos solo para
     // distinguir series. Nada saturado.
@@ -272,7 +274,7 @@
                                                                     {{ $stepItem['action']['label'] }}
                                                                 </button>
                                                             @elseif (($stepItem['action']['kind'] ?? '') === 'prompt' && ! empty($stepItem['action']['prompt']))
-                                                                <button type="button" @if ($fromPreview) x-on:click="dismissPreviewForChat()" @endif wire:click="{{ $promptMethod }}({{ \Illuminate\Support\Js::from($stepItem['action']['prompt']) }})" wire:loading.attr="disabled" class="{{ $iconBtn }} mt-1.5">
+                                                                <button type="button" x-on:click="{{ $alpinePromptMethod }}({{ \Illuminate\Support\Js::from($stepItem['action']['prompt']) }})" x-bind:disabled="sending" class="{{ $iconBtn }} mt-1.5">
                                                                     {{ $stepItem['action']['label'] }}
                                                                 </button>
                                                             @endif

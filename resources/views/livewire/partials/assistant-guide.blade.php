@@ -11,7 +11,10 @@
     $fromPreview = $fromPreview ?? false;
     $previewMethod = $previewMethod ?? null;
     $previewIndex = $previewIndex ?? null;
-    $promptMethod = $fromPreview ? 'askFromPreview' : 'askSuggestion';
+    // Los botones prompt van por Alpine (sendSuggestion/sendFromPreview):
+    // echo optimista del mensaje + indicador de pensamiento + cierre
+    // instantaneo del modal, sin congelar la UI durante la respuesta.
+    $alpinePromptMethod = $fromPreview ? 'sendFromPreview' : 'sendSuggestion';
     $visibleSteps = $compact ? array_slice($guide['steps'] ?? [], 0, 2) : ($guide['steps'] ?? []);
 @endphp
 
@@ -93,9 +96,8 @@
                                 @elseif ($step['action']['kind'] === 'prompt' && ! empty($step['action']['prompt']))
                                     <button
                                         type="button"
-                                        @if ($fromPreview) x-on:click="dismissPreviewForChat()" @endif
-                                        wire:click="{{ $promptMethod }}({{ \Illuminate\Support\Js::from($step['action']['prompt']) }})"
-                                        wire:loading.attr="disabled"
+                                        x-on:click="{{ $alpinePromptMethod }}({{ \Illuminate\Support\Js::from($step['action']['prompt']) }})"
+                                        x-bind:disabled="sending"
                                         class="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
                                     >
                                         <svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" /></svg>

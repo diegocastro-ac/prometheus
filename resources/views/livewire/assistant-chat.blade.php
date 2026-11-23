@@ -81,9 +81,12 @@
         resizeMove(event) {
             if (! this.resizing) return;
             const delta = this.resizeStartX - event.clientX;
+            // Minimo 360px: por debajo el boton copiar (que flota fuera
+            // de la card) ya no cabe en el margen y generaria scroll
+            // horizontal en el chat.
             this.drawerWidth = Math.round(Math.min(
                 window.innerWidth * 0.75,
-                Math.max(340, this.resizeStartWidth + delta),
+                Math.max(360, this.resizeStartWidth + delta),
             ));
         },
         endResize() {
@@ -207,6 +210,9 @@
             } finally {
                 this.pendingMsgs = [];
                 this.sending = false;
+                // Si la respuesta trajo un preview nuevo no debe quedar
+                // oculto por un dismiss anterior.
+                this.previewHidden = false;
                 this.scrollToBottom();
             }
         },
@@ -232,6 +238,15 @@
         },
         sendSuggestion(text) {
             return this.echoAndSend(text, () => this.$wire.askSuggestion(text));
+        },
+        // Botones de prompt dentro del modal de preview ("Hazlo
+        // conmigo", pasos de guia): cierran el modal al instante y el
+        // envio pasa por echoAndSend — el mensaje del usuario aparece
+        // de una vez y el indicador de pensamiento cubre la espera de
+        // la IA, sin congelar la vista.
+        sendFromPreview(text) {
+            this.dismissPreviewForChat();
+            return this.echoAndSend(text, () => this.$wire.askFromPreview(text));
         },
         toggleDrawer() {
             this.drawerOpen = ! this.drawerOpen;
@@ -319,7 +334,7 @@
             // drawer ocupa todo el ancho y el valor se ignora).
             try {
                 const savedWidth = parseInt(localStorage.getItem('assistant.drawerWidth') || '', 10);
-                if (savedWidth >= 340 && savedWidth <= window.innerWidth * 0.75) {
+                if (savedWidth >= 360 && savedWidth <= window.innerWidth * 0.75) {
                     this.drawerWidth = savedWidth;
                 }
             } catch (e) { /* sin storage: ancho por defecto */ }
@@ -744,7 +759,7 @@
                                  el bloque sin que las burbujas se solapen
                                  (un margin negativo aqui las encimaba). --}}
                             @if ($sameRoleAsPrev) style="margin-top:10px" @endif
-                            class="assistant-msg flex items-end gap-2 {{ $isUserMessage ? 'justify-end' : 'justify-start' }}"
+                            class="assistant-msg group flex items-end gap-2 {{ $isUserMessage ? 'justify-end' : 'justify-start' }}"
                         >
                             @if (! $isUserMessage)
                                 <span
@@ -762,11 +777,7 @@
                             <div @class([
                                 'relative max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm lg:max-w-3xl',
                                 'rounded-br-md bg-primary-600 text-white' => $isUserMessage,
-                                // pr-8 reserva la franja derecha donde vive
-                                // el boton copiar (a caballo del borde,
-                                // centrado vertical) sin que el texto o las
-                                // tablas queden debajo.
-                                'rounded-bl-md bg-white text-gray-800 ring-1 ring-gray-950/5 dark:bg-gray-800 dark:text-gray-100 dark:ring-white/10 pr-8' => ! $isUserMessage,
+                                'rounded-bl-md bg-white text-gray-800 ring-1 ring-gray-950/5 dark:bg-gray-800 dark:text-gray-100 dark:ring-white/10' => ! $isUserMessage,
                             ])>
                                 {{-- Respuestas batch: cada seccion lleva su texto
                                      seguido de sus tablas, en el orden en que el
@@ -1127,7 +1138,13 @@
                                         x-data="{ copied: false }"
                                         x-on:click="navigator.clipboard.writeText(@js($message['text'])).then(() => { copied = true; setTimeout(() => copied = false, 1500) })"
                                         title="{{ __('assistant.copy') }}"
-                                        class="absolute -right-3 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white text-gray-400 shadow-sm ring-1 ring-gray-950/10 transition hover:text-primary-600 dark:bg-gray-700 dark:text-gray-400 dark:ring-white/10 dark:hover:text-primary-400"
+                                        // Flota fuera del borde derecho de la
+                                        // card (4px de aire): aparece al
+                                        // hacer hover en el mensaje o al
+                                        // acercar el cursor al propio boton.
+                                        // En pantallas touch no hay hover:
+                                        // se muestra siempre.
+                                        class="absolute -right-7 top-1/2 z-10 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white text-gray-400 opacity-0 shadow-md ring-1 ring-gray-950/10 transition hover:text-primary-600 focus-visible:opacity-100 group-hover:opacity-100 hover:opacity-100 [@media(hover:none)]:opacity-100 dark:bg-gray-700 dark:text-gray-400 dark:ring-white/10 dark:hover:text-primary-400"
                                     >
                                         <svg x-show="!copied" class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" />
@@ -1140,7 +1157,7 @@
 
                                 @if (($message['at'] ?? null) && ! $sameRoleAsNext)
                                     <p
-                                        class="mt-1.5 {{ $isUserMessage ? '' : 'pr-8' }} text-right text-[10px] {{ $isUserMessage ? 'text-white/70' : 'text-gray-500 dark:text-gray-400' }}"
+                                        class="mt-1.5 {{ $isUserMessage ? '' : '' }} text-right text-[10px] {{ $isUserMessage ? 'text-white/70' : 'text-gray-500 dark:text-gray-400' }}"
                                         title="{{ \Illuminate\Support\Carbon::parse($message['at'])->translatedFormat('d/m/Y h:i A') }}"
                                     >
                                         {{ \Illuminate\Support\Carbon::parse($message['at'])->translatedFormat('h:i A') }}
