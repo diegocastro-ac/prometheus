@@ -11,7 +11,7 @@
     <button
         type="button"
         x-on:click="open = ! open"
-        class="inline-flex items-center gap-1 rounded-full bg-primary-50 px-2 py-0.5 text-[10px] font-semibold text-primary-700 ring-1 ring-primary-600/20 transition hover:bg-primary-100 dark:bg-primary-500/10 dark:text-primary-300 dark:ring-primary-400/30"
+        class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-600 ring-1 ring-gray-950/5 transition hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-white/15"
     >
         <span x-text="open ? '▾' : '▸'"></span>
         {{ __('assistant.nested.count', ['count' => count($cell)]) }}

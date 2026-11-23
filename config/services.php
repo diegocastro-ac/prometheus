@@ -98,6 +98,11 @@ return [
         'fallback_model' => env('GEMINI_FALLBACK_MODEL', 'gemini-3.5-flash-lite'),
         'timeout' => (int) env('GEMINI_TIMEOUT', 10),
 
+        // Redaccion final de respuestas de solo texto: la IA reescribe el
+        // resultado determinista con el contexto de la conversacion para
+        // que no suene a plantilla. Una llamada extra por respuesta.
+        'compose_replies' => env('GEMINI_COMPOSE_REPLIES', true),
+
         // Ruta opcional al bundle de CAs (cacert.pem). En Windows PHP no usa
         // el almacen del sistema: sin curl.cainfo configurado, toda llamada
         // HTTPS falla con "cURL error 60". Apuntar aqui permite resolverlo sin

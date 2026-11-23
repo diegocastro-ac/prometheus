@@ -199,8 +199,8 @@ class AppServiceProvider extends ServiceProvider
         | Mismo criterio que BusinessCalendar: el dominio habla con
         | DataAssistantInterface y no sabe si detras hay Gemini, otra API o
         | nada. GeminiDataAssistant ya degrada solo: sin GEMINI_API_KEY el
-        | matcher local sigue respondiendo consultas de lectura y las
-        | preguntas complejas muestran un aviso en vez de fallar.
+        | chat avisa que no esta configurado — ya no hay respuestas locales
+        | sin razonamiento porque perderian el hilo de la conversacion.
         |
         */
 

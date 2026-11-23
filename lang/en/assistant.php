@@ -10,6 +10,8 @@ return [
     'subtitle' => 'Your rental copilot',
     'new_chat' => 'New conversation',
     'chats_title' => 'Conversations',
+    'chats_subtitle' => ':count saved conversations',
+    'chats_loading' => 'Loading conversations…',
     'back_to_chat' => 'Back to chat',
     'delete_chat' => 'Delete conversation',
     'delete_chat_confirm' => 'Delete this conversation and all its messages?',
@@ -43,6 +45,7 @@ return [
     'action_resolved' => 'Action resolved',
     'action_done' => 'Action completed',
     'action_cancelled' => 'Action cancelled. Nothing was changed.',
+    'action_cancelled_title' => 'Action cancelled',
     'go_to' => 'Go to section',
 
     'unavailable' => 'The AI assistant is not configured. Add GEMINI_API_KEY to your .env file to enable it (free key at Google AI Studio).',
@@ -52,6 +55,11 @@ return [
 
     'candidates' => [
         'pick_one' => 'Which one of these?',
+    ],
+
+    'options' => [
+        'pick_one' => 'Pick an option or type your own:',
+        'or_type' => 'You can also type your answer below.',
     ],
 
     'suggestions' => [
@@ -513,6 +521,9 @@ return [
         'need_entity_name' => 'Which entity do you mean? Give me the rental, tenant or property name, or the invoice number.',
         'need_invoice' => 'Which invoice do you mean? Give me the number (e.g. "void invoice 2026-00123").',
         'no_statement_data' => 'There are no invoices in period :period for :rental, so a statement would come out empty. Check the period or generate the invoices first.',
+        'no_statement_periods' => ':rental has no invoices in :period. The periods with data are: :periods. Ask me for the statement of one of those.',
+        'no_statement_none' => ':rental has no invoices on record, so there is no statement to generate. A period must be billed first.',
+        'ask_document_kind' => 'Which document do you need for :target? I can generate the invoice, the account statement, the payment receipt or the adjustment letter.',
         'document_no_movements' => 'There is no billed activity in that period; I did not generate the document to avoid handing you an empty one.',
         'need_adjustment' => 'Which adjustment do you mean? I can find it by rental ("the latest adjustment for unit 301") or I need the number.',
         'need_settings_changes' => 'Which business setting do you want to change? For example "change the legal footer of my documents" or "update the tax id to 900123".',
@@ -520,8 +531,12 @@ return [
         'need_property_changes' => 'Which property detail do you want to change? For example "update unit 301\'s address to Cra 10 #5-20".',
         'need_rental_changes' => 'Which rental detail do you want to change? For example "raise the rent to $1,500,000" or "deactivate Camila\'s rental".',
         'choose_update_field' => 'To update :entity, tell me which detail to change. You can pick from: :fields.',
-        'update_form_prompt' => 'To update :entity, fill in the form with the fields you want to change — empty ones are left untouched — and send. You can also type "cancel" to exit.',
+        'update_form_prompt' => 'To update :entity the form already shows its current data: change only what you want to modify and send to review the changes. You can also type "cancel" to exit.',
         'create_form_prompt' => 'To register :entity, fill in the form with its details and send to review. You can also type the data in chat or "cancel" to exit.',
+        'create_batch_intro' => 'These are :count records: I will guide you through one form per record and at the end you confirm everything together as a single batch.',
+        'update_batch_intro' => 'These are :count updates: I will guide you through one form per record and at the end you confirm everything together as a single batch.',
+        'create_batch_review' => 'Review the full batch in the preview and confirm — each record is executed separately.',
+        'bill_period_covered' => 'Period :period for :rental already has invoice :invoice. I propose the document so you can review or download it.',
         'choose_update_field_prompt' => 'Which :entity detail do you want to change?',
         'update_value_prompt' => 'New value for :field?',
         'update_value_prompt_full' => 'Give me the new :field for :entity. Type it as is; you can review it before confirming.',
@@ -634,6 +649,8 @@ return [
         'reference' => 'the reference',
         'balance' => 'the balance',
         'status' => 'the status',
+        'document_type' => 'the document type',
+        'format' => 'the format',
         'optional' => 'Optional',
     ],
 
@@ -658,11 +675,13 @@ return [
         'view_all_tables' => 'View all tables (:count)',
         'all_tables' => 'All tables',
         'action_title' => 'Review before confirming',
+        'loading_title' => 'Loading…',
         'truncated' => 'Showing the first 200 rows.',
         'changes_title' => 'Changes',
         'editable_title' => 'You can edit these fields',
         'view_file' => 'File preview',
         'file_title' => 'Generated file',
+        'batch_items_title' => 'Batch items — exclude or edit each one',
     ],
 
     'update_form' => [
@@ -683,10 +702,21 @@ return [
         'send' => 'Send',
         'yes' => 'Yes',
         'no' => 'No',
+        'collapse' => 'Collapse',
+        'expand' => 'Expand',
+    ],
+
+    'report' => [
+        'fallback_title' => 'Analysis',
+        'view_full' => 'View full report',
+        'sections_label' => 'sections',
+        'blocks_label' => 'blocks',
+        'chart_total' => 'Total',
     ],
 
     'act_wizard' => [
         'ask_rental_start' => 'Which rental is the act for? Give me the tenant or rental name.',
+        'rental_label' => 'Rental (tenant — property)',
         'ask_rental_again' => 'I couldn\'t find that rental. Try the tenant name or type "cancel" to exit.',
         'rental_ambiguous' => 'I found several matching rentals. Tell me exactly which one (tenant or rental name).',
         'rental_lost' => 'That rental is no longer available. Cancel and try again.',
@@ -806,6 +836,7 @@ return [
 
     'actions' => [
         'batch_summary' => 'Register batch: :items',
+        'batch_label' => 'Register batch',
         'batch_done' => 'Done: I processed :count action(s) from the batch.',
         'update_profile_summary' => 'Update profile details',
         'profile_done' => 'Done: I updated your profile details.',
@@ -899,6 +930,13 @@ return [
         'receipt' => 'the payment receipt',
         'adjustment_letter' => 'the adjustment letter',
         'statement' => 'the account statement',
+    ],
+
+    'doc_kinds' => [
+        'invoice_prompt' => 'the invoice for :target',
+        'statement_prompt' => 'the account statement for :target',
+        'receipt_prompt' => 'the payment receipt for :target',
+        'letter_prompt' => 'the adjustment letter for :target',
     ],
 
     'insights' => [

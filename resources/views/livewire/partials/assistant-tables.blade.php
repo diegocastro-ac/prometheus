@@ -35,7 +35,7 @@
                         <thead class="bg-gray-50 dark:bg-gray-900">
                             <tr>
                                 @foreach ($columns as $column)
-                                    <th class="px-2.5 py-1.5 text-left font-semibold text-gray-500 dark:text-gray-400">
+                                    <th class="whitespace-nowrap px-2.5 py-1.5 text-left font-semibold text-gray-500 dark:text-gray-400">
                                         {{ __("assistant.columns.{$column}") !== "assistant.columns.{$column}" ? __("assistant.columns.{$column}") : str_replace('_', ' ', ucfirst($column)) }}
                                     </th>
                                 @endforeach
@@ -69,7 +69,7 @@
                                                         <thead>
                                                             <tr>
                                                                 @foreach (array_keys($nestedRows[0]) as $nestedColumn)
-                                                                    <th class="px-2 py-1 text-left font-semibold text-gray-400 dark:text-gray-500">
+                                                                    <th class="whitespace-nowrap px-2 py-1 text-left font-semibold text-gray-400 dark:text-gray-500">
                                                                         {{ __("assistant.columns.{$nestedColumn}") !== "assistant.columns.{$nestedColumn}" ? __("assistant.columns.{$nestedColumn}") : str_replace('_', ' ', ucfirst($nestedColumn)) }}
                                                                     </th>
                                                                 @endforeach
@@ -98,7 +98,7 @@
                          de 5 filas: disponible para cualquier tamaño. --}}
                     <button
                         type="button"
-                        x-on:click="previewBusy = true; $wire.previewData({{ $messageIndex }}, '{{ $key }}').finally(() => previewBusy = false)"
+                        x-on:click="openPreview(() => $wire.previewData({{ $messageIndex }}, '{{ $key }}'))"
                         class="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 transition hover:text-primary-500 dark:text-primary-400"
                     >
                         <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">

@@ -99,9 +99,12 @@ class AssistantFormSession
     }
 
     /**
-     * Formulario de creacion abierto: {entity, values} o null.
+     * Formulario de creacion abierto: {entity, values, queue?, collected?,
+     * step?, total?} o null. `queue`/`collected` solo existen cuando el
+     * form es parte de un batch de creaciones: cada entidad se diligencia
+     * por turno y al final se propone UNA accion batch con todo.
      *
-     * @return array{entity: string, values: array<string, mixed>}|null
+     * @return array{entity: string, values: array<string, mixed>, queue?: list<array{entity: string, params: array<string, mixed>}>, collected?: list<array<string, mixed>>, step?: int, total?: int}|null
      */
     public function getCreate(int $userId): ?array
     {
@@ -114,15 +117,28 @@ class AssistantFormSession
         return [
             'entity' => $data['entity'],
             'values' => is_array($data['values'] ?? null) ? $data['values'] : [],
+            'queue' => is_array($data['queue'] ?? null) ? $data['queue'] : [],
+            'collected' => is_array($data['collected'] ?? null) ? $data['collected'] : [],
+            'step' => isset($data['step']) ? (int) $data['step'] : null,
+            'total' => isset($data['total']) ? (int) $data['total'] : null,
         ];
     }
 
     /**
      * @param  array<string, mixed>  $values
+     * @param  list<array{entity: string, params: array<string, mixed>}>|null  $queue
+     * @param  list<array<string, mixed>>|null  $collected
      */
-    public function putCreate(int $userId, string $entity, array $values): void
+    public function putCreate(int $userId, string $entity, array $values, ?array $queue = null, ?array $collected = null, ?int $step = null, ?int $total = null): void
     {
-        session()->put(self::CREATE_PREFIX.$userId, ['entity' => $entity, 'values' => $values]);
+        session()->put(self::CREATE_PREFIX.$userId, array_filter([
+            'entity' => $entity,
+            'values' => $values,
+            'queue' => $queue,
+            'collected' => $collected,
+            'step' => $step,
+            'total' => $total,
+        ], fn ($value) => $value !== null));
     }
 
     public function clearCreate(int $userId): void

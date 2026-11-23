@@ -156,8 +156,9 @@ class PropertyResource extends Resource
                     ->label(__('property.infolist.address')),
                 TextEntry::make('description')
                     ->label(__('property.infolist.description')),
-                TextEntry::make('geography.label')
+                TextEntry::make('geography')
                     ->label(__('property.infolist.geography'))
+                    ->formatStateUsing(fn (?\App\Models\Geography $state): ?string => $state?->label())
                     ->placeholder(__('property.table.columns.geography_none')),
                 TextEntry::make('created_at')
                     ->label(__('property.infolist.created_at'))

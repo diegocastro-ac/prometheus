@@ -7,6 +7,9 @@ use App\Contracts\DataAssistantInterface;
 use App\Dto\AssistantReply;
 use App\Models\AssistantChat as AssistantChatModel;
 use App\Models\AssistantMessage;
+use App\Models\Invoice;
+use App\Models\RentAdjustment;
+use App\Models\Rental;
 use App\Models\User;
 use App\Services\Assistant\AssistantActionExecutor;
 use Filament\Notifications\Notification;
@@ -258,6 +261,13 @@ class AssistantChat extends Component
             return;
         }
 
+        // Una respuesta puede encadenar varias llamadas a Gemini (clasificar,
+        // lookups, redactar, reporte): el max_execution_time por defecto de
+        // PHP (30s) mata el request a mitad de la espera de cURL. El
+        // presupuesto total lo acota GeminiDataAssistant; aqui solo se
+        // amplia la ventana del request por encima de el.
+        set_time_limit(max(90, ((int) config('services.gemini.timeout', 10) * 2) + 60));
+
         // Por si el envio llega sin haber abierto el drawer (tests, atajos).
         if (! $this->messagesLoaded) {
             $this->loadMessages();
@@ -473,6 +483,27 @@ class AssistantChat extends Component
     }
 
     /**
+     * Abre el modal con el reporte completo del mensaje (analisis o
+     * guia compuesto por la IA a partir de la base de datos real).
+     */
+    public function previewReport(int $messageIndex): void
+    {
+        $report = $this->messages[$messageIndex]['data']['report'] ?? null;
+
+        if (! is_array($report) || empty($report['sections'])) {
+            return;
+        }
+
+        $this->preview = [
+            'kind' => 'report',
+            'title' => (string) ($report['title'] ?? __('assistant.report.fallback_title')),
+            'payload' => $report,
+            'action_index' => null,
+            'action' => null,
+        ];
+    }
+
+    /**
      * Chip de candidato en una respuesta ambigua ("¿cuál Camila?").
      * Re-ejecuta la intencion original con la entidad elegida via
      * _entity_ref: el nombre puede seguir siendo identico para otro
@@ -569,8 +600,11 @@ class AssistantChat extends Component
 
         $this->pendingForm = null;
         $this->previewEdits = [];
-        $this->resolveAction($index);
-        $this->applyReplyToMessage($index, AssistantReply::say(__('assistant.action_cancelled')));
+        $this->resolveAction($index, cancelled: true);
+        // Al cancelar se conserva el texto original de la propuesta: el
+        // detalle de lo que se iba a hacer no debe desaparecer; la tarjeta
+        // neutra de "Accion cancelada" ya comunica el resultado.
+        $this->applyReplyToMessage($index, AssistantReply::say(''), keepText: true);
         $this->dispatch('assistant-scroll');
     }
 
@@ -615,6 +649,22 @@ class AssistantChat extends Component
             ])
             ->filter(fn ($value, string $key): bool => $key !== '')
             ->all();
+
+        // Batch: cada item puede tener sus propios campos editables y un
+        // checkbox para excluirlo del paquete antes de confirmar.
+        if (($action['type'] ?? '') === 'batch' && is_array($action['items'] ?? null)) {
+            foreach ($action['items'] as $i => $item) {
+                $this->previewEdits["drop_{$i}"] = '0';
+
+                foreach (is_array($item['editable'] ?? null) ? $item['editable'] : [] as $field) {
+                    if (! is_array($field) || ! isset($field['key'])) {
+                        continue;
+                    }
+
+                    $this->previewEdits["b{$i}_".(string) $field['key']] = $field['value'] ?? null;
+                }
+            }
+        }
 
         $this->preview = [
             'kind' => 'action',
@@ -792,6 +842,51 @@ class AssistantChat extends Component
      */
     private function applyPreviewEdits(array $action): array
     {
+        // Batch: cada elemento se excluye con su checkbox o recibe las
+        // ediciones de SUS campos editables (keys "b{indice}_{campo}").
+        if (($action['type'] ?? '') === 'batch' && is_array($action['items'] ?? null)) {
+            $items = [];
+
+            foreach ($action['items'] as $i => $item) {
+                if (! is_array($item)) {
+                    continue;
+                }
+
+                if (in_array($this->previewEdits["drop_{$i}"] ?? '0', ['1', 'true', 'on', 'yes'], true)) {
+                    continue;
+                }
+
+                foreach (is_array($item['editable'] ?? null) ? $item['editable'] : [] as $field) {
+                    if (! is_array($field) || ! isset($field['key'])) {
+                        continue;
+                    }
+
+                    $editKey = "b{$i}_".(string) $field['key'];
+
+                    if (! array_key_exists($editKey, $this->previewEdits)) {
+                        continue;
+                    }
+
+                    $value = $this->previewEdits[$editKey];
+                    $param = (string) ($field['param'] ?? $field['key']);
+
+                    // En batch un campo vacio conserva el valor original:
+                    // es mas seguro que mandar null y perder el dato.
+                    if (is_string($value) && trim($value) === '') {
+                        continue;
+                    }
+
+                    $item['params'][$param] = $value;
+                }
+
+                $items[] = $item;
+            }
+
+            $action['items'] = $items;
+
+            return $action;
+        }
+
         $editable = is_array($action['editable'] ?? null) ? $action['editable'] : [];
 
         foreach ($editable as $field) {
@@ -884,9 +979,134 @@ class AssistantChat extends Component
             ],
             'create_rental' => $this->rentalPreviewRows($params),
             'update_profile' => $this->profilePreviewRows($params),
+            'generate_document' => $this->documentPreviewRows($params),
             'batch' => $this->batchPreviewRows($action),
-            default => [],
+            default => $this->genericPreviewRows($params),
         };
+    }
+
+    /**
+     * Filas de preview para acciones sin diff propio: lista los params
+     * escalares con su etiqueta (sin ids internos ni claves "_...").
+     *
+     * @param  array<string, mixed>  $params
+     * @return list<array{label: string, value: string}>
+     */
+    private function genericPreviewRows(array $params): array
+    {
+        $rows = [];
+
+        foreach ($params as $key => $value) {
+            $key = (string) $key;
+
+            if (str_starts_with($key, '_') || str_ends_with($key, '_id') || is_array($value) || is_object($value)) {
+                continue;
+            }
+
+            if (! is_scalar($value)) {
+                continue;
+            }
+
+            $value = trim((string) $value);
+
+            if ($value === '') {
+                continue;
+            }
+
+            $labelKey = 'assistant.fields.'.$key;
+            $label = __($labelKey);
+
+            $rows[] = [
+                'label' => $label === $labelKey ? ucfirst(str_replace('_', ' ', $key)) : $label,
+                'value' => $value,
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Preview de generacion de documento: el tipo va como badge
+     * traducido, el formato con su etiqueta de dominio y el objetivo
+     * resuelto a algo legible (numero de factura, arriendo) en vez de
+     * ids crudos.
+     *
+     * @param  array<string, mixed>  $params
+     * @return list<array{label: string, value: string, badge?: string}>
+     */
+    private function documentPreviewRows(array $params): array
+    {
+        $kind = (string) ($params['kind'] ?? '');
+        $format = (string) ($params['format'] ?? 'text');
+
+        $kindLabel = $kind !== '' ? __('assistant.doc_types.'.$kind) : '—';
+        // doc_types trae articulo ("la factura"): el badge muestra el
+        // nombre solo, igual que fieldTitle hace con los labels.
+        $kindBadge = trim((string) preg_replace('/^(?:el|la|los|las|the)\s+/iu', '', $kindLabel));
+        $kindBadge = $kindBadge === '' ? $kindLabel : mb_strtoupper(mb_substr($kindBadge, 0, 1)).mb_substr($kindBadge, 1);
+
+        $formatKey = 'invoice.documents.format.'.$format;
+        $formatLabel = __($formatKey);
+
+        $rows = [
+            [
+                'label' => __('assistant.fields.document_type'),
+                'value' => $kindBadge,
+                'badge' => 'document',
+            ],
+            [
+                'label' => __('assistant.fields.format'),
+                'value' => $formatLabel === $formatKey ? ucfirst($format) : $formatLabel,
+            ],
+        ];
+
+        $target = $this->documentTargetLabel($params);
+
+        if ($target !== null) {
+            $rows[] = ['label' => __('assistant.fields.reference'), 'value' => $target];
+        }
+
+        if (! empty($params['period'])) {
+            $rows[] = ['label' => __('assistant.fields.period'), 'value' => $this->formatPeriod((string) $params['period'])];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Etiqueta legible del objetivo del documento: numero de factura,
+     * nombre del arriendo o del ajuste. Null si no hay nada que mostrar.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function documentTargetLabel(array $params): ?string
+    {
+        $userId = $this->userId();
+
+        if (! empty($params['invoice_id'])) {
+            return Invoice::query()
+                ->where('user_id', $userId)
+                ->whereKey((int) $params['invoice_id'])
+                ->value('number');
+        }
+
+        if (! empty($params['adjustment_id'])) {
+            return RentAdjustment::query()
+                ->where('user_id', $userId)
+                ->whereKey((int) $params['adjustment_id'])
+                ->with('rental:id,name')
+                ->first()
+                ?->rental?->name;
+        }
+
+        if (! empty($params['rental_id'])) {
+            return Rental::query()
+                ->where('user_id', $userId)
+                ->whereKey((int) $params['rental_id'])
+                ->value('name');
+        }
+
+        return null;
     }
 
     /**
@@ -1302,6 +1522,7 @@ class AssistantChat extends Component
                 'data' => $message->payload['data'] ?? null,
                 'action' => $message->payload['action'] ?? null,
                 'action_resolved' => $message->payload['action_resolved'] ?? false,
+                'action_cancelled' => $message->payload['action_cancelled'] ?? false,
                 'resolved_action' => $message->payload['resolved_action'] ?? null,
                 'redirect' => $message->payload['redirect'] ?? null,
                 'suggestions' => $message->payload['suggestions'] ?? [],
@@ -1309,6 +1530,7 @@ class AssistantChat extends Component
                 'sections' => $message->payload['sections'] ?? null,
                 'pending_form' => $message->payload['pending_form'] ?? null,
                 'badge_colors' => $message->payload['badge_colors'] ?? null,
+                'options' => $message->payload['options'] ?? [],
                 'table_count' => $message->payload['table_count'] ?? $this->countTables($message->payload ?? []),
                 'at' => $message->created_at?->toIso8601String(),
             ])
@@ -1346,8 +1568,7 @@ class AssistantChat extends Component
     /**
      * Titulo del chat: truncado local del primer mensaje. Se evito la
      * llamada a Gemini a proposito: el titulo se genera dentro del mismo
-     * request de envio y una llamada HTTP extra atrasaria TODA respuesta
-     * (incluso las que el matcher resuelve al instante).
+     * request de envio y una llamada HTTP extra atrasaria TODA respuesta.
      */
     private function titleChat(string $firstMessage): void
     {
@@ -1401,6 +1622,7 @@ class AssistantChat extends Component
             'sections' => $reply->sections,
             'pending_form' => $reply->pendingForm,
             'badge_colors' => $reply->badgeColors,
+            'options' => $reply->options,
         ]);
 
         $this->pendingForm = $reply->pendingForm;
@@ -1495,6 +1717,7 @@ class AssistantChat extends Component
             'data' => $payload['data'],
             'action' => $payload['action'],
             'action_resolved' => false,
+            'action_cancelled' => false,
             'resolved_action' => null,
             'redirect' => $payload['redirect'],
             'suggestions' => $payload['suggestions'],
@@ -1502,6 +1725,7 @@ class AssistantChat extends Component
             'sections' => $payload['sections'] ?? null,
             'pending_form' => $payload['pending_form'] ?? null,
             'badge_colors' => $payload['badge_colors'] ?? null,
+            'options' => $payload['options'] ?? [],
             'table_count' => $this->countTables($payload),
             'at' => $stored->created_at?->toIso8601String(),
         ];
@@ -1546,7 +1770,7 @@ class AssistantChat extends Component
     /**
      * Marca la accion de un mensaje como resuelta, en memoria y en BD.
      */
-    private function resolveAction(int $index): void
+    private function resolveAction(int $index, bool $cancelled = false): void
     {
         $message = $this->messages[$index] ?? null;
 
@@ -1556,12 +1780,15 @@ class AssistantChat extends Component
 
         // La accion se conserva como `resolved_action` para que la tarjeta
         // "Accion completada" pueda mostrar que tipo de operacion fue y
-        // que cambios aplico, en vez de un simple check.
+        // que cambios aplico, en vez de un simple check. `action_cancelled`
+        // distingue la cancelada: se muestra como tarjeta neutra, no como
+        // si el cambio se hubiera aplicado.
         $resolvedAction = $message['action'] ?? null;
 
         $this->messages[$index]['action'] = null;
         $this->messages[$index]['resolved_action'] = $resolvedAction;
         $this->messages[$index]['action_resolved'] = true;
+        $this->messages[$index]['action_cancelled'] = $cancelled;
 
         $stored = isset($message['id'])
             ? AssistantMessage::query()->whereKey($message['id'])->where('user_id', $this->userId())->first()
@@ -1572,6 +1799,7 @@ class AssistantChat extends Component
                 'action' => null,
                 'resolved_action' => $resolvedAction,
                 'action_resolved' => true,
+                'action_cancelled' => $cancelled,
             ]);
             $stored->save();
         }
@@ -1584,7 +1812,7 @@ class AssistantChat extends Component
      * la burbuja y se persisten en el AssistantMessage original.
      * Si el resultado propone otra accion, queda como `action` nueva.
      */
-    private function applyReplyToMessage(int $index, AssistantReply $reply): void
+    private function applyReplyToMessage(int $index, AssistantReply $reply, bool $keepText = false): void
     {
         $message = $this->messages[$index] ?? null;
 
@@ -1606,7 +1834,9 @@ class AssistantChat extends Component
             is_array($reply->badgeColors) ? $reply->badgeColors : [],
         );
 
-        $this->messages[$index]['text'] = $reply->text;
+        if (! $keepText) {
+            $this->messages[$index]['text'] = $reply->text;
+        }
         $this->messages[$index]['data'] = $data === [] ? null : $data;
         $this->messages[$index]['suggestions'] = $suggestions;
         $this->messages[$index]['badge_colors'] = $badgeColors === [] ? null : $badgeColors;
@@ -1627,7 +1857,9 @@ class AssistantChat extends Component
             : null;
 
         if ($stored !== null) {
-            $stored->text = $reply->text;
+            if (! $keepText) {
+                $stored->text = $reply->text;
+            }
             $stored->payload = array_merge($stored->payload ?? [], [
                 'data' => $this->messages[$index]['data'],
                 'suggestions' => $suggestions,

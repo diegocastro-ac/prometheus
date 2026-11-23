@@ -10,6 +10,8 @@ return [
     'subtitle' => 'Tu copiloto de arriendos',
     'new_chat' => 'Nueva conversación',
     'chats_title' => 'Conversaciones',
+    'chats_subtitle' => ':count conversaciones guardadas',
+    'chats_loading' => 'Cargando conversaciones…',
     'back_to_chat' => 'Volver al chat',
     'delete_chat' => 'Eliminar conversación',
     'delete_chat_confirm' => '¿Eliminar esta conversación y todos sus mensajes?',
@@ -43,6 +45,7 @@ return [
     'action_resolved' => 'Acción resuelta',
     'action_done' => 'Acción completada',
     'action_cancelled' => 'Acción cancelada. No se modificó nada.',
+    'action_cancelled_title' => 'Acción cancelada',
     'go_to' => 'Ir a la sección',
 
     'unavailable' => 'El asistente con IA no está configurado. Agrega GEMINI_API_KEY en el archivo .env para activarlo (key gratuita en Google AI Studio).',
@@ -52,6 +55,11 @@ return [
 
     'candidates' => [
         'pick_one' => '¿Cuál de estos es?',
+    ],
+
+    'options' => [
+        'pick_one' => 'Elige una opción o escribe la tuya:',
+        'or_type' => 'También puedes escribir tu respuesta abajo.',
     ],
 
     'suggestions' => [
@@ -513,6 +521,9 @@ return [
         'need_entity_name' => '¿De qué entidad hablas? Dame el nombre del arriendo, inquilino, propiedad o número de factura.',
         'need_invoice' => '¿De qué factura hablas? Dame el número (por ejemplo "anula la factura 2026-00123").',
         'no_statement_data' => 'No hay facturas en el periodo :period para :rental, así que un estado de cuenta saldría vacío. Revisa el periodo o genera las facturas primero.',
+        'no_statement_periods' => ':rental no tiene facturas en :period. Los periodos con datos son: :periods. Pídeme el estado de cuenta de uno de esos.',
+        'no_statement_none' => ':rental no tiene facturas registradas, así que no hay estado de cuenta que generar. Primero hay que facturar un periodo.',
+        'ask_document_kind' => '¿Qué documento necesitas de :target? Puedo generarte la factura, el estado de cuenta, el comprobante de pago o la carta de reajuste.',
         'document_no_movements' => 'No hay movimientos facturados en ese periodo; no generé el documento para no entregarte uno vacío.',
         'need_adjustment' => '¿De qué reajuste hablas? Puedo buscarlo por el arriendo ("el último reajuste del apto 301") o necesito el número.',
         'need_settings_changes' => '¿Qué ajuste del negocio quieres cambiar? Por ejemplo "cambia el pie legal de mis documentos" o "actualiza el NIT a 900123".',
@@ -520,8 +531,12 @@ return [
         'need_property_changes' => '¿Qué dato de la propiedad quieres cambiar? Dime por ejemplo "actualiza la dirección del apto 301 a Cra 10 #5-20".',
         'need_rental_changes' => '¿Qué dato del arriendo quieres cambiar? Por ejemplo "sube el canon a $1.500.000" o "desactiva el arriendo de Camila".',
         'choose_update_field' => 'Para actualizar a :entity dime qué dato quieres cambiar. Puedes elegir entre: :fields.',
-        'update_form_prompt' => 'Para actualizar a :entity llena en el formulario los campos que quieras cambiar — los vacíos no se tocan — y envía. También puedes escribirme "cancela" para salir.',
+        'update_form_prompt' => 'Para actualizar a :entity el formulario ya trae sus datos actuales: cambia solo lo que quieras modificar y envía para revisar los cambios. También puedes escribirme "cancela" para salir.',
         'create_form_prompt' => 'Para registrar :entity llena el formulario con sus datos y envía para revisarlo. También puedes escribirme los datos por chat o "cancela" para salir.',
+        'create_batch_intro' => 'Son :count registros: te guío con un formulario por cada uno y al final confirmas todo junto en un solo paquete.',
+        'update_batch_intro' => 'Son :count actualizaciones: te guío con un formulario por cada una y al final confirmas todo junto en un solo paquete.',
+        'create_batch_review' => 'Revisa el paquete completo en la vista previa y confirma — cada registro se ejecuta por separado.',
+        'bill_period_covered' => 'El periodo :period de :rental ya tiene la factura :invoice. Te propongo el documento para que lo revises o descargues.',
         'choose_update_field_prompt' => '¿Qué dato de :entity quieres cambiar?',
         'update_value_prompt' => '¿Nuevo valor para :field?',
         'update_value_prompt_full' => 'Dime el nuevo :field para :entity. Escríbelo tal cual; podrás revisarlo antes de confirmar.',
@@ -634,6 +649,8 @@ return [
         'reference' => 'la referencia',
         'balance' => 'el saldo',
         'status' => 'el estado',
+        'document_type' => 'el tipo de documento',
+        'format' => 'el formato',
         'optional' => 'Opcional',
     ],
 
@@ -658,11 +675,13 @@ return [
         'view_all_tables' => 'Ver todas las tablas (:count)',
         'all_tables' => 'Todas las tablas',
         'action_title' => 'Revisa antes de confirmar',
+        'loading_title' => 'Cargando…',
         'truncated' => 'Mostrando las primeras 200 filas.',
         'changes_title' => 'Cambios',
         'editable_title' => 'Puedes editar estos campos',
         'view_file' => 'Vista previa del archivo',
         'file_title' => 'Archivo generado',
+        'batch_items_title' => 'Elementos del paquete — excluye o edita cada uno',
     ],
 
     'update_form' => [
@@ -683,10 +702,21 @@ return [
         'send' => 'Enviar',
         'yes' => 'Sí',
         'no' => 'No',
+        'collapse' => 'Contraer',
+        'expand' => 'Expandir',
+    ],
+
+    'report' => [
+        'fallback_title' => 'Análisis',
+        'view_full' => 'Ver reporte completo',
+        'sections_label' => 'secciones',
+        'blocks_label' => 'bloques',
+        'chart_total' => 'Total',
     ],
 
     'act_wizard' => [
         'ask_rental_start' => '¿Para qué arriendo es el acta? Dime el nombre del inquilino o del arriendo.',
+        'rental_label' => 'Arriendo (inquilino — propiedad)',
         'ask_rental_again' => 'No encontré ese arriendo. Prueba con el nombre del inquilino o escribe "cancela" para salir.',
         'rental_ambiguous' => 'Encontré varios arriendos que coinciden. Dime cuál exactamente (nombre del inquilino o del arriendo).',
         'rental_lost' => 'Ese arriendo ya no está disponible. Cancela y vuelve a intentarlo.',
@@ -806,6 +836,7 @@ return [
 
     'actions' => [
         'batch_summary' => 'Registrar paquete: :items',
+        'batch_label' => 'Registrar paquete',
         'batch_done' => 'Listo: procesé :count acción(es) del paquete.',
         'update_profile_summary' => 'Actualizar datos del perfil',
         'profile_done' => 'Listo: actualicé tus datos de perfil.',
@@ -899,6 +930,13 @@ return [
         'receipt' => 'el comprobante de pago',
         'adjustment_letter' => 'la carta de reajuste',
         'statement' => 'el estado de cuenta',
+    ],
+
+    'doc_kinds' => [
+        'invoice_prompt' => 'la factura de :target',
+        'statement_prompt' => 'el estado de cuenta de :target',
+        'receipt_prompt' => 'el comprobante de pago de :target',
+        'letter_prompt' => 'la carta de reajuste de :target',
     ],
 
     'insights' => [

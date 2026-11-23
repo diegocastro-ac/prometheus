@@ -40,6 +40,10 @@ class AssistantTest extends TestCase
     {
         parent::setUp();
 
+        // Los tests verifican el resultado del invoker: la redaccion
+        // final por IA se prueba aparte con un fake de dos etapas.
+        config()->set('services.gemini.compose_replies', false);
+
         DB::table('app_settings')->insert([
             'id' => 1,
             'business_name' => 'Inmobiliaria Ejemplo S.A.S.',
@@ -78,6 +82,46 @@ class AssistantTest extends TestCase
         ]);
     }
 
+    // Responde distinto payload segun el texto de la pregunta: la clave es
+    // una subcadena del mensaje del usuario (ej. 'anula' => annul_invoice).
+    private function fakeGeminiRouter(array $map): void
+    {
+        config()->set('services.gemini.key', 'test-key');
+        config()->set('services.gemini.model', 'gemini-test');
+
+        Http::fake(function ($request) use ($map) {
+            $body = json_decode((string) $request->body(), true);
+            $question = '';
+            foreach (array_reverse($body['contents'] ?? []) as $content) {
+                foreach ($content['parts'] ?? [] as $part) {
+                    $question = (string) ($part['text'] ?? '');
+                    break 2;
+                }
+            }
+
+            foreach ($map as $needle => $payload) {
+                if (mb_stripos($question, (string) $needle) !== false) {
+                    return Http::response([
+                        'candidates' => [
+                            ['content' => ['parts' => [['text' => json_encode($payload)]]]],
+                        ],
+                    ]);
+                }
+            }
+
+            return Http::response([
+                'candidates' => [
+                    ['content' => ['parts' => [['text' => json_encode([
+                        'domain' => 'app',
+                        'intent' => 'unknown',
+                        'params' => [],
+                        'confidence' => 0.9,
+                    ])]]]],
+                ],
+            ]);
+        });
+    }
+
     private function assistant(): DataAssistantInterface
     {
         return app(DataAssistantInterface::class);
@@ -98,14 +142,17 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
-    public function sin_key_las_consultas_locales_siguen_respondiendo(): void
+    public function sin_key_toda_pregunta_responde_no_configurado_sin_llamar_a_la_api(): void
     {
         config()->set('services.gemini.key', null);
         Http::fake();
 
+        // Sin key no hay razonamiento posible: ninguna pregunta de
+        // negocio recibe atajos. Solo el cambio de tema sigue siendo
+        // instantaneo.
         $reply = app(DataAssistantInterface::class)->ask('mis inquilinos', [], $this->user->id);
 
-        $this->assertStringContainsString('inquilinos', $reply->text);
+        $this->assertStringContainsString('GEMINI_API_KEY', $reply->text);
         Http::assertNothingSent();
     }
 
@@ -125,7 +172,7 @@ class AssistantTest extends TestCase
     // ---------------------------------------------------------------
 
     #[Test]
-    public function si_gemini_falla_el_matcher_local_sigue_respondiendo(): void
+    public function si_gemini_falla_muestra_error_sin_filtrar_respuestas_de_atajo(): void
     {
         Invoice::factory()->create([
             'rental_id' => $this->rental->id,
@@ -141,16 +188,16 @@ class AssistantTest extends TestCase
         config()->set('services.gemini.key', 'test-key');
         config()->set('services.gemini.model', 'gemini-test');
 
-        // API caida (red, TLS, cuota o 5xx): el chat no debe quedarse mudo
-        // cuando la pregunta se puede resolver con el matcher local.
+        // API caida (red, TLS, cuota o 5xx): el chat no debe quedarse mudo,
+        // pero tampoco inventar una respuesta de atajo sin razonamiento.
         Http::fake([
             'generativelanguage.googleapis.com/*' => Http::response('', 500),
         ]);
 
         $reply = $this->assistant()->ask('cuanto me deben', [], $this->user->id);
 
-        $this->assertStringNotContainsString('No pude responder', $reply->text);
-        $this->assertStringContainsString('$800.000', $reply->text);
+        $this->assertStringContainsString('No pude responder', $reply->text);
+        $this->assertStringNotContainsString('$800.000', $reply->text);
     }
 
     #[Test]
@@ -475,7 +522,12 @@ class AssistantTest extends TestCase
     public function el_chat_persiste_la_conversacion_en_base_de_datos(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'greeting',
+            'params' => [],
+            'confidence' => 0.95,
+        ]);
 
         Livewire::test(AssistantChat::class)
             ->set('input', 'hola')
@@ -539,26 +591,39 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
-    public function las_sugerencias_y_los_listados_funcionan_sin_llamar_a_la_api(): void
+    public function las_sugerencias_y_los_listados_funcionan(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
-        Http::fake();
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'list_tenants',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
 
         Livewire::test(AssistantChat::class)
             ->call('askSuggestion', 'mis inquilinos')
             ->assertSee('inquilinos')
             ->assertSee($this->rental->tenant->name);
 
-        // Sin key no hay titulo que generar ni classify: cero HTTP.
-        Http::assertNothingSent();
+        // Cada pregunta pasa por Gemini: el listado llega clasificado.
+        Http::assertSentCount(1);
     }
 
     #[Test]
     public function crear_inquilino_propone_accion_y_confirma(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_tenant',
+            'params' => [
+                'name' => 'María Pérez',
+                'document' => '1234567890',
+                'phone_number' => '3001234567',
+            ],
+            'confidence' => 0.95,
+        ]);
 
         Livewire::test(AssistantChat::class)
             ->set('input', 'agrega un inquilino llamado María Pérez CC 1234567890 teléfono 3001234567')
@@ -578,7 +643,12 @@ class AssistantTest extends TestCase
     public function crear_inquilino_sin_nombre_pide_el_dato(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_tenant',
+            'params' => ['name' => ''],
+            'confidence' => 0.8,
+        ]);
 
         Livewire::test(AssistantChat::class)
             ->set('input', 'agrega un inquilino nuevo')
@@ -593,7 +663,20 @@ class AssistantTest extends TestCase
     public function agendar_arriendo_crea_inquilino_propiedad_y_arriendo(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_rental',
+            'params' => [
+                'tenant_name' => 'María López',
+                'tenant_document' => '99887766',
+                'tenant_phone' => '3009998877',
+                'property_name' => 'apto 301',
+                'property_address' => 'Calle 50 #10-20',
+                'monthly_amount' => 800000,
+                'total_months' => 12,
+            ],
+            'confidence' => 0.95,
+        ]);
 
         Livewire::test(AssistantChat::class)
             ->set('input', 'agenda a María López CC 99887766 en el apto 301 por $800.000 por 12 meses teléfono 3009998877, dirección Calle 50 #10-20')
@@ -622,7 +705,15 @@ class AssistantTest extends TestCase
     public function agendar_arriendo_sin_canon_pide_el_dato(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_rental',
+            'params' => [
+                'tenant_name' => 'María',
+                'property_name' => 'apto 301',
+            ],
+            'confidence' => 0.9,
+        ]);
 
         Livewire::test(AssistantChat::class)
             ->set('input', 'agenda a María en el apto 301')
@@ -638,7 +729,16 @@ class AssistantTest extends TestCase
     public function preview_action_muestra_el_detalle_y_confirma(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_tenant',
+            'params' => [
+                'name' => 'Pedro Gómez',
+                'document' => '555',
+                'phone_number' => '3001112233',
+            ],
+            'confidence' => 0.95,
+        ]);
 
         Livewire::test(AssistantChat::class)
             ->set('input', 'agrega un inquilino llamado Pedro Gómez documento 555 tel 3001112233')
@@ -661,7 +761,12 @@ class AssistantTest extends TestCase
     public function preview_data_expande_la_tabla_completa(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'list_tenants',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
 
         Livewire::test(AssistantChat::class)
             ->set('input', 'mis inquilinos')
@@ -674,7 +779,12 @@ class AssistantTest extends TestCase
     #[Test]
     public function navegar_a_facturas_vencidas_lleva_con_filtro(): void
     {
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'navigate',
+            'params' => ['target' => 'invoices', 'filter' => 'VENCIDA'],
+            'confidence' => 0.9,
+        ]);
 
         $reply = $this->assistant()->ask('llévame a la sección de facturas vencidas', [], $this->user->id);
 
@@ -685,7 +795,12 @@ class AssistantTest extends TestCase
     #[Test]
     public function navegar_con_filtro_no_soportado_muestra_los_datos(): void
     {
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'navigate',
+            'params' => ['target' => 'tenants', 'filter' => 'ACTIVO'],
+            'confidence' => 0.8,
+        ]);
 
         $reply = $this->assistant()->ask('muéstrame la sección de inquilinos activos', [], $this->user->id);
 
@@ -730,7 +845,12 @@ class AssistantTest extends TestCase
     public function las_actas_de_entrega_listan_datos_reales_e_inventario_relevante(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'list_delivery_acts',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
 
         $act = \App\Models\DeliveryAct::factory()->create([
             'user_id' => $this->user->id,
@@ -799,7 +919,12 @@ class AssistantTest extends TestCase
     public function navegacion_explicita_a_actas_sigue_llevando_a_la_seccion(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'navigate',
+            'params' => ['target' => 'delivery_acts'],
+            'confidence' => 0.9,
+        ]);
 
         $reply = $this->assistant()->ask('llévame a la sección de actas de entrega', [], $this->user->id);
 
@@ -880,25 +1005,21 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
-    public function sin_key_el_matcher_tambien_extrae_se_llama(): void
+    public function sin_key_no_hay_atajo_local_ni_si_el_mensaje_parece_un_alta(): void
     {
         $this->actingAs($this->user);
         config()->set('services.gemini.key', null);
+        Http::fake();
 
-        // Regresion del bug reportado: el follow-up "se llama Isaac David,
-        // cc ..." debe extraer el nombre completo aunque no haya IA.
+        // Sin razonamiento de IA no se extraen datos ni se proponen altas:
+        // el chat responde que falta configurar el modelo.
         Livewire::test(AssistantChat::class)
             ->set('input', 'se llama Isaac David, cc 1067591312, tel 3023018355, correo isaacjacome9@gmail.com')
             ->call('send')
-            ->assertSee('Isaac David')
-            ->call('confirmAction', 1);
+            ->assertSee('GEMINI_API_KEY');
 
-        $this->assertDatabaseHas('tenants', [
-            'user_id' => $this->user->id,
-            'name' => 'Isaac David',
-            'document' => '1067591312',
-            'phone_number' => '3023018355',
-        ]);
+        $this->assertSame(1, \App\Models\Tenant::where('user_id', $this->user->id)->count());
+        Http::assertNothingSent();
     }
 
     #[Test]
@@ -946,6 +1067,80 @@ class AssistantTest extends TestCase
         $this->assertCount(2, $reply->sections);
         $this->assertArrayHasKey('tenants', $reply->sections[0]['data']);
         $this->assertArrayHasKey('properties', $reply->sections[1]['data']);
+    }
+
+    #[Test]
+    public function batch_de_updates_sin_campo_abre_un_solo_wizard_y_cierra_en_un_batch(): void
+    {
+        $tenantB = Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Otra Persona',
+        ]);
+        $nameA = (string) $this->rental->tenant->name;
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'unknown',
+            'confidence' => 0.9,
+            'requests' => [
+                ['intent' => 'update_tenant', 'params' => ['tenant_name' => $nameA]],
+                ['intent' => 'update_tenant', 'params' => ['tenant_name' => 'Otra Persona']],
+            ],
+        ]);
+
+        $reply = $this->assistant()->ask("quiero editar a {$nameA} y a Otra Persona", [], $this->user->id);
+
+        // UN mensaje unificado + UN formulario (el primero de la cola);
+        // antes cada update abria el suyo, se pisaban y no se veia ninguno.
+        $this->assertNotNull($reply->pendingForm);
+        $this->assertStringContainsString('2', $reply->text);
+        $this->assertSame('update_clarify', session('assistant.form.'.$this->user->id)['form'] ?? null);
+
+        $invoker = app(AssistantToolInvoker::class);
+
+        // Primer formulario: cambia el telefono del primero.
+        $first = $invoker->submitUpdateForm(['phone_number' => '3001112233'], $this->user->id);
+
+        $this->assertNull($first->action);
+        $this->assertNotNull($first->pendingForm);
+        $this->assertSame('update_clarify', session('assistant.form.'.$this->user->id)['form'] ?? null);
+
+        // Segundo formulario: cambia el nombre del segundo y cierra.
+        $last = $invoker->submitUpdateForm(['name' => 'Nombre Nuevo'], $this->user->id);
+
+        $this->assertSame('batch', $last->action['type'] ?? null);
+        $this->assertCount(2, $last->action['items'] ?? []);
+        $this->assertSame('update_tenant', $last->action['items'][0]['type'] ?? null);
+        $this->assertSame('update_tenant', $last->action['items'][1]['type'] ?? null);
+        $this->assertNull(session('assistant.form.'.$this->user->id));
+    }
+
+    #[Test]
+    public function batch_de_updates_con_campos_directos_no_abre_wizard(): void
+    {
+        Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Otra Persona',
+        ]);
+        $nameA = (string) $this->rental->tenant->name;
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'unknown',
+            'confidence' => 0.9,
+            'requests' => [
+                ['intent' => 'update_tenant', 'params' => ['tenant_name' => $nameA, 'phone_number' => '3000000001']],
+                ['intent' => 'update_tenant', 'params' => ['tenant_name' => 'Otra Persona', 'phone_number' => '3000000002']],
+            ],
+        ]);
+
+        $reply = $this->assistant()->ask("cambia el telefono de {$nameA} y de Otra Persona", [], $this->user->id);
+
+        // Con datos completos no hay wizard: las dos acciones van en un
+        // solo batch como siempre.
+        $this->assertNull($reply->pendingForm);
+        $this->assertSame('batch', $reply->action['type'] ?? null);
+        $this->assertCount(2, $reply->action['items'] ?? []);
     }
 
     #[Test]
@@ -1257,11 +1452,16 @@ class AssistantTest extends TestCase
     #[Test]
     public function el_wizard_del_acta_no_guarda_listo_como_elemento(): void
     {
-        $this->fakeGemini([
-            'domain' => 'app',
-            'intent' => 'create_delivery_act',
-            'params' => ['rental_name' => 'Local norte'],
-            'confidence' => 0.9,
+        // Con wizard activo las respuestas se clasifican: el router
+        // devuelve el intent de creacion solo para la primera pregunta;
+        // los pasos del wizard caen en 'unknown' y van al handler.
+        $this->fakeGeminiRouter([
+            'crea un acta' => [
+                'domain' => 'app',
+                'intent' => 'create_delivery_act',
+                'params' => ['rental_name' => 'Local norte'],
+                'confidence' => 0.9,
+            ],
         ]);
 
         $this->assistant()->ask('crea un acta de entrega para Local norte', [], $this->user->id);
@@ -1279,11 +1479,13 @@ class AssistantTest extends TestCase
     {
         $space = \App\Models\Space::factory()->create(['user_id' => $this->user->id, 'name' => 'Sala']);
 
-        $this->fakeGemini([
-            'domain' => 'app',
-            'intent' => 'create_delivery_act',
-            'params' => ['rental_name' => 'Local norte'],
-            'confidence' => 0.9,
+        $this->fakeGeminiRouter([
+            'crea un acta' => [
+                'domain' => 'app',
+                'intent' => 'create_delivery_act',
+                'params' => ['rental_name' => 'Local norte'],
+                'confidence' => 0.9,
+            ],
         ]);
 
         $this->assistant()->ask('crea un acta de entrega para Local norte', [], $this->user->id);
@@ -1307,11 +1509,13 @@ class AssistantTest extends TestCase
         \App\Models\Space::factory()->create(['user_id' => $this->user->id, 'name' => 'Sala']);
         \App\Models\Space::factory()->create(['user_id' => $this->user->id, 'name' => 'Cocina']);
 
-        $this->fakeGemini([
-            'domain' => 'app',
-            'intent' => 'create_delivery_act',
-            'params' => ['rental_name' => 'Local norte'],
-            'confidence' => 0.9,
+        $this->fakeGeminiRouter([
+            'crea un acta' => [
+                'domain' => 'app',
+                'intent' => 'create_delivery_act',
+                'params' => ['rental_name' => 'Local norte'],
+                'confidence' => 0.9,
+            ],
         ]);
 
         $this->assistant()->ask('crea un acta de entrega para Local norte', [], $this->user->id);
@@ -1331,11 +1535,8 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
-    public function matcher_local_anula_factura_y_desactiva_arriendo(): void
+    public function la_ia_anula_factura_y_desactiva_arriendo(): void
     {
-        config()->set('services.gemini.key', null);
-        Http::fake();
-
         Invoice::factory()->create([
             'rental_id' => $this->rental->id,
             'user_id' => $this->user->id,
@@ -1345,6 +1546,21 @@ class AssistantTest extends TestCase
             'issued_at' => today()->toDateString(),
             'due_at' => today()->addDays(5)->toDateString(),
             'period' => today()->format('Y-m'),
+        ]);
+
+        $this->fakeGeminiRouter([
+            'anula' => [
+                'domain' => 'app',
+                'intent' => 'annul_invoice',
+                'params' => ['invoice_number' => 'FV-2026-0042'],
+                'confidence' => 0.95,
+            ],
+            'desactiva' => [
+                'domain' => 'app',
+                'intent' => 'update_rental',
+                'params' => ['rental_name' => 'Local norte', 'is_active' => false],
+                'confidence' => 0.95,
+            ],
         ]);
 
         $annul = $this->assistant()->ask('anula la factura FV-2026-0042', [], $this->user->id);
@@ -1363,10 +1579,22 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
-    public function matcher_local_reconoce_estado_y_sincronizacion_ipc(): void
+    public function la_ia_reconoce_estado_y_sincronizacion_ipc(): void
     {
-        config()->set('services.gemini.key', null);
-        Http::fake();
+        $this->fakeGeminiRouter([
+            'sincroniza' => [
+                'domain' => 'app',
+                'intent' => 'sync_ipc',
+                'params' => [],
+                'confidence' => 0.95,
+            ],
+            'ipc' => [
+                'domain' => 'app',
+                'intent' => 'ipc_status',
+                'params' => [],
+                'confidence' => 0.95,
+            ],
+        ]);
 
         $status = $this->assistant()->ask('como esta el ipc', [], $this->user->id);
         $this->assertSame('ipc_status', $status->intent);
@@ -1376,19 +1604,11 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
-    public function matcher_local_cubre_update_documento_metricas_ajustes_export_y_ficha(): void
+    public function la_ia_cubre_update_documento_metricas_ajustes_export_y_ficha(): void
     {
-        config()->set('services.gemini.key', null);
-        Http::fake();
-
         $tenantName = (string) $this->rental->tenant->name;
 
-        // Update puntual de inquilino.
-        $update = $this->assistant()->ask("cambia el telefono del inquilino {$tenantName} a 3009998877", [], $this->user->id);
-        $this->assertSame('update_tenant', $update->action['type']);
-        $this->assertSame('3009998877', $update->action['params']['phone_number']);
-
-        // Documento descargable por matcher local.
+        // Documento descargable.
         Invoice::factory()->create([
             'rental_id' => $this->rental->id,
             'user_id' => $this->user->id,
@@ -1399,6 +1619,47 @@ class AssistantTest extends TestCase
             'due_at' => today()->addDays(5)->toDateString(),
             'period' => today()->format('Y-m'),
         ]);
+
+        $this->fakeGeminiRouter([
+            'telefono' => [
+                'domain' => 'app',
+                'intent' => 'update_tenant',
+                'params' => ['tenant_name' => $tenantName, 'phone_number' => '3009998877'],
+                'confidence' => 0.95,
+            ],
+            'comprobante' => [
+                'domain' => 'app',
+                'intent' => 'generate_document',
+                'params' => ['doc_type' => 'payment_receipt', 'invoice_number' => 'FV-2026-0077'],
+                'confidence' => 0.95,
+            ],
+            'peores deudores' => [
+                'domain' => 'app', 'intent' => 'top_debtors', 'params' => [], 'confidence' => 0.9,
+            ],
+            'tasa de recaudo' => [
+                'domain' => 'app', 'intent' => 'collection_rate', 'params' => [], 'confidence' => 0.9,
+            ],
+            'reajuste' => [
+                'domain' => 'app', 'intent' => 'record_adjustment',
+                'params' => ['rental_name' => 'Local norte'], 'confidence' => 0.9,
+            ],
+            'ajustes del negocio' => [
+                'domain' => 'app', 'intent' => 'show_settings', 'params' => [], 'confidence' => 0.9,
+            ],
+            'csv' => [
+                'domain' => 'app', 'intent' => 'export_csv',
+                'params' => ['section' => 'tenants'], 'confidence' => 0.9,
+            ],
+            'cuéntame' => [
+                'domain' => 'app', 'intent' => 'entity_detail',
+                'params' => ['entity_type' => 'rental', 'name' => 'Local norte'], 'confidence' => 0.9,
+            ],
+        ]);
+
+        // Update puntual de inquilino.
+        $update = $this->assistant()->ask("cambia el telefono del inquilino {$tenantName} a 3009998877", [], $this->user->id);
+        $this->assertSame('update_tenant', $update->action['type']);
+        $this->assertSame('3009998877', $update->action['params']['phone_number']);
 
         $doc = $this->assistant()->ask('descarga el comprobante de la factura FV-2026-0077', [], $this->user->id);
         $this->assertSame('generate_document', $doc->action['type']);
@@ -1458,6 +1719,41 @@ class AssistantTest extends TestCase
         $this->assertSame((int) $invoice->id, $reply->action['params']['invoice_id']);
     }
 
+    #[Test]
+    public function el_preview_de_documento_muestra_tipo_formato_y_objetivo_legibles(): void
+    {
+        $this->actingAs($this->user);
+
+        $invoice = Invoice::factory()->create([
+            'rental_id' => $this->rental->id,
+            'user_id' => $this->user->id,
+            'number' => 'FV-2027-0005',
+            'amount' => 800000,
+            'status' => InvoiceStatus::EMITIDA,
+            'issued_at' => today()->toDateString(),
+            'due_at' => today()->addDays(5)->toDateString(),
+            'period' => today()->format('Y-m'),
+        ]);
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'generate_document',
+            'params' => ['doc_type' => 'invoice', 'invoice_number' => 'FV-2027-0005', 'format' => 'text'],
+            'confidence' => 0.9,
+        ]);
+
+        Livewire::test(AssistantChat::class)
+            ->set('input', 'genera la factura de FV-2027-0005')
+            ->call('send')
+            ->call('previewAction', 1)
+            ->assertSet('preview.rows.0.label', 'el tipo de documento')
+            ->assertSet('preview.rows.0.badge', 'document')
+            ->assertSet('preview.rows.0.value', 'Factura')
+            ->assertSet('preview.rows.1.label', 'el formato')
+            ->assertSet('preview.rows.2.label', 'la referencia')
+            ->assertSet('preview.rows.2.value', 'FV-2027-0005');
+    }
+
     // ---------------------------------------------------------------
     // Eleccion flexible de entidad: "cualquiera", candidatos y chunks
     // ---------------------------------------------------------------
@@ -1510,6 +1806,13 @@ class AssistantTest extends TestCase
 
         // Flujo real: el mensaje genera la respuesta ambigua (mensaje
         // indice 1) y el chip elegido re-ejecuta con _entity_ref.
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'update_tenant',
+            'params' => ['tenant_name' => 'Camila', 'phone_number' => '3009998877'],
+            'confidence' => 0.9,
+        ]);
+
         Livewire::test(AssistantChat::class)
             ->set('input', 'cambia el teléfono de Camila a 3009998877')
             ->call('send')
@@ -1848,15 +2151,21 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
-    public function business_insights_llega_por_matcher_local_sin_gemini(): void
+    public function business_insights_cae_al_camino_determinista_si_el_reporte_falla(): void
     {
-        config()->set('services.gemini.key', null);
-        Http::fake();
+        // Gemini clasifica el intent, pero si la composición del reporte
+        // dinámico no se puede validar, el ejecutor determinista sigue
+        // produciendo los datos de insights con evidencia real.
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'business_insights',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
 
         $reply = app(DataAssistantInterface::class)->ask('que puntos puedo mejorar de mi negocio', [], $this->user->id);
 
         $this->assertNotNull($reply->data['insights'] ?? null);
-        Http::assertNothingSent();
     }
 
     #[Test]
@@ -1886,8 +2195,12 @@ class AssistantTest extends TestCase
     #[Test]
     public function las_actas_de_un_arriendo_solo_muestran_las_de_esa_entidad(): void
     {
-        config()->set('services.gemini.key', null);
-        Http::fake();
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'list_delivery_acts',
+            'params' => ['rental_name' => (string) $this->rental->tenant->name],
+            'confidence' => 0.9,
+        ]);
 
         // Segundo arriendo con su propio acta: el listado acotado no debe
         // mezclarlo.
@@ -1926,10 +2239,14 @@ class AssistantTest extends TestCase
     #[Test]
     public function cambiar_el_nombre_de_inquilino_propone_update_con_alias(): void
     {
-        config()->set('services.gemini.key', null);
-        Http::fake();
-
         $tenantName = (string) $this->rental->tenant->name;
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'update_tenant',
+            'params' => ['tenant_name' => $tenantName, 'name' => 'Nombre Nuevo'],
+            'confidence' => 0.95,
+        ]);
 
         $reply = $this->assistant()->ask("cambia el nombre de {$tenantName} a Nombre Nuevo", [], $this->user->id);
 
@@ -1984,12 +2301,17 @@ class AssistantTest extends TestCase
         $tenantName = (string) $this->rental->tenant->name;
 
         // Gemini clasifica el update con entidad pero sin campo: el
-        // sistema NO adivina, abre la clarificacion guiada.
-        $this->fakeGemini([
-            'domain' => 'app',
-            'intent' => 'update_tenant',
-            'params' => ['tenant_name' => $tenantName],
-            'confidence' => 0.9,
+        // sistema NO adivina, abre la clarificacion guiada. Con el
+        // asistente activo las respuestas se clasifican igual: el router
+        // devuelve el intent solo para la primera pregunta y 'unknown'
+        // para los pasos, que van al handler del formulario.
+        $this->fakeGeminiRouter([
+            'actualiza a' => [
+                'domain' => 'app',
+                'intent' => 'update_tenant',
+                'params' => ['tenant_name' => $tenantName],
+                'confidence' => 0.9,
+            ],
         ]);
 
         $first = $this->assistant()->ask("actualiza a {$tenantName}", [], $this->user->id);
@@ -2024,11 +2346,13 @@ class AssistantTest extends TestCase
             'name' => 'Apto 301',
         ]);
 
-        $this->fakeGemini([
-            'domain' => 'app',
-            'intent' => 'update_property',
-            'params' => ['property_name' => 'Apto 301'],
-            'confidence' => 0.9,
+        $this->fakeGeminiRouter([
+            'actualiza la' => [
+                'domain' => 'app',
+                'intent' => 'update_property',
+                'params' => ['property_name' => 'Apto 301'],
+                'confidence' => 0.9,
+            ],
         ]);
 
         $this->assistant()->ask('actualiza la propiedad Apto 301', [], $this->user->id);
@@ -2044,11 +2368,13 @@ class AssistantTest extends TestCase
     {
         $tenantName = (string) $this->rental->tenant->name;
 
-        $this->fakeGemini([
-            'domain' => 'app',
-            'intent' => 'update_tenant',
-            'params' => ['tenant_name' => $tenantName],
-            'confidence' => 0.9,
+        $this->fakeGeminiRouter([
+            'actualiza a' => [
+                'domain' => 'app',
+                'intent' => 'update_tenant',
+                'params' => ['tenant_name' => $tenantName],
+                'confidence' => 0.9,
+            ],
         ]);
 
         $this->assistant()->ask("actualiza a {$tenantName}", [], $this->user->id);
@@ -2083,11 +2409,13 @@ class AssistantTest extends TestCase
     {
         $tenantName = (string) $this->rental->tenant->name;
 
-        $this->fakeGemini([
-            'domain' => 'app',
-            'intent' => 'update_rental',
-            'params' => ['rental_name' => $this->rental->name],
-            'confidence' => 0.9,
+        $this->fakeGeminiRouter([
+            'actualiza el' => [
+                'domain' => 'app',
+                'intent' => 'update_rental',
+                'params' => ['rental_name' => $this->rental->name],
+                'confidence' => 0.9,
+            ],
         ]);
 
         $this->assistant()->ask("actualiza el arriendo {$this->rental->name}", [], $this->user->id);
@@ -2101,11 +2429,13 @@ class AssistantTest extends TestCase
     {
         $tenantName = (string) $this->rental->tenant->name;
 
-        $this->fakeGemini([
-            'domain' => 'app',
-            'intent' => 'update_tenant',
-            'params' => ['tenant_name' => $tenantName],
-            'confidence' => 0.9,
+        $this->fakeGeminiRouter([
+            'actualiza a' => [
+                'domain' => 'app',
+                'intent' => 'update_tenant',
+                'params' => ['tenant_name' => $tenantName],
+                'confidence' => 0.9,
+            ],
         ]);
 
         $this->assistant()->ask("actualiza a {$tenantName}", [], $this->user->id);
@@ -2113,6 +2443,39 @@ class AssistantTest extends TestCase
 
         $this->assertNull(session('assistant.form.'.$this->user->id));
         $this->assertNull($reply->action);
+    }
+
+    #[Test]
+    public function una_peticion_nueva_durante_un_wizard_no_es_secuestrada(): void
+    {
+        $tenantName = (string) $this->rental->tenant->name;
+
+        // Wizard de clarificacion abierto; luego el usuario pregunta otra
+        // cosa del negocio. La intencion real debe ganar sobre el
+        // formulario activo en vez de quedar tragada por el wizard.
+        $this->fakeGeminiRouter([
+            'actualiza a' => [
+                'domain' => 'app',
+                'intent' => 'update_tenant',
+                'params' => ['tenant_name' => $tenantName],
+                'confidence' => 0.9,
+            ],
+            'cuánto me deben' => [
+                'domain' => 'app',
+                'intent' => 'pending_balance',
+                'params' => [],
+                'confidence' => 0.95,
+            ],
+        ]);
+
+        $this->assistant()->ask("actualiza a {$tenantName}", [], $this->user->id);
+        $this->assertSame('update_clarify', session('assistant.form.'.$this->user->id)['form'] ?? null);
+
+        $reply = $this->assistant()->ask('cuánto me deben en total', [], $this->user->id);
+
+        $this->assertSame('pending_balance', $reply->intent);
+        // El wizard sigue vivo en sesion: el usuario puede retomarlo.
+        $this->assertSame('update_clarify', session('assistant.form.'.$this->user->id)['form'] ?? null);
     }
 
     // ---------------------------------------------------------------
@@ -2202,7 +2565,24 @@ class AssistantTest extends TestCase
     public function confirmar_tras_otro_mensaje_resuelve_en_el_mismo_burbuja(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
+        $this->fakeGeminiRouter([
+            'ana ruiz' => [
+                'domain' => 'app',
+                'intent' => 'create_tenant',
+                'params' => [
+                    'name' => 'Ana Ruiz',
+                    'document' => '555',
+                    'phone_number' => '3001112233',
+                ],
+                'confidence' => 0.95,
+            ],
+            'mis inquilinos' => [
+                'domain' => 'app',
+                'intent' => 'list_tenants',
+                'params' => [],
+                'confidence' => 0.9,
+            ],
+        ]);
 
         $component = Livewire::test(AssistantChat::class)
             ->set('input', 'agrega un inquilino llamado Ana Ruiz CC 555 tel 3001112233')
@@ -2460,5 +2840,117 @@ class AssistantTest extends TestCase
         $this->assertSame('select', $fields->get('rental_type')['kind'] ?? null);
         $this->assertNotEmpty($fields->get('billing_cadence')['options'] ?? []);
         $this->assertSame('Beatriz Ríos', $fields->get('tenant_name')['value'] ?? null);
+    }
+
+    // ---------------------------------------------------------------
+    // Opciones A-D y graficas del reporte
+    // ---------------------------------------------------------------
+
+    #[Test]
+    public function el_modelo_puede_proponer_opciones_abcd_cuando_la_pregunta_es_ambigua(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'unknown',
+            'params' => [],
+            'confidence' => 0.9,
+            'options' => [
+                'la factura de Camila Torres',
+                'el estado de cuenta de Camila Torres',
+                'el comprobante de pago de Camila Torres',
+                'la carta de reajuste de Camila Torres',
+                'una quinta que debe ignorarse',
+            ],
+        ]);
+
+        $reply = $this->assistant()->ask('dame el documento de camila', [], $this->user->id);
+
+        // Max 4 opciones y texto plano sanitizado.
+        $this->assertCount(4, $reply->options);
+        $this->assertSame('la factura de Camila Torres', $reply->options[0]);
+    }
+
+    #[Test]
+    public function las_opciones_sobreviven_al_mensaje_del_chat(): void
+    {
+        $this->actingAs($this->user);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'unknown',
+            'params' => [],
+            'confidence' => 0.9,
+            'options' => ['primera lectura', 'segunda lectura'],
+        ]);
+
+        Livewire::test(AssistantChat::class)
+            ->set('input', 'ayudame con esto')
+            ->call('send')
+            ->assertSee('primera lectura')
+            ->assertSee('segunda lectura');
+
+        $this->assertSame(
+            ['primera lectura', 'segunda lectura'],
+            AssistantMessage::query()->latest('id')->first()->payload['options'] ?? null,
+        );
+    }
+
+    #[Test]
+    public function documento_ambiguo_ofrece_cuatro_opciones_como_respuestas(): void
+    {
+        $reply = app(AssistantToolInvoker::class)->invoke('generate_document', [
+            'doc_type' => 'documento',
+            'rental_name' => 'Local norte',
+        ], $this->user->id);
+
+        $this->assertCount(4, $reply->options);
+        $this->assertStringContainsString('factura', $reply->options[0]);
+        $this->assertStringContainsString('estado de cuenta', $reply->options[1]);
+    }
+
+    #[Test]
+    public function el_reporte_puede_incluir_graficas_saneadas(): void
+    {
+        // El mismo payload sirve para classify (ignora 'report') y para
+        // classifyReport (lee 'report' directo, sin rondas de lookup).
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'business_insights',
+            'params' => [],
+            'confidence' => 0.9,
+            'report' => [
+                'title' => 'Recaudo por mes',
+                'intro' => 'Así va tu recaudo.',
+                'sections' => [[
+                    'title' => 'Evolución',
+                    'blocks' => [
+                        [
+                            'type' => 'chart',
+                            'chart' => 'bar',
+                            'title' => 'Pagos por mes',
+                            'labels' => ['2026-08', '2026-09', '2026-10'],
+                            'values' => [1000000, 1500000, 900000],
+                            'unit' => '$',
+                        ],
+                        [
+                            'type' => 'chart',
+                            'chart' => 'pie',
+                            'labels' => ['a', 'b'],
+                            'values' => [1, 2],
+                        ],
+                    ],
+                ]],
+            ],
+        ]);
+
+        $reply = $this->assistant()->ask('analiza mi recaudo', [], $this->user->id);
+
+        $blocks = $reply->data['report']['sections'][0]['blocks'] ?? [];
+
+        // La grafica valida queda; la de tipo desconocido se descarta.
+        $this->assertCount(1, $blocks);
+        $this->assertSame('chart', $blocks[0]['type']);
+        $this->assertSame('bar', $blocks[0]['chart']);
+        $this->assertSame(['2026-08', '2026-09', '2026-10'], $blocks[0]['labels']);
+        $this->assertSame([1000000.0, 1500000.0, 900000.0], $blocks[0]['values']);
     }
 }

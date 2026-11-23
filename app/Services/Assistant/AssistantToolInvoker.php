@@ -92,6 +92,13 @@ class AssistantToolInvoker
     /** Intents que no leen ni proponen: gestionan el wizard en sesion. */
     private const FORM_INTENTS = ['form_field', 'cancel_form'];
 
+    /** Intent de creacion → entidad del formulario dinamico. */
+    private const CREATE_ENTITY_MAP = [
+        'create_tenant' => 'tenant',
+        'create_property' => 'property',
+        'create_rental' => 'rental',
+    ];
+
     private const ACTION_INTENTS = [
         'propose_generate_invoices',
         'propose_record_payment',
@@ -184,12 +191,30 @@ class AssistantToolInvoker
      */
     public function invokeBatch(array $requests, int $userId): AssistantReply
     {
+        // Los creates no se invocan aqui: cada uno abriria su propio form
+        // y se pisarian entre si. Se encolan y el usuario los diligencia
+        // de a uno; al final se propone UNA sola accion batch con todo.
+        $createRequests = [];
+        $otherRequests = [];
+
+        foreach ($requests as $request) {
+            $intent = (string) ($request['intent'] ?? '');
+
+            if (array_key_exists($intent, self::CREATE_ENTITY_MAP)) {
+                $createRequests[] = $request;
+            } else {
+                $otherRequests[] = $request;
+            }
+        }
+
         $texts = [];
         $data = [];
         $actions = [];
         $redirect = null;
         $suggestions = [];
         $sections = [];
+        $pendingForm = null;
+        $updateClarifies = [];
 
         // Entidades que este mismo batch va a crear: un create_rental que
         // las referencie no debe pedir datos que la creacion ya trae.
@@ -198,12 +223,27 @@ class AssistantToolInvoker
             'properties' => $this->pendingNames($requests, ['create_property'], ['name', 'property_name']),
         ];
 
-        foreach ($this->orderForExecution($requests) as $request) {
+        foreach ($this->orderForExecution($otherRequests) as $request) {
             $intent = (string) ($request['intent'] ?? 'unknown');
             $params = is_array($request['params'] ?? null) ? $request['params'] : [];
             $params['__pending'] = $pending;
 
             $reply = $this->invoke($intent, $params, $userId);
+
+            // Un update sin campo/dato abre su clarificacion: en batch
+            // cada uno pisaria la sesion del anterior y el pendingForm
+            // se perderia (solo quedaban los textos sueltos). Se encolan
+            // y al final se recorre con UN solo wizard, igual que los
+            // creates — y el mensaje de entrada es uno solo.
+            if ($reply->pendingForm !== null) {
+                $session = $this->forms->get($userId);
+
+                if (($session['form'] ?? null) === 'update_clarify') {
+                    $updateClarifies[] = $session['data'];
+                    $this->forms->clear($userId);
+                    continue;
+                }
+            }
 
             if ($reply->text !== '' || is_array($reply->data)) {
                 $texts[] = $reply->text;
@@ -227,10 +267,114 @@ class AssistantToolInvoker
             }
         }
 
+
+        // Creates del batch: primero se intenta la propuesta directa —
+        // los que ya traen todos los datos se guardan como acciones
+        // listas. Solo los incompletos van a la cola del wizard.
+        // Si hay cola, las listas se SIEMBRAN en su `collected` para que
+        // todo el mensaje termine en UN solo batch al final; si no hay
+        // cola, se suman al lote de una vez.
+        $wizardQueue = [];
+        $readyCreateActions = [];
+
+        foreach ($this->orderForExecution($createRequests) as $request) {
+            $entity = self::CREATE_ENTITY_MAP[(string) $request['intent']];
+            $params = is_array($request['params'] ?? null) ? $request['params'] : [];
+            $params['__pending'] = $pending;
+
+            $createReply = match ($entity) {
+                'tenant' => $this->proposeCreateTenant($params, $userId),
+                'property' => $this->proposeCreateProperty($params, $userId),
+                'rental' => $this->proposeCreateRental($params, $userId),
+                default => AssistantReply::say(__('assistant.unknown')),
+            };
+
+            if ($createReply->action !== null) {
+                $readyCreateActions[] = $createReply->action;
+            } elseif ($createReply->pendingForm !== null) {
+                $wizardQueue[] = ['entity' => $entity, 'params' => $params];
+            } elseif ($createReply->text !== '') {
+                $texts[] = $createReply->text;
+            }
+        }
+
+        if ($wizardQueue !== []) {
+            // La ultima propuesta incompleta dejo su propio form en sesion:
+            // la cola manda, se reabre el primero con el contexto completo.
+            // Las acciones ya resueltas viajan como semilla de `collected`
+            // para que el batch final las incluya a todas juntas.
+            $this->forms->clearCreate($userId);
+
+            $first = array_shift($wizardQueue);
+            $total = count($wizardQueue) + 1;
+            $totalRecords = count($readyCreateActions) + $total;
+
+            $createReply = $this->startCreateForm($first['entity'], $first['params'], $userId, [
+                'queue' => $wizardQueue,
+                'collected' => $readyCreateActions,
+                'step' => 1,
+                'total' => $total,
+            ]);
+
+            if ($createReply->pendingForm !== null) {
+                $pendingForm = $createReply->pendingForm;
+
+                if ($totalRecords > 1) {
+                    array_unshift($texts, __('assistant.replies.create_batch_intro', ['count' => $totalRecords]));
+                }
+            }
+        } else {
+            array_push($actions, ...$readyCreateActions);
+        }
+
+        // Updates encolados por clarificacion: UN wizard los recorre de
+        // a uno y al final se propone una sola accion (o batch) con todas
+        // las actualizaciones. Si ademas quedo una cola de creaciones,
+        // esa sesion sigue viva y el wizard de updates encadena hacia
+        // ella al terminar (submitForm distingue por el campo __form).
+        if ($updateClarifies !== []) {
+            $total = count($updateClarifies);
+            $done = 0;
+            $failedNotes = [];
+            $updateFormOpened = false;
+
+            // Si una entidad del paso ya no existe se salta y se sigue
+            // con la siguiente: la cola no se abandona por un registro
+            // borrado entre el clasificador y el formulario. Si ya hay
+            // wizard de creaciones el update queda en cola igual: al
+            // terminar uno se encadena el otro.
+            while ($updateClarifies !== [] && ! $updateFormOpened) {
+                $first = array_shift($updateClarifies);
+                $done++;
+
+                $clarifyReply = $this->startQueuedUpdateClarify($first, $userId, [
+                    'queue' => $updateClarifies,
+                    'collected' => [],
+                    'step' => $done,
+                    'total' => $total,
+                ]);
+
+                if ($clarifyReply->pendingForm !== null) {
+                    // El wizard de updates va primero; el de creaciones
+                    // (sesion aparte) se encadena al terminar este.
+                    $pendingForm = $clarifyReply->pendingForm;
+                    $updateFormOpened = true;
+                    array_unshift($texts, __('assistant.replies.update_batch_intro', ['count' => $total]));
+                } else {
+                    $failedNotes[] = $clarifyReply->text;
+                }
+            }
+
+            if ($failedNotes !== []) {
+                array_push($texts, ...$failedNotes);
+            }
+        }
+
+        $texts = array_filter($texts);
         // Operacion grande: se proponen las primeras BATCH_CHUNK acciones
         // y el resto queda en cola; el usuario pide "continuar" y llega el
         // siguiente grupo. Sin cola si ya hay un wizard/formulario activo
-        // (una sola sescion de formulario por usuario).
+        // (una sola sesion de formulario por usuario).
         $queued = 0;
 
         if (count($actions) > self::BATCH_CHUNK
@@ -240,6 +384,13 @@ class AssistantToolInvoker
             $this->forms->put($userId, 'batch_continue', ['items' => $remaining]);
         }
 
+        if ($queued > 0) {
+            $texts[] = __('assistant.replies.batch_chunk', ['count' => $queued]);
+            $suggestions[] = __('assistant.suggestions.batch_continue');
+        }
+
+        // La accion se calcula DESPUES de encolar creates por si alguno
+        // propuso directo (datos completos): puede crecer el lote.
         $action = match (count($actions)) {
             0 => null,
             1 => $actions[0],
@@ -250,13 +401,6 @@ class AssistantToolInvoker
             ],
         };
 
-        $texts = array_filter($texts);
-
-        if ($queued > 0) {
-            $texts[] = __('assistant.replies.batch_chunk', ['count' => $queued]);
-            $suggestions[] = __('assistant.suggestions.batch_continue');
-        }
-
         return new AssistantReply(
             text: $texts === [] ? __('assistant.unknown') : implode("\n\n", $texts),
             data: $data === [] ? null : $data,
@@ -265,6 +409,7 @@ class AssistantToolInvoker
             suggestions: array_slice(array_values(array_unique($suggestions)), 0, 4),
             intent: 'batch',
             sections: $sections === [] ? null : $sections,
+            pendingForm: $pendingForm,
         );
     }
 
@@ -1466,7 +1611,7 @@ class AssistantToolInvoker
                     $this->changeRow('date', __('assistant.fields.date'), null, $date, 'date'),
                 ],
                 'editable' => [
-                    ['key' => 'amount', 'param' => 'amount', 'label' => __('assistant.fields.amount'), 'kind' => 'number', 'value' => (string) $amount],
+                    ['key' => 'amount', 'param' => 'amount', 'label' => __('assistant.fields.amount'), 'kind' => 'number', 'value' => (string) $amount, 'required' => true],
                     ['key' => 'method', 'param' => 'method', 'label' => __('assistant.fields.method'), 'kind' => 'select', 'value' => $method, 'options' => [
                         ['value' => 'efectivo', 'label' => __('invoice.methods.efectivo')],
                         ['value' => 'transferencia', 'label' => __('invoice.methods.transferencia')],
@@ -1552,16 +1697,19 @@ class AssistantToolInvoker
 
         $this->forms->clearCreate($userId);
 
+        $actionParams = [
+            'name' => $name,
+            'phone_number' => $phone,
+            'document' => $document,
+            'email' => $this->param($params, ['email', 'correo']),
+        ];
+
         return new AssistantReply(
             text: __('assistant.replies.propose_create_tenant', ['name' => $name]),
             action: [
                 'type' => 'create_tenant',
-                'params' => [
-                    'name' => $name,
-                    'phone_number' => $phone,
-                    'document' => $document,
-                    'email' => $this->param($params, ['email', 'correo']),
-                ],
+                'params' => $actionParams,
+                'editable' => $this->createEditableFields('tenant', $actionParams, $userId),
                 'summary' => __('assistant.actions.create_tenant_summary', ['name' => $name]),
             ],
         );
@@ -1601,14 +1749,17 @@ class AssistantToolInvoker
 
         $this->forms->clearCreate($userId);
 
+        $actionParams = [
+            'name' => $name,
+            'address' => $address,
+        ];
+
         return new AssistantReply(
             text: __('assistant.replies.propose_create_property', ['name' => $name]),
             action: [
                 'type' => 'create_property',
-                'params' => [
-                    'name' => $name,
-                    'address' => $address,
-                ],
+                'params' => $actionParams,
+                'editable' => $this->createEditableFields('property', $actionParams, $userId),
                 'summary' => __('assistant.actions.create_property_summary', ['name' => $name]),
             ],
         );
@@ -1734,6 +1885,21 @@ class AssistantToolInvoker
 
         $this->forms->clearCreate($userId);
 
+        $actionParams = [
+            'tenant_name' => $tenantName,
+            'tenant_id' => $tenant?->id,
+            'tenant_document' => $this->param($params, ['tenant_document', 'document', 'cedula']),
+            'tenant_phone' => $this->param($params, ['tenant_phone', 'phone', 'phone_number', 'telefono']),
+            'property_name' => $propertyName,
+            'property_id' => $property?->id,
+            'property_address' => $this->param($params, ['property_address', 'address', 'direccion']),
+            'monthly_amount' => $amount,
+            'total_months' => $months,
+            'start_date' => $startDate,
+            'billing_cadence' => $cadence,
+            'rental_type' => $this->param($params, ['rental_type', 'tipo_arriendo']),
+        ];
+
         return new AssistantReply(
             text: __('assistant.replies.propose_create_rental', [
                 'tenant' => $tenantName,
@@ -1743,19 +1909,8 @@ class AssistantToolInvoker
             ]),
             action: [
                 'type' => 'create_rental',
-                'params' => [
-                    'tenant_name' => $tenantName,
-                    'tenant_id' => $tenant?->id,
-                    'tenant_document' => $this->param($params, ['tenant_document', 'document', 'cedula']),
-                    'tenant_phone' => $this->param($params, ['tenant_phone', 'phone', 'phone_number', 'telefono']),
-                    'property_name' => $propertyName,
-                    'property_id' => $property?->id,
-                    'property_address' => $this->param($params, ['property_address', 'address', 'direccion']),
-                    'monthly_amount' => $amount,
-                    'total_months' => $months,
-                    'start_date' => $startDate,
-                    'billing_cadence' => $cadence,
-                ],
+                'params' => $actionParams,
+                'editable' => $this->createEditableFields('rental', $actionParams, $userId),
                 'summary' => __('assistant.actions.create_rental_summary', [
                     'tenant' => $tenantName,
                     'property' => $propertyName,
@@ -2546,7 +2701,7 @@ class AssistantToolInvoker
         // texto como si fuera respuesta del formulario; se avisa que hay
         // un acta en curso y se repite el campo que falta.
         if ($question !== '' && $this->looksLikeNewTopic($question)) {
-            $current = $this->actPendingForm($data, $this->wizardCurrentStep($data));
+            $current = $this->actPendingForm($data, $this->wizardCurrentStep($data), $userId);
 
             return new AssistantReply(
                 text: __('assistant.act_wizard.new_topic', ['prompt' => $current['prompt']]),
@@ -2582,7 +2737,7 @@ class AssistantToolInvoker
                         return new AssistantReply(
                             text: __('assistant.act_wizard.rental_ambiguous'),
                             data: ['candidates' => $resolved['candidates']],
-                            pendingForm: $this->actPendingForm($data, 'rental'),
+                            pendingForm: $this->actPendingForm($data, 'rental', $userId),
                         );
                     }
                 }
@@ -2595,7 +2750,7 @@ class AssistantToolInvoker
                     text: $question === ''
                         ? __('assistant.act_wizard.ask_rental_start')
                         : __('assistant.act_wizard.ask_rental_again'),
-                    pendingForm: $this->actPendingForm($data, 'rental'),
+                    pendingForm: $this->actPendingForm($data, 'rental', $userId),
                 );
             }
         }
@@ -2611,7 +2766,7 @@ class AssistantToolInvoker
 
                 return new AssistantReply(
                     text: __('assistant.act_wizard.ask_type'),
-                    pendingForm: $this->actPendingForm($data, 'type'),
+                    pendingForm: $this->actPendingForm($data, 'type', $userId),
                 );
             }
         }
@@ -2658,7 +2813,7 @@ class AssistantToolInvoker
 
                     return new AssistantReply(
                         text: __('assistant.act_wizard.ask_meters'),
-                        pendingForm: $this->actPendingForm($data, 'meters'),
+                        pendingForm: $this->actPendingForm($data, 'meters', $userId),
                     );
                 }
             }
@@ -2726,7 +2881,7 @@ class AssistantToolInvoker
 
                     return new AssistantReply(
                         text: $data['items_error'],
-                        pendingForm: $this->actPendingForm($data, 'items'),
+                        pendingForm: $this->actPendingForm($data, 'items', $userId),
                     );
                 }
 
@@ -2738,7 +2893,7 @@ class AssistantToolInvoker
                     text: $count > 0
                         ? __('assistant.act_wizard.ask_item_next', ['count' => $count])
                         : __('assistant.act_wizard.ask_item_first'),
-                    pendingForm: $this->actPendingForm($data, 'items'),
+                    pendingForm: $this->actPendingForm($data, 'items', $userId),
                 );
             }
         }
@@ -2767,7 +2922,7 @@ class AssistantToolInvoker
 
             return new AssistantReply(
                 text: $normalized['error'],
-                pendingForm: $this->actPendingForm($data, 'items'),
+                pendingForm: $this->actPendingForm($data, 'items', $userId),
             );
         }
 
@@ -2937,10 +3092,10 @@ class AssistantToolInvoker
                 'params' => $params,
                 'changes' => $changes,
                 'editable' => [
-                    ['key' => 'occurred_at', 'param' => 'occurred_at', 'label' => __('assistant.fields.date'), 'kind' => 'date', 'value' => $params['occurred_at']],
+                    ['key' => 'occurred_at', 'param' => 'occurred_at', 'label' => __('assistant.fields.date'), 'kind' => 'date', 'value' => $params['occurred_at'], 'required' => true],
                     ['key' => 'scheduled_at', 'param' => 'scheduled_at', 'label' => __('assistant.fields.scheduled_at'), 'kind' => 'date', 'value' => $params['scheduled_at'] ?? ''],
-                    ['key' => 'landlord_name', 'param' => 'landlord_name', 'label' => __('assistant.fields.landlord'), 'kind' => 'text', 'value' => $params['landlord_name']],
-                    ['key' => 'tenant_name', 'param' => 'tenant_name', 'label' => __('assistant.fields.tenant'), 'kind' => 'text', 'value' => $params['tenant_name']],
+                    ['key' => 'landlord_name', 'param' => 'landlord_name', 'label' => __('assistant.fields.landlord'), 'kind' => 'text', 'value' => $params['landlord_name'], 'required' => true],
+                    ['key' => 'tenant_name', 'param' => 'tenant_name', 'label' => __('assistant.fields.tenant'), 'kind' => 'text', 'value' => $params['tenant_name'], 'required' => true],
                     ['key' => 'landlord_document', 'param' => 'landlord_document', 'label' => __('assistant.fields.landlord_document'), 'kind' => 'text', 'value' => $params['landlord_document'] ?? ''],
                     ['key' => 'tenant_document', 'param' => 'tenant_document', 'label' => __('assistant.fields.tenant_document'), 'kind' => 'text', 'value' => $params['tenant_document'] ?? ''],
                     ['key' => 'water_reading', 'param' => 'water_reading', 'label' => __('assistant.fields.water_reading'), 'kind' => 'text', 'value' => $params['water_reading'] ?? ''],
@@ -3245,7 +3400,7 @@ class AssistantToolInvoker
      * @param  array<string, mixed>  $data
      * @return array{form: string, step: int, total_steps: int, field: string, prompt: string, quick_replies?: list<string>}
      */
-    private function actPendingForm(array $data, string $step): array
+    private function actPendingForm(array $data, string $step, ?int $userId = null): array
     {
         // Solo los pasos que el wizard realmente pregunta: fecha y partes
         // se pre-llenan solas, asi que no cuentan en la barra de progreso.
@@ -3265,7 +3420,7 @@ class AssistantToolInvoker
             default => [],
         };
 
-        return [
+        $form = [
             'form' => 'delivery_act',
             'step' => $index + 1,
             'total_steps' => count($steps),
@@ -3273,6 +3428,35 @@ class AssistantToolInvoker
             'prompt' => __('assistant.act_wizard.step_prompts.'.$step),
             'quick_replies' => $quickReplies === [] ? null : $quickReplies,
         ];
+
+        // Paso del arriendo: en vez de pedir el nombre a pulso, un select
+        // buscable con los arriendos reales del usuario (inquilino —
+        // propiedad). El valor enviado es el nombre del arriendo, que es
+        // lo que el resolvedor del paso sabe interpretar.
+        if ($step === 'rental' && $userId !== null) {
+            $options = Rental::query()
+                ->where('user_id', $userId)
+                ->with(['tenant:id,name', 'property:id,name'])
+                ->orderBy('is_active', 'desc')
+                ->orderBy('id')
+                ->get()
+                ->map(fn (Rental $rental): array => [
+                    'value' => $rental->name,
+                    'label' => trim(($rental->tenant?->name ?? $rental->name)
+                        .' — '.($rental->property?->name ?? '')),
+                ])
+                ->all();
+
+            if ($options !== []) {
+                $form['input'] = [
+                    'kind' => 'entity_select',
+                    'label' => __('assistant.act_wizard.rental_label'),
+                    'options' => $options,
+                ];
+            }
+        }
+
+        return $form;
     }
 
     /**
@@ -3766,7 +3950,7 @@ class AssistantToolInvoker
      * Abre el paso 1 del update guiado: el usuario elige que campo
      * cambiar de la lista real de campos editables de la entidad.
      */
-    private function startUpdateClarify(string $entity, object $record, int $userId): AssistantReply
+    private function startUpdateClarify(string $entity, object $record, int $userId, ?array $queueContext = null): AssistantReply
     {
         $idKey = $this->updateIdKey($entity);
 
@@ -3774,12 +3958,18 @@ class AssistantToolInvoker
             return $this->needChangesReply($entity);
         }
 
-        $this->forms->put($userId, 'update_clarify', [
+        $this->forms->put($userId, 'update_clarify', array_filter([
             'entity_type' => $entity,
             'entity_id' => (int) $record->getKey(),
             'entity_name' => $this->updateEntityLabel($entity, $record),
             'mode' => 'form',
-        ]);
+            // Cola del batch de updates: entidades por aclarar, acciones
+            // ya reunidas y posicion del paso dentro del total.
+            'entity_queue' => $queueContext['queue'] ?? null,
+            'collected' => $queueContext['collected'] ?? null,
+            'step' => $queueContext['step'] ?? null,
+            'total' => $queueContext['total'] ?? null,
+        ], fn ($value) => $value !== null));
 
         $name = $this->updateEntityLabel($entity, $record);
 
@@ -3791,14 +3981,34 @@ class AssistantToolInvoker
         $pending = $this->updatePendingForm('field', $name);
         $pending['fields'] = $this->updateFormFields($entity, $record);
         $pending['prompt'] = __('assistant.replies.update_form_prompt', ['entity' => $name]);
-        $pending['step'] = 1;
-        $pending['total_steps'] = 1;
+        $pending['step'] = $queueContext['step'] ?? 1;
+        $pending['total_steps'] = $queueContext['total'] ?? 1;
 
         return new AssistantReply(
             text: __('assistant.replies.update_form_prompt', ['entity' => $name]),
             suggestions: [],
             pendingForm: $pending,
         );
+    }
+
+    /**
+     * Abre la clarificacion del siguiente update encolado. El item de
+     * la cola es el data de una sesion update_clarify ya resuelta
+     * (entidad localizada por el propose original).
+     *
+     * @param  array<string, mixed>  $item
+     * @param  array{queue?: list<array<string, mixed>>, collected?: list<array<string, mixed>>, step?: int, total?: int}  $queueContext
+     */
+    private function startQueuedUpdateClarify(array $item, int $userId, array $queueContext): AssistantReply
+    {
+        $entity = (string) ($item['entity_type'] ?? '');
+        $record = $this->loadUpdateRecord($entity, (int) ($item['entity_id'] ?? 0), $userId);
+
+        if ($record === null) {
+            return AssistantReply::say(__('assistant.actions.entity_missing'));
+        }
+
+        return $this->startUpdateClarify($entity, $record, $userId, $queueContext);
     }
 
     /**
@@ -3816,7 +4026,6 @@ class AssistantToolInvoker
 
         foreach ($this->editableFields($entity) as $field => $meta) {
             $raw = $record->{$field} ?? null;
-            $current = $raw instanceof \BackedEnum ? $raw->value : $raw;
 
             $kind = match ($meta['kind']) {
                 'money', 'number' => 'number',
@@ -3828,14 +4037,45 @@ class AssistantToolInvoker
                 default => 'text',
             };
 
+            // El form arranca con los datos actuales: el usuario ve lo que
+            // hay y solo edita lo que quiere cambiar; al enviar, el diff
+            // contra el registro descarta lo que quedo igual.
             $fields[] = $this->editableField(
                 $field,
                 $meta,
-                in_array($kind, ['bool', 'select'], true) ? $current : '',
+                $this->updateFieldCurrentValue($raw, $kind),
             );
         }
 
         return $fields;
+    }
+
+    /**
+     * Valor actual de un campo editable listo para el input del form:
+     * enums a su value, fechas a YYYY-MM-DD (o datetime-local), bool a
+     * '1'/'0' y el resto a texto plano.
+     */
+    private function updateFieldCurrentValue(mixed $raw, string $kind): mixed
+    {
+        if ($raw instanceof \BackedEnum) {
+            $raw = $raw->value;
+        }
+
+        if ($raw instanceof \Carbon\CarbonInterface) {
+            return $kind === 'datetime'
+                ? $raw->format('Y-m-d\TH:i')
+                : $raw->format('Y-m-d');
+        }
+
+        if ($raw === null) {
+            return $kind === 'bool' ? '0' : '';
+        }
+
+        if ($kind === 'bool') {
+            return filter_var($raw, FILTER_VALIDATE_BOOLEAN) ? '1' : '0';
+        }
+
+        return $raw;
     }
 
     /**
@@ -3853,13 +4093,17 @@ class AssistantToolInvoker
             return AssistantReply::say(__('assistant.replies.form_none'));
         }
 
-        $entity = (string) ($session['data']['entity_type'] ?? '');
-        $record = $this->loadUpdateRecord($entity, (int) ($session['data']['entity_id'] ?? 0), $userId);
-
-        $this->forms->clear($userId);
+        $data = $session['data'];
+        $entity = (string) ($data['entity_type'] ?? '');
+        $record = $this->loadUpdateRecord($entity, (int) ($data['entity_id'] ?? 0), $userId);
 
         if ($record === null) {
-            return AssistantReply::say(__('assistant.actions.entity_missing'));
+            return $this->advanceUpdateQueue(
+                $userId,
+                $data,
+                null,
+                __('assistant.actions.entity_missing'),
+            );
         }
 
         $editable = $this->editableFields($entity);
@@ -3883,12 +4127,150 @@ class AssistantToolInvoker
         $collected = $this->collectChanges($params, $entity, $record);
 
         if ($collected['params'] === []) {
-            return AssistantReply::say(__('assistant.actions.no_changes'), [
-                __('assistant.suggestions.portfolio'),
-            ]);
+            return $this->advanceUpdateQueue(
+                $userId,
+                $data,
+                null,
+                __('assistant.actions.no_changes'),
+            );
         }
 
-        return $this->updateProposalReply($entity, $record, $collected);
+        return $this->advanceUpdateQueue(
+            $userId,
+            $data,
+            $this->updateProposalReply($entity, $record, $collected),
+        );
+    }
+
+    /**
+     * Avanza la cola de updates del batch: junta la accion propuesta (o
+     * el aviso de "sin cambios") y abre el formulario de la siguiente
+     * entidad. Sin cola, cierra y devuelve la propuesta — sola si fue
+     * una, en batch si fueron varias.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function advanceUpdateQueue(int $userId, array $data, ?AssistantReply $proposal, ?string $note = null): AssistantReply
+    {
+        $queue = is_array($data['entity_queue'] ?? null) ? $data['entity_queue'] : [];
+        $collected = is_array($data['collected'] ?? null) ? $data['collected'] : [];
+        $notes = $note !== null && $note !== '' ? [$note] : [];
+
+        if ($proposal !== null) {
+            if ($proposal->action !== null) {
+                $collected[] = ['action' => $proposal->action, 'text' => $proposal->text];
+            } elseif ($proposal->text !== '') {
+                $notes[] = $proposal->text;
+            }
+        }
+
+        if ($queue === []) {
+            $this->forms->clear($userId);
+
+            return $this->finishUpdateQueue($collected, $notes, $userId);
+        }
+
+        // Siguiente entidad: se salta si ya no existe el registro.
+        while ($queue !== []) {
+            $next = array_shift($queue);
+            $step = ((int) ($data['step'] ?? 1)) + 1;
+            $total = max((int) ($data['total'] ?? 0), $step + count($queue));
+
+            $nextReply = $this->startQueuedUpdateClarify($next, $userId, [
+                'queue' => $queue,
+                'collected' => $collected,
+                'step' => $step,
+                'total' => $total,
+            ]);
+
+            if ($nextReply->pendingForm !== null) {
+                $notes[] = $nextReply->text;
+
+                return new AssistantReply(
+                    text: implode("\n\n", array_filter($notes)),
+                    suggestions: [],
+                    pendingForm: $nextReply->pendingForm,
+                );
+            }
+
+            $notes[] = $nextReply->text;
+        }
+
+        // Toda la cola restantes era de entidades borradas: se cierra
+        // con lo reunido hasta ahora.
+        $this->forms->clear($userId);
+
+        return $this->finishUpdateQueue($collected, $notes, $userId);
+    }
+
+    /**
+     * Cierra la cola de updates: una sola accion si fue una entidad, un
+     * batch con todas si fueron varias. Si quedo una cola de creaciones
+     * pendiente (batch mixto), encadena su formulario como siguiente
+     * paso para no perderla.
+     *
+     * @param  list<array{action?: array<string, mixed>, text?: string}>  $collected
+     * @param  list<string>  $notes
+     */
+    private function finishUpdateQueue(array $collected, array $notes, int $userId): AssistantReply
+    {
+        $actions = [];
+        $texts = $notes;
+
+        foreach ($collected as $item) {
+            if (isset($item['action']) && is_array($item['action'])) {
+                $actions[] = $item['action'];
+            }
+
+            if (($item['text'] ?? '') !== '') {
+                $texts[] = $item['text'];
+            }
+        }
+
+        $text = implode("\n\n", array_filter($texts));
+
+        $reply = match (count($actions)) {
+            0 => AssistantReply::say($text !== '' ? $text : __('assistant.actions.no_changes')),
+            1 => new AssistantReply(text: $text, action: $actions[0], suggestions: []),
+            default => new AssistantReply(
+                text: $text,
+                action: [
+                    'type' => 'batch',
+                    'items' => $actions,
+                    'summary' => $this->batchSummary($actions),
+                ],
+                suggestions: [],
+            ),
+        };
+
+        // Batch mixto (updates + creates en el mismo mensaje): la cola
+        // de creaciones quedo en su sesion; se reabre su formulario como
+        // continuacion para que el usuario la termine tambien.
+        $createSession = $this->forms->getCreate($userId);
+
+        if ($createSession !== null) {
+            $createReply = $this->startCreateForm($createSession['entity'], $createSession['values'], $userId, [
+                'queue' => $createSession['queue'],
+                'collected' => $createSession['collected'],
+                'step' => $createSession['step'],
+                'total' => $createSession['total'],
+            ]);
+
+            if ($createReply->pendingForm !== null) {
+                return new AssistantReply(
+                    text: $reply->text."\n\n".$createReply->text,
+                    data: $reply->data,
+                    action: $reply->action,
+                    redirect: $reply->redirect,
+                    suggestions: $reply->suggestions,
+                    intent: $reply->intent,
+                    sections: $reply->sections,
+                    pendingForm: $createReply->pendingForm,
+                );
+            }
+        }
+
+        return $reply;
     }
 
     /**
@@ -3913,13 +4295,25 @@ class AssistantToolInvoker
                 ->map(fn (array $meta): string => $meta['label'])
                 ->implode(', ');
 
+            // Se re-abre el MISMO formulario de campos: sin `fields` la
+            // barra degradaba a solo texto y el usuario perdia el form
+            // dinamico a mitad del wizard (peor aun en una cola batch).
+            $reprompt = $this->updatePendingForm('field', $entityName) ?? [];
+            $record = $this->loadUpdateRecord($entity, (int) ($data['entity_id'] ?? 0), $userId);
+
+            if ($record !== null) {
+                $reprompt['fields'] = $this->updateFormFields($entity, $record);
+                $reprompt['step'] = $data['step'] ?? 1;
+                $reprompt['total_steps'] = $data['total'] ?? 1;
+            }
+
             return new AssistantReply(
                 text: __('assistant.replies.choose_update_field', [
                     'entity' => $entityName,
                     'fields' => $fields,
                 ]),
                 suggestions: [],
-                pendingForm: $this->updatePendingForm('field', $entityName),
+                pendingForm: $reprompt,
             );
         }
 
@@ -3965,7 +4359,18 @@ class AssistantToolInvoker
                 ? [$data['field'] => (string) ($data['field_label'] ?? $data['field'])]
                 : []);
 
-        if ($record === null || $queue === []) {
+        if ($record === null) {
+            // La entidad ya no existe: en una cola de batch se salta a
+            // la siguiente en vez de perder todo lo reunido.
+            return $this->advanceUpdateQueue(
+                $userId,
+                $data,
+                null,
+                __('assistant.actions.entity_missing'),
+            );
+        }
+
+        if ($queue === []) {
             $this->forms->clear($userId);
 
             return AssistantReply::say(__('assistant.actions.entity_missing'));
@@ -3991,17 +4396,24 @@ class AssistantToolInvoker
             return $this->updateNextValueStep($data, (string) ($data['entity_name'] ?? ''), $entity, $userId);
         }
 
-        $this->forms->clear($userId);
-
         $collected = $this->collectChanges($changes, $entity, $record);
 
         if ($collected['params'] === []) {
-            return AssistantReply::say(__('assistant.actions.no_changes'), [
-                __('assistant.suggestions.portfolio'),
-            ]);
+            return $this->advanceUpdateQueue(
+                $userId,
+                $data,
+                null,
+                __('assistant.actions.no_changes'),
+            );
         }
 
-        return $this->updateProposalReply($entity, $record, $collected);
+        // Con cola de entidades (batch de updates) la sesion sigue viva
+        // hasta cerrar la ultima; advanceUpdateQueue la libera.
+        return $this->advanceUpdateQueue(
+            $userId,
+            $data,
+            $this->updateProposalReply($entity, $record, $collected),
+        );
     }
 
     /**
@@ -4097,7 +4509,7 @@ class AssistantToolInvoker
      *
      * @param  array<string, mixed>  $params
      */
-    private function startCreateForm(string $entity, array $params, int $userId): AssistantReply
+    private function startCreateForm(string $entity, array $params, int $userId, ?array $queueContext = null): AssistantReply
     {
         $fields = $this->createFields($entity);
 
@@ -4113,7 +4525,29 @@ class AssistantToolInvoker
             $this->normalizeCreateValues($entity, $params),
         );
 
-        $this->forms->putCreate($userId, $entity, $known);
+        // __pending (entidades que el mismo batch va a crear) no es un
+        // campo del form pero proposeCreateRental lo necesita para no
+        // pedir datos que la otra peticion ya trae.
+        $pendingBatch = $params['__pending'] ?? ($previous['values']['__pending'] ?? null);
+
+        if (is_array($pendingBatch)) {
+            $known['__pending'] = $pendingBatch;
+        }
+
+        // En un batch de creaciones la sesion tambien lleva la cola de
+        // entidades pendientes y las acciones ya reunidas; sin contexto
+        // se conserva lo que ya hubiera (re-apertura por datos faltantes).
+        $queue = $queueContext['queue'] ?? ($previous['queue'] ?? []);
+        $collected = $queueContext['collected'] ?? ($previous['collected'] ?? []);
+        $step = $queueContext['step'] ?? $previous['step'] ?? null;
+        $total = $queueContext['total'] ?? $previous['total'] ?? null;
+
+        $this->forms->putCreate(
+            $userId, $entity, $known,
+            $queue === [] ? null : $queue,
+            $collected === [] ? null : $collected,
+            $step, $total,
+        );
 
         if ($entity === 'rental') {
             $this->applyRentalFieldRequirements($fields, $known, $userId);
@@ -4132,8 +4566,8 @@ class AssistantToolInvoker
             pendingForm: [
                 'form' => 'create_'.$entity,
                 'form_label' => __('assistant.form_names.create_'.$entity),
-                'step' => 1,
-                'total_steps' => 1,
+                'step' => $step ?? 1,
+                'total_steps' => $total ?? 1,
                 'prompt' => __('assistant.replies.create_form_prompt', ['entity' => $entityLabel]),
                 'fields' => $fields,
             ],
@@ -4264,6 +4698,18 @@ class AssistantToolInvoker
      */
     public function submitForm(array $values, int $userId): AssistantReply
     {
+        // El formulario envia __form con su nombre: en un batch mixto
+        // pueden coexistir la cola de creaciones y la de updates y el
+        // envio debe caer en la sesion correcta, no en la que exista.
+        $kind = (string) ($values['__form'] ?? '');
+        unset($values['__form']);
+
+        if ($kind !== '') {
+            return str_starts_with($kind, 'create_')
+                ? $this->submitCreateForm($values, $userId)
+                : $this->submitUpdateForm($values, $userId);
+        }
+
         if ($this->forms->getCreate($userId) !== null) {
             return $this->submitCreateForm($values, $userId);
         }
@@ -4302,14 +4748,190 @@ class AssistantToolInvoker
             }
         }
 
-        $this->forms->clearCreate($userId);
+        // Persiste lo diligenciado ANTES de re-proponer: si aun falta
+        // algo, startCreateForm reabre el form leyendo esta misma sesion
+        // (con la cola del batch intacta).
+        $this->forms->putCreate(
+            $userId, $entity, $merged,
+            $session['queue'] === [] ? null : $session['queue'],
+            $session['collected'] === [] ? null : $session['collected'],
+            $session['step'], $session['total'],
+        );
 
-        return match ($entity) {
+        $reply = match ($entity) {
             'tenant' => $this->proposeCreateTenant($merged, $userId),
             'property' => $this->proposeCreateProperty($merged, $userId),
             'rental' => $this->proposeCreateRental($merged, $userId),
             default => AssistantReply::say(__('assistant.unknown')),
         };
+
+        // Formulario re-abierto (faltan datos): la sesion ya quedo.
+        if ($reply->pendingForm !== null) {
+            return $reply;
+        }
+
+        $collected = $session['collected'];
+        $queue = $session['queue'];
+        $notes = [];
+
+        if ($reply->action !== null) {
+            $collected[] = $reply->action;
+        } elseif ($reply->text !== '') {
+            $notes[] = $reply->text;
+        }
+
+        if ($queue === []) {
+            $this->forms->clearCreate($userId);
+
+            $reply = $this->finishCreateQueue($collected, $notes);
+
+            // Batch mixto: si quedo una cola de updates pendiente su
+            // formulario continua como siguiente paso.
+            $updateSession = $this->forms->get($userId);
+
+            if (($updateSession['form'] ?? null) === 'update_clarify') {
+                $ud = $updateSession['data'];
+                $urecord = $this->loadUpdateRecord(
+                    (string) ($ud['entity_type'] ?? ''),
+                    (int) ($ud['entity_id'] ?? 0),
+                    $userId,
+                );
+
+                if ($urecord !== null) {
+                    $nextUpdate = $this->startUpdateClarify(
+                        (string) $ud['entity_type'],
+                        $urecord,
+                        $userId,
+                        [
+                            'queue' => $ud['entity_queue'] ?? [],
+                            'collected' => $ud['collected'] ?? [],
+                            'step' => $ud['step'] ?? null,
+                            'total' => $ud['total'] ?? null,
+                        ],
+                    );
+
+                    if ($nextUpdate->pendingForm !== null) {
+                        return new AssistantReply(
+                            text: $reply->text."\n\n".$nextUpdate->text,
+                            data: $reply->data,
+                            action: $reply->action,
+                            redirect: $reply->redirect,
+                            suggestions: $reply->suggestions,
+                            intent: $reply->intent,
+                            sections: $reply->sections,
+                            pendingForm: $nextUpdate->pendingForm,
+                        );
+                    }
+                }
+            }
+
+            return $reply;
+        }
+
+        // Siguiente entidad de la cola: mismo mecanismo, paso N+1 de M.
+        $next = array_shift($queue);
+        $step = ($session['step'] ?? 1) + 1;
+        $total = $session['total'] ?? ($step + count($queue));
+
+        $nextReply = $this->startCreateForm($next['entity'], $next['params'], $userId, [
+            'queue' => $queue,
+            'collected' => $collected,
+            'step' => $step,
+            'total' => $total,
+        ]);
+
+        if ($notes !== []) {
+            $nextReply = new AssistantReply(
+                text: implode("\n\n", $notes)."\n\n".$nextReply->text,
+                pendingForm: $nextReply->pendingForm,
+            );
+        }
+
+        return $nextReply;
+    }
+
+    /**
+     * Cierra la cola de creaciones: una sola accion (o batch) con todo
+     * lo reunido, lista para la preview y la confirmacion.
+     *
+     * @param  list<array<string, mixed>>  $collected
+     * @param  list<string>  $notes
+     */
+    private function finishCreateQueue(array $collected, array $notes): AssistantReply
+    {
+        // Orden de ejecucion: los arriendos van de ultimos porque
+        // resuelven tenant/propiedad por nombre y esas entidades pueden
+        // venir creadas en el mismo paquete (semilla de `collected` o
+        // diligenciadas en la cola del wizard).
+        $rentals = [];
+        $others = [];
+
+        foreach ($collected as $item) {
+            if (($item['type'] ?? '') === 'create_rental') {
+                $rentals[] = $item;
+            } else {
+                $others[] = $item;
+            }
+        }
+
+        $collected = array_merge($others, $rentals);
+
+        if ($collected === []) {
+            return AssistantReply::say(
+                $notes === [] ? __('assistant.unknown') : implode("\n\n", $notes),
+                [__('assistant.suggestions.portfolio')],
+            );
+        }
+
+        return new AssistantReply(
+            text: $notes === []
+                ? __('assistant.replies.create_batch_review', ['count' => count($collected)])
+                : implode("\n\n", $notes),
+            action: count($collected) === 1
+                ? $collected[0]
+                : [
+                    'type' => 'batch',
+                    'items' => $collected,
+                    'summary' => $this->batchSummary($collected),
+                ],
+            suggestions: [],
+        );
+    }
+
+    /**
+     * Campos createFields convertidos al formato `editable` de las
+     * acciones: la preview muestra el formulario completo con los
+     * obligatorios marcados y permite corregir antes de confirmar.
+     *
+     * @param  array<string, mixed>  $values
+     * @return list<array<string, mixed>>
+     */
+    private function createEditableFields(string $entity, array $values, int $userId): array
+    {
+        $fields = $this->createFields($entity);
+
+        if ($entity === 'rental') {
+            $this->applyRentalFieldRequirements($fields, $values, $userId);
+        }
+
+        return array_map(function (array $field) use ($values): array {
+            $entry = [
+                'key' => $field['key'],
+                'param' => $field['key'],
+                'label' => $field['label'],
+                'kind' => $field['kind'],
+                'value' => (string) ($values[$field['key']] ?? $field['value'] ?? ''),
+                'required' => ! empty($field['required']),
+            ];
+
+            foreach (['options', 'min', 'max', 'step'] as $extra) {
+                if (isset($field[$extra])) {
+                    $entry[$extra] = $field[$extra];
+                }
+            }
+
+            return $entry;
+        }, $fields);
     }
 
     /**
@@ -4671,6 +5293,19 @@ class AssistantToolInvoker
             ]);
         }
 
+        // "desactiva el arriendo de X" es inequivoco: si el modelo no
+        // emitio is_active en params, el verbo de la pregunta lo fija
+        // (normalizacion del param, no resolucion de entidad).
+        if (! array_key_exists('is_active', $params) && ! array_key_exists('active', $params)) {
+            $question = Str::lower((string) ($params['_question'] ?? ''));
+
+            if (preg_match('/\b(desactiva\w*|desactivar|pausa\w*|inactiva\w*|suspende\w*)\b/iu', $question) === 1) {
+                $params['is_active'] = false;
+            } elseif (preg_match('/\b(activa\w*|reactiva\w*|reactivar)\b/iu', $question) === 1) {
+                $params['is_active'] = true;
+            }
+        }
+
         $collected = $this->collectChanges($params, 'rental', $rental);
 
         if ($collected['params'] === []) {
@@ -4840,8 +5475,8 @@ class AssistantToolInvoker
                 ],
                 'changes' => $changes,
                 'editable' => [
-                    ['key' => 'effective_from', 'param' => 'effective_from', 'label' => __('assistant.fields.effective_from'), 'kind' => 'date', 'value' => $effectiveFrom],
-                    ['key' => 'new_rent', 'param' => 'new_rent', 'label' => __('assistant.fields.new_rent'), 'kind' => 'number', 'value' => (string) $newRent],
+                    ['key' => 'effective_from', 'param' => 'effective_from', 'label' => __('assistant.fields.effective_from'), 'kind' => 'date', 'value' => $effectiveFrom, 'required' => true],
+                    ['key' => 'new_rent', 'param' => 'new_rent', 'label' => __('assistant.fields.new_rent'), 'kind' => 'number', 'value' => (string) $newRent, 'required' => true],
                     ['key' => 'notes', 'param' => 'notes', 'label' => __('assistant.fields.notes'), 'kind' => 'textarea', 'value' => (string) ($params['notes'] ?? '')],
                 ],
                 'warnings' => $warnings,
@@ -5113,8 +5748,8 @@ class AssistantToolInvoker
      */
     private function proposeGenerateDocument(array $params, int $userId): AssistantReply
     {
-        // Gemini manda doc_type con valores canonicos; el matcher local y
-        // el usuario libre usan las palabras en espanol. Se aceptan ambos.
+        // Gemini manda doc_type con valores canonicos; el usuario libre
+        // tambien escribe las palabras en espanol. Se aceptan ambos.
         $kindRaw = Str::lower((string) ($params['document_type'] ?? $params['doc_type'] ?? $params['tipo'] ?? $params['documento'] ?? ''));
         $format = Str::lower((string) ($params['format'] ?? $params['formato'] ?? 'text'));
 
@@ -5122,7 +5757,10 @@ class AssistantToolInvoker
             $kindRaw === 'payment_receipt' || str_contains($kindRaw, 'receipt') || str_contains($kindRaw, 'comprobante') || str_contains($kindRaw, 'pago') => 'receipt',
             $kindRaw === 'adjustment_letter' || str_contains($kindRaw, 'carta') || str_contains($kindRaw, 'reajuste') || str_contains($kindRaw, 'adjustment') => 'adjustment_letter',
             $kindRaw === 'monthly_statement' || str_contains($kindRaw, 'estado') || str_contains($kindRaw, 'statement') || str_contains($kindRaw, 'cuenta') => 'statement',
-            $kindRaw === 'rent_invoice' || str_contains($kindRaw, 'factura') || str_contains($kindRaw, 'invoice') || $kindRaw === '' => 'invoice',
+            $kindRaw === 'rent_invoice' || str_contains($kindRaw, 'factura') || str_contains($kindRaw, 'invoice') => 'invoice',
+            // "documento de X" a secas no dice cual: se pregunta con
+            // opciones en vez de asumir factura (o peor, estado de cuenta).
+            $kindRaw === '' || in_array($kindRaw, ['document', 'documento', 'doc', 'archivo', 'file', 'pdf'], true) => 'ambiguous',
             default => null,
         };
 
@@ -5130,6 +5768,10 @@ class AssistantToolInvoker
             return AssistantReply::say(__('assistant.replies.unknown_document'), [
                 __('assistant.suggestions.documents'),
             ]);
+        }
+
+        if ($kind === 'ambiguous') {
+            return $this->askDocumentKind($params, $userId);
         }
 
         $resolved = $this->resolveDocumentTarget($kind, $params, $userId);
@@ -5173,6 +5815,39 @@ class AssistantToolInvoker
     }
 
     /**
+     * "documento de X" sin tipo: se resuelve el objetivo lo suficiente
+     * para armar las opciones y se pregunta cual documento necesita —
+     * cada sugerencia es un prompt completo que vuelve a entrar por el
+     * clasificador con el tipo ya dicho.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function askDocumentKind(array $params, int $userId): AssistantReply
+    {
+        $rental = $this->findRental($params, $userId);
+        $invoice = $rental === null ? $this->findInvoice($params, $userId) : null;
+
+        $label = $rental !== null
+            ? $this->statementRentalLabel($rental)
+            : ($invoice?->number ?? trim((string) ($params['entity'] ?? $params['name'] ?? $params['tenant'] ?? '')));
+
+        if ($label === '') {
+            $label = __('assistant.fields.rental');
+        }
+
+        // Las 4 lecturas posibles van como opciones A-D: el usuario elige
+        // una o escribe libremente por el mismo input.
+        return AssistantReply::say(
+            __('assistant.replies.ask_document_kind', ['target' => $label]),
+        )->withOptions([
+            __('assistant.doc_kinds.invoice_prompt', ['target' => $label]),
+            __('assistant.doc_kinds.statement_prompt', ['target' => $label]),
+            __('assistant.doc_kinds.receipt_prompt', ['target' => $label]),
+            __('assistant.doc_kinds.letter_prompt', ['target' => $label]),
+        ]);
+    }
+
+    /**
      * Resuelve la entidad sobre la que se genera el documento.
      *
      * @param  array<string, mixed>  $params
@@ -5202,22 +5877,59 @@ class AssistantToolInvoker
                 return ['error' => __('assistant.replies.need_rental_name')];
             }
 
-            $period = trim((string) ($params['period'] ?? $params['periodo'] ?? ''));
-            $periodKey = $period !== '' ? $period : today()->format('Y-m');
+            $rental->loadMissing(['tenant:id,name', 'property:id,name']);
 
-            // Un estado de cuenta sin facturas en el periodo es un papel en
-            // cero: mejor decirlo aqui que generar un documento vacio.
-            if (! $rental->invoicesForPeriod($periodKey)->exists()) {
-                return ['error' => __('assistant.replies.no_statement_data', [
-                    'rental' => $rental->name,
-                    'period' => $periodKey,
+            // El estado de cuenta es por periodo y el usuario casi nunca
+            // lo dice: se listan los periodos que SI tienen facturas y se
+            // propone el mas reciente — nunca el mes en curso "por si
+            // acaso", que era la respuesta vacia de antes.
+            $periods = Invoice::query()
+                ->where('user_id', $userId)
+                ->where('rental_id', $rental->id)
+                ->orderByDesc('period')
+                ->pluck('period')
+                ->unique()
+                ->values();
+
+            $periodRaw = trim((string) ($params['period'] ?? $params['periodo'] ?? ''));
+            $periodKey = null;
+
+            if ($periodRaw !== '') {
+                $periodKey = $this->resolveBillingPeriod($periodRaw)?->format('Y-m');
+            }
+
+            // Sin periodo (o uno que no se pudo leer): el mas reciente
+            // con facturas. Con periodo explicito sin datos: se dice y se
+            // ofrecen los periodos que si sirven.
+            if ($periodKey === null) {
+                $periodKey = $periods->first();
+            }
+
+            if ($periodKey === null) {
+                return ['error' => __('assistant.replies.no_statement_none', [
+                    'rental' => $this->statementRentalLabel($rental),
                 ])];
             }
+
+            if (! $periods->contains($periodKey)) {
+
+                $available = $periods
+                    ->map(fn (string $p): string => Carbon::createFromFormat('Y-m-d', $p.'-01')->format('m/Y'))
+                    ->implode(', ');
+
+                return ['error' => __('assistant.replies.no_statement_periods', [
+                    'rental' => $this->statementRentalLabel($rental),
+                    'period' => $periodKey ?? $periodRaw,
+                    'periods' => $available,
+                ])];
+            }
+
+            $label = $this->statementRentalLabel($rental);
 
             return ['target' => [
                 'rental_id' => (int) $rental->id,
                 'period' => $periodKey,
-                'label' => $rental->name.' '.$periodKey,
+                'label' => $label.' '.Carbon::createFromFormat('Y-m-d', $periodKey.'-01')->format('m/Y'),
             ]];
         }
 
@@ -5252,6 +5964,22 @@ class AssistantToolInvoker
     }
 
     /**
+     * Nombre legible del arriendo para documentos: el usuario piensa en
+     * el inquilino ("estado de cuenta de Camila"), no en el nombre
+     * interno del contrato que puede ser autogenerado.
+     */
+    private function statementRentalLabel(Rental $rental): string
+    {
+        $tenant = $rental->tenant?->name;
+
+        if (is_string($tenant) && trim($tenant) !== '') {
+            return trim($tenant);
+        }
+
+        return trim((string) $rental->name) !== '' ? (string) $rental->name : '#'.$rental->id;
+    }
+
+    /**
      * Factura el periodo de UN arriendo (no el portafolio completo).
      *
      * @param  array<string, mixed>  $params
@@ -5276,6 +6004,39 @@ class AssistantToolInvoker
             ]);
         }
 
+        // "genera la factura del arriendo de X para 2026-10" es ambiguo:
+        // puede ser facturar en BD o sacar el documento. Si el periodo ya
+        // tiene factura emitida, facturar de nuevo no tiene sentido — se
+        // propone directamente el documento de ESA factura.
+        $existing = Invoice::query()
+            ->where('user_id', $userId)
+            ->where('rental_id', $rental->id)
+            ->where('period', $periodStart->format('Y-m'))
+            ->first();
+
+        if ($existing !== null) {
+            return new AssistantReply(
+                text: __('assistant.replies.bill_period_covered', [
+                    'rental' => $rental->name,
+                    'period' => $periodStart->format('m/Y'),
+                    'invoice' => $existing->number,
+                ]),
+                action: [
+                    'type' => 'generate_document',
+                    'params' => [
+                        'kind' => 'invoice',
+                        'format' => 'text',
+                        'invoice_id' => (int) $existing->id,
+                    ],
+                    'summary' => __('assistant.actions.document_summary', [
+                        'document' => __('assistant.doc_types.invoice'),
+                        'target' => $existing->number,
+                    ]),
+                ],
+                suggestions: [__('assistant.suggestions.invoices')],
+            );
+        }
+
         return new AssistantReply(
             text: __('assistant.replies.propose_bill_rental', [
                 'rental' => $rental->name,
@@ -5291,6 +6052,14 @@ class AssistantToolInvoker
                     $this->changeRow('rental', __('assistant.fields.rental'), null, $rental->name, 'text'),
                     $this->changeRow('period', __('assistant.fields.period'), null, $periodStart->format('m/Y'), 'text'),
                 ],
+                'editable' => [[
+                    'key' => 'period',
+                    'param' => 'period',
+                    'label' => __('assistant.fields.period'),
+                    'kind' => 'text',
+                    'value' => $periodStart->format('Y-m'),
+                    'required' => true,
+                ]],
                 'summary' => __('assistant.actions.bill_rental_summary', [
                     'rental' => $rental->name,
                     'period' => $periodStart->format('m/Y'),

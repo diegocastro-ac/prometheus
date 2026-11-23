@@ -5,11 +5,12 @@ namespace App\Infrastructure\Ai;
 use App\Contracts\DataAssistantInterface;
 use App\Dto\AssistantReply;
 use App\Models\User;
+use App\Services\Assistant\AppGuide;
 use App\Services\Assistant\AssistantFormSession;
-use App\Services\Assistant\AssistantKeywordMatcher;
 use App\Services\Assistant\AssistantToolInvoker;
 use App\Services\Assistant\DatabaseSchemaDigest;
 use App\Services\Assistant\PortfolioContextBuilder;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -104,32 +105,23 @@ class GeminiDataAssistant implements DataAssistantInterface
     public function __construct(
         private readonly AssistantToolInvoker $invoker,
         private readonly PortfolioContextBuilder $context,
-        private readonly AssistantKeywordMatcher $matcher,
         private readonly AssistantFormSession $forms,
         private readonly DatabaseSchemaDigest $schema,
     ) {}
 
     public function ask(string $question, array $history, int $userId): AssistantReply
     {
-        // Wizard en curso (acta de entrega, etc.): TODA respuesta va al
-        // handler del formulario. Si pasara por el matcher/Gemini, una
-        // respuesta como "entrega" o "sí" seria reclasificada como un
-        // listado nuevo y el wizard nunca avanzaria. El handler detecta
-        // "cancela" por su cuenta; para salir hay que decirlo explicitamente.
-        if ($this->forms->form($userId) !== null) {
-            $reply = $this->invoker->handleFormField($question, $userId);
+        $activeForm = $this->forms->form($userId);
 
-            return $this->maybeDraft($this->withBadgeColors($reply, $question, $userId), $userId);
-        }
-
-        // Sin API key el chat degrada al matcher local para no quedar mudo.
-        // Con key, TODO pasa por Gemini: el historial y la guia de dominio le
-        // dan el contexto para interpretar matices, follow-ups y extracciones.
+        // Sin API key no hay razonamiento posible: el chat lo dice
+        // explicitamente en vez de responder con plantillas locales que
+        // pierden el hilo de la conversacion. Los wizards siguen por su
+        // via determinista, que no necesita IA.
         if (! $this->isConfigured()) {
-            $local = $this->matcher->match($question);
+            if ($activeForm !== null) {
+                $reply = $this->invoker->handleFormField($question, $userId);
 
-            if ($local !== null) {
-                return $this->resolveLocal($local, $userId, $question);
+                return $this->maybeDraft($this->withBadgeColors($reply, $question, $userId), $userId);
             }
 
             return AssistantReply::say(__('assistant.unavailable'));
@@ -137,16 +129,29 @@ class GeminiDataAssistant implements DataAssistantInterface
 
         $digest = $this->context->digestFor($userId);
 
-        $parsed = $this->classify($question, $history, $digest->toArray(), $userId);
+        // Wizard en curso: el mensaje se clasifica CON contexto del
+        // formulario para distinguir una respuesta del wizard
+        // (form_field) de una peticion nueva. Antes TODO mensaje iba al
+        // handler y una peticion distinta quedaba secuestrada por el
+        // formulario activo.
+        $formNote = $activeForm !== null ? $this->formContextNote($activeForm) : null;
 
-        // Si Gemini no responde (red, TLS, cuota, 5xx) el chat no debe quedar
-        // mudo: el matcher local resuelve las consultas mas comunes sin red.
-        // Solo si tampoco reconoce la pregunta se muestra el error generico.
+        $parsed = $this->classify(
+            $formNote !== null ? $question."\n\n".$formNote : $question,
+            $history,
+            $digest->toArray(),
+            $userId,
+        );
+
+        // Si Gemini no responde (red, TLS, cuota, 5xx) se muestra el error
+        // generico: una respuesta local sin razonamiento haria ruido.
+        // Excepcion: con un wizard activo el handler determinista sigue
+        // pudiendo interpretar la respuesta del formulario sin IA.
         if ($parsed === null) {
-            $local = $this->matcher->match($question);
+            if ($activeForm !== null) {
+                $reply = $this->invoker->handleFormField($question, $userId);
 
-            if ($local !== null) {
-                return $this->resolveLocal($local, $userId, $question);
+                return $this->maybeDraft($this->withBadgeColors($reply, $question, $userId), $userId);
             }
 
             return AssistantReply::say(__('assistant.error'));
@@ -159,7 +164,7 @@ class GeminiDataAssistant implements DataAssistantInterface
         $parsed = $this->resolveLookups($question, $history, $digest->toArray(), $parsed, $userId) ?? $parsed;
 
         if (($parsed['domain'] ?? 'app') === 'offtopic') {
-            return AssistantReply::offTopic();
+            return $this->maybeCompose(AssistantReply::offTopic(), $question, $history, $userId);
         }
 
         // Peticiones multiples en un solo mensaje ("muéstrame inquilinos y
@@ -168,19 +173,38 @@ class GeminiDataAssistant implements DataAssistantInterface
         $confidence = (float) ($parsed['confidence'] ?? 0);
         $requests = $this->extractRequests($parsed);
 
+        // Respuesta del wizard activo: valores crudos ("sí", una fecha,
+        // un telefono), intents form_field/cancel_form o clasificaciones
+        // de baja confianza van al handler determinista del formulario.
+        // Una intencion real del dominio — o varias peticiones en un
+        // mensaje — sigue el pipeline normal y no es secuestrada.
+        if ($activeForm !== null && $this->isWizardAnswer($requests, $confidence)) {
+            $reply = $this->invoker->handleFormField($question, $userId);
+
+            return $this->maybeDraft($this->withBadgeColors($reply, $question, $userId), $userId);
+        }
+
         if (count($requests) > 1) {
             $batch = $this->invoker->invokeBatch($requests, $userId);
             $batch = $this->withAiSuggestions($batch, $parsed);
             $batch = $this->withBadgeColors($batch, $question, $userId);
 
-            return $this->maybeDraft($batch, $userId);
+            return $this->maybeDraft($this->maybeCompose($batch, $question, $history, $userId), $userId);
         }
 
         $intent = $requests[0]['intent'];
         $params = $requests[0]['params'];
 
         if ($confidence < 0.4 || $intent === 'unknown') {
-            return AssistantReply::say(__('assistant.unknown'), $this->defaultSuggestions());
+            return $this->maybeCompose(
+                $this->withOptionsFromModel(
+                    AssistantReply::say(__('assistant.unknown'), $this->defaultSuggestions()),
+                    $parsed,
+                ),
+                $question,
+                $history,
+                $userId,
+            );
         }
 
         // El modelo insistio en lookup_data tras el maximo de rondas:
@@ -192,6 +216,23 @@ class GeminiDataAssistant implements DataAssistantInterface
             $reply = $this->withAiSuggestions($reply, $parsed);
 
             return $this->maybeDraft($reply, $userId);
+        }
+
+        // Analisis predictivo y guias de uso: en vez de una plantilla
+        // determinista por "foco"/"tema", la IA investiga la base de
+        // datos por su cuenta (lookup_data) y compone la respuesta como
+        // un REPORTE estructurado de componentes UI. Si la composicion
+        // falla o no hay API, cae al camino determinista del invoker.
+        if (in_array($intent, ['business_insights', 'app_guide'], true)) {
+            $report = $this->composeReport($question, $history, $digest->toArray(), $userId);
+
+            if ($report !== null) {
+                return new AssistantReply(
+                    text: $report['intro'] !== '' ? $report['intro'] : $report['title'],
+                    data: ['report' => $report],
+                    suggestions: $report['suggestions'],
+                );
+            }
         }
 
         // La pregunta original viaja como contexto interno: los intents
@@ -223,8 +264,88 @@ class GeminiDataAssistant implements DataAssistantInterface
 
         $reply = $this->withAiSuggestions($reply, $parsed);
         $reply = $this->withBadgeColors($reply, $question, $userId);
+        $reply = $this->maybeDraft($this->maybeCompose($reply, $question, $history, $userId), $userId);
 
-        return $this->maybeDraft($reply, $userId);
+        return $this->withOptionsFromModel($reply, $parsed);
+    }
+
+    /**
+     * Respuestas de solo texto (aclaraciones, errores de dominio, listas
+     * de candidatos, "no hay datos en ese periodo"): el resultado
+     * determinista ya es correcto, pero la redaccion final la hace la IA
+     * con la pregunta y el historial — nada de plantillas que pierden el
+     * hilo de la conversacion. No aplica a respuestas con accion, tabla,
+     * redirect, formulario o draft (esas ya tienen su propio flujo).
+     *
+     * @param  list<array{role: string, text: string}>  $history
+     */
+    private function maybeCompose(AssistantReply $reply, string $question, array $history, int $userId): AssistantReply
+    {
+        if (! $this->isConfigured()
+            || ! config('services.gemini.compose_replies', true)
+            || $reply->action !== null
+            || $reply->data !== null
+            || $reply->redirect !== null
+            || $reply->pendingForm !== null
+            || $reply->sections !== null
+            || $reply->draft !== null) {
+            return $reply;
+        }
+
+        $composed = $this->composeReplyText($question, $history, $reply->text, $userId);
+
+        if ($composed === null) {
+            return $reply;
+        }
+
+        return new AssistantReply(
+            text: $composed,
+            suggestions: $reply->suggestions,
+            intent: $reply->intent,
+            badgeColors: $reply->badgeColors,
+            options: $reply->options,
+        );
+    }
+
+    /**
+     * Una llamada ligera: el modelo recibe la pregunta, los ultimos
+     * turnos y el resultado que el sistema ya calculo, y devuelve la
+     * respuesta final redactada. Si falla, null y queda el texto
+     * determinista.
+     *
+     * @param  list<array{role: string, text: string}>  $history
+     */
+    private function composeReplyText(string $question, array $history, string $result, int $userId): ?string
+    {
+        $turns = implode("\n", array_map(
+            fn (array $turn): string => ($turn['role'] === 'assistant' ? 'Asistente' : 'Usuario').': '.mb_substr($turn['text'], 0, 300),
+            array_slice($history, -6),
+        ));
+
+        $body = [
+            'system_instruction' => [
+                'parts' => [['text' => implode("\n", [
+                    'Eres el asistente del copiloto de Prometheus (gestion de arriendos en Colombia).',
+                    'El sistema YA resolvio la consulta del usuario y produjo el RESULTADO determinista que se te da abajo: es correcto, no lo contradigas ni inventes datos, cifras, entidades ni acciones que no esten ahi.',
+                    'Tu trabajo es solo la REDACCION FINAL: responde la pregunta del usuario de forma natural y con el contexto de la conversacion, en el MISMO idioma en que escribio. Si el resultado es una pregunta de aclaracion o un aviso, formula la misma peticion de manera conversacional. Si ya es una buena respuesta, puedes devolverla casi igual pero mas natural.',
+                    'Responde SOLO el texto de la respuesta: sin JSON, sin markdown de codigo, sin comillas alrededor, maximo ~120 palabras salvo que el resultado sea largo.',
+                ])]],
+            ],
+            'contents' => [[
+                'role' => 'user',
+                'parts' => [['text' => "Conversacion reciente:\n".($turns !== '' ? $turns : '(inicio)')
+                    ."\n\nPregunta actual del usuario: ".$question
+                    ."\n\nRESULTADO del sistema (correcto, usar tal cual):\n".mb_substr($result, 0, 2000)]],
+            ]],
+            'generationConfig' => [
+                'temperature' => 0.4,
+                'maxOutputTokens' => 400,
+            ],
+        ];
+
+        $text = trim($this->generate($body, null, $userId));
+
+        return $text === '' ? null : $text;
     }
 
     /**
@@ -237,34 +358,71 @@ class GeminiDataAssistant implements DataAssistantInterface
      */
     private function withAiSuggestions(AssistantReply $reply, array $parsed): AssistantReply
     {
-        $raw = $parsed['suggestions'] ?? null;
+        $suggestions = $this->cleanSuggestions($parsed['suggestions'] ?? null);
 
-        if (! is_array($raw)) {
+        return $suggestions === [] ? $reply : $reply->withSuggestions($suggestions);
+    }
+
+    /**
+     * Opciones A-D que el modelo propone cuando la pregunta es
+     * genuinamente ambigua entre interpretaciones: cada opcion es un
+     * texto corto que el usuario puede elegir (se re-envia por el chat)
+     * o ignorar escribiendo libremente. No pisa opciones que el
+     * invoker ya haya puesto (preguntas guiadas del dominio).
+     *
+     * @param  array<string, mixed>  $parsed
+     */
+    private function withOptionsFromModel(AssistantReply $reply, array $parsed): AssistantReply
+    {
+        // Las opciones A-D son respuestas a una PREGUNTA de la IA: solo
+        // tienen sentido en replies de solo texto. Si la respuesta ya
+        // trae accion, tabla, redirect o formulario, ofrecer opciones
+        // duplicaria la decision que el flujo guiado ya resuelve.
+        if ($reply->action !== null
+            || $reply->data !== null
+            || $reply->redirect !== null
+            || $reply->pendingForm !== null
+            || $reply->sections !== null
+            || $reply->options !== []) {
             return $reply;
         }
 
-        $suggestions = [];
+        $options = $this->cleanOptions($parsed['options'] ?? null);
+
+        return $options === [] ? $reply : $reply->withOptions($options);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function cleanOptions(mixed $raw): array
+    {
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        $options = [];
 
         foreach ($raw as $item) {
             if (! is_string($item)) {
                 continue;
             }
 
-            // Sin markdown ni comillas: son chips que se envian tal cual.
-            $item = trim(preg_replace('/[*_`#>]+/u', '', $item) ?? $item);
+            // Una sola linea: el texto viaja como literal JS en el boton.
+            $item = trim((string) preg_replace('/\s+/u', ' ', (string) preg_replace('/[*_`#>]+/u', '', $item)));
 
-            if ($item === '' || mb_strlen($item) > 80 || in_array($item, $suggestions, true)) {
+            if ($item === '' || mb_strlen($item) > 90 || in_array($item, $options, true)) {
                 continue;
             }
 
-            $suggestions[] = $item;
+            $options[] = $item;
 
-            if (count($suggestions) >= 4) {
+            if (count($options) >= 4) {
                 break;
             }
         }
 
-        return $suggestions === [] ? $reply : $reply->withSuggestions($suggestions);
+        return $options;
     }
 
     /**
@@ -308,29 +466,6 @@ class GeminiDataAssistant implements DataAssistantInterface
             'intent' => (string) ($parsed['intent'] ?? 'unknown'),
             'params' => is_array($parsed['params'] ?? null) ? $parsed['params'] : [],
         ]];
-    }
-
-    /**
-     * Resuelve una intencion detectada por el matcher local. Los intents de
-     * lectura/analisis/listado responden al instante; los drafts igual pasan
-     * por maybeDraft para que Gemini los personalize si hay key.
-     *
-     * @param  array{intent: string, params: array<string, mixed>}  $local
-     */
-    private function resolveLocal(array $local, int $userId, string $question): AssistantReply
-    {
-        if ($local['intent'] === 'greeting') {
-            return AssistantReply::say(
-                __('assistant.greeting'),
-                $this->defaultSuggestions(),
-            );
-        }
-
-        $local['params']['_question'] = $question;
-        $reply = $this->invoker->invoke($local['intent'], $local['params'], $userId);
-        $reply = $this->withBadgeColors($reply, $question, $userId);
-
-        return $this->maybeDraft($reply, $userId);
     }
 
     /**
@@ -545,6 +680,47 @@ PROMPT;
      * @param  array<string, mixed>  $digest
      * @return array{domain?: string, intent?: string, params?: array<string, mixed>, confidence?: float}|null
      */
+    /**
+     * Nota de contexto que se agrega a la pregunta cuando hay un wizard
+     * activo, para que el modelo distinga "respuesta del formulario" de
+     * "peticion nueva".
+     */
+    private function formContextNote(string $form): string
+    {
+        $what = match ($form) {
+            'delivery_act' => 'un wizard de acta de entrega que esta recopilando datos por pasos',
+            'update_clarify' => 'un formulario de actualizacion de entidad que espera saber QUE campo quiere cambiar el usuario',
+            'update_value' => 'un formulario de actualizacion que espera el NUEVO valor de un campo concreto',
+            default => 'un formulario guiado del asistente a la espera de datos del usuario',
+        };
+
+        return '[CONTEXTO: hay '.$what.'. Si el mensaje responde el dato que el formulario pide — un valor, una fecha, un nombre, "si"/"no", "siguiente", "omitir" — devuelve intent="form_field"; si pide cancelar el formulario, "cancel_form". Solo clasifica otra intencion si el mensaje pide claramente OTRA cosa del negocio.]';
+    }
+
+    /**
+     * Decide si el mensaje clasificado es una respuesta del wizard activo
+     * o una peticion nueva. Los valores crudos del wizard suelen salir
+     * como unknown o con confianza baja: los parsers deterministas del
+     * formulario saben re-preguntar si no eran el dato esperado, asi que
+     * en la duda se los damos a el.
+     *
+     * @param  list<array{intent: string, params: array<string, mixed>}>  $requests
+     */
+    private function isWizardAnswer(array $requests, float $confidence): bool
+    {
+        if (count($requests) !== 1) {
+            return false;
+        }
+
+        $intent = $requests[0]['intent'] ?? 'unknown';
+
+        if (in_array($intent, ['form_field', 'cancel_form'], true)) {
+            return true;
+        }
+
+        return $intent === 'unknown' || $confidence < 0.4;
+    }
+
     private function classify(string $question, array $history, array $digest, int $userId): ?array
     {
         $contents = [];
@@ -626,6 +802,571 @@ PROMPT;
     }
 
     /**
+     * Compositor de reportes: la IA decide QUE investigar (lookup_data
+     * en SQL o ficha de tabla) y luego QUE componentes UI necesita la
+     * respuesta (metricas, tablas, pasos, alertas). No hay focos ni
+     * temas prefijados: el modelo explora los datos reales y arma el
+     * reporte que mejor responde la pregunta del usuario.
+     *
+     * Devuelve null si el modelo no logra producir un reporte valido:
+     * el llamador cae entonces a la respuesta determinista clasica.
+     *
+     * @param  array<string, mixed>  $digest
+     * @return array{title: string, intro: string, sections: list<array<string, mixed>>, suggestions: list<string>}|null
+     */
+    private function composeReport(string $question, array $history, array $digest, int $userId): ?array
+    {
+        $notes = [];
+
+        for ($round = 0; $round < 4; $round++) {
+            $parsed = $this->classifyReport($question, $history, $digest, $notes, $userId);
+
+            if ($parsed === null) {
+                return null;
+            }
+
+            $lookup = $parsed['lookup'] ?? null;
+
+            if (is_array($lookup) && $lookup !== [] && $round < 3) {
+                $result = $this->invoker->lookupData($lookup, $userId);
+
+                $notes[] = isset($result['rows'])
+                    ? '[Tu consulta de apoyo '.$round.' — RESULTADOS REALES de la base de datos (JSON): '.json_encode(array_slice($result['rows'], 0, 60), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).'. Continúa investigando con otra consulta si hace falta, o devuelve el reporte final.]'
+                    : '[Tu consulta de apoyo '.$round.' fue rechazada o fallo: '.($result['error'] ?? 'error desconocido').'. Ajusta params.sql/params.table o responde con lo que ya tienes.]';
+
+                continue;
+            }
+
+            $report = $this->sanitizeReport($parsed['report'] ?? null);
+
+            if ($report === null) {
+                return null;
+            }
+
+            $report['suggestions'] = $this->cleanSuggestions($parsed['suggestions'] ?? null);
+
+            return $report;
+        }
+
+        return null;
+    }
+
+    /**
+     * Una ronda del compositor: mismo protocolo HTTP que classify()
+     * pero con el system prompt del reporter y las notas de consultas
+     * de apoyo ya ejecutadas anexadas a la pregunta.
+     *
+     * @param  array<string, mixed>  $digest
+     * @param  list<string>  $notes
+     * @return array<string, mixed>|null
+     */
+    private function classifyReport(string $question, array $history, array $digest, array $notes, int $userId): ?array
+    {
+        $contents = [];
+
+        foreach (array_slice($history, -10) as $turn) {
+            $contents[] = [
+                'role' => $turn['role'] === 'assistant' ? 'model' : 'user',
+                'parts' => [['text' => $turn['text']]],
+            ];
+        }
+
+        $fullQuestion = $notes === []
+            ? $question
+            : $question."\n\n".implode("\n", $notes)."\n\nResponde ahora: otra consulta de apoyo ({\"lookup\": ...}) o el reporte final ({\"report\": ...}).";
+
+        $contents[] = ['role' => 'user', 'parts' => [['text' => $fullQuestion]]];
+
+        $body = [
+            'system_instruction' => [
+                'parts' => [['text' => $this->reportSystemPrompt($digest, $userId)]],
+            ],
+            'contents' => $contents,
+            'generationConfig' => [
+                'responseMimeType' => 'application/json',
+                'temperature' => 0.2,
+            ],
+        ];
+
+        $text = $this->generate($body, null, $userId);
+
+        if ($text === '') {
+            return null;
+        }
+
+        $decoded = json_decode($text, true);
+
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * Normaliza el reporte del modelo a la estructura que el Blade
+     * sabe pintar. Cualquier bloque o accion fuera del vocabulario
+     * permitido se descarta; si no queda nada util, null (fallback).
+     *
+     * @return array{title: string, intro: string, sections: list<array<string, mixed>>}|null
+     */
+    private function sanitizeReport(mixed $raw): ?array
+    {
+        if (! is_array($raw) || ! isset($raw['sections']) || ! is_array($raw['sections'])) {
+            return null;
+        }
+
+        $title = $this->cleanReportText($raw['title'] ?? '', 120);
+        $intro = $this->cleanReportText($raw['intro'] ?? '', 800);
+        $sections = [];
+
+        foreach (array_slice($raw['sections'], 0, 6) as $section) {
+            if (! is_array($section)) {
+                continue;
+            }
+
+            $blocks = $this->sanitizeReportBlocks($section['blocks'] ?? null);
+
+            if ($blocks === []) {
+                continue;
+            }
+
+            $sections[] = [
+                'title' => $this->cleanReportText($section['title'] ?? '', 80),
+                'blocks' => $blocks,
+            ];
+        }
+
+        if ($sections === []) {
+            return null;
+        }
+
+        return [
+            'title' => $title !== '' ? $title : __('assistant.report.fallback_title'),
+            'intro' => $intro,
+            'sections' => $sections,
+        ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function sanitizeReportBlocks(mixed $blocks): array
+    {
+        if (! is_array($blocks)) {
+            return [];
+        }
+
+        $out = [];
+
+        foreach (array_slice($blocks, 0, 8) as $block) {
+            if (! is_array($block)) {
+                continue;
+            }
+
+            $clean = match ((string) ($block['type'] ?? '')) {
+                'text' => $this->sanitizeTextBlock($block),
+                'metrics' => $this->sanitizeMetricsBlock($block),
+                'table' => $this->sanitizeTableBlock($block),
+                'chart' => $this->sanitizeChartBlock($block),
+                'steps' => $this->sanitizeStepsBlock($block),
+                'callouts' => $this->sanitizeCalloutsBlock($block),
+                'list' => $this->sanitizeListBlock($block),
+                default => null,
+            };
+
+            if ($clean !== null) {
+                $out[] = $clean;
+            }
+        }
+
+        return $out;
+    }
+
+    private function sanitizeTextBlock(array $block): ?array
+    {
+        $text = $this->cleanReportText($block['text'] ?? '', 2000, keepMarkdown: true);
+
+        return $text === '' ? null : ['type' => 'text', 'text' => $text];
+    }
+
+    private function sanitizeMetricsBlock(array $block): ?array
+    {
+        $items = [];
+
+        foreach (array_slice((array) ($block['items'] ?? []), 0, 6) as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $label = $this->cleanReportText($item['label'] ?? '', 60);
+            $value = $this->cleanReportText($item['value'] ?? '', 60);
+
+            if ($label === '' || $value === '') {
+                continue;
+            }
+
+            $entry = ['label' => $label, 'value' => $value];
+            $hint = $this->cleanReportText($item['hint'] ?? '', 120);
+
+            if ($hint !== '') {
+                $entry['hint'] = $hint;
+            }
+
+            $tone = (string) ($item['tone'] ?? '');
+
+            if (in_array($tone, self::BADGE_COLORS, true)) {
+                $entry['tone'] = $tone;
+            }
+
+            $items[] = $entry;
+        }
+
+        return $items === [] ? null : ['type' => 'metrics', 'items' => $items];
+    }
+
+    /**
+     * Grafica del reporte: el modelo entrega etiquetas y valores
+     * numericos; aqui se normalizan (max 12 puntos, valores finitos).
+     * El tipo se limita a bar|line|donut — cualquier otro se descarta.
+     */
+    private function sanitizeChartBlock(array $block): ?array
+    {
+        $kind = (string) ($block['chart'] ?? $block['type2'] ?? '');
+
+        if (! in_array($kind, ['bar', 'line', 'donut'], true)) {
+            return null;
+        }
+
+        $labels = [];
+        $values = [];
+
+        $rawLabels = (array) ($block['labels'] ?? []);
+        $rawValues = (array) ($block['values'] ?? []);
+
+        foreach (array_slice($rawLabels, 0, 12) as $i => $label) {
+            $label = $this->cleanReportText($label, 24);
+
+            if ($label === '') {
+                continue;
+            }
+
+            $value = $rawValues[$i] ?? null;
+
+            if (! is_numeric($value)) {
+                continue;
+            }
+
+            $labels[] = $label;
+            $values[] = (float) $value;
+        }
+
+        if (count($values) < 2) {
+            return null;
+        }
+
+        $clean = ['type' => 'chart', 'chart' => $kind, 'labels' => $labels, 'values' => $values];
+        $title = $this->cleanReportText($block['title'] ?? '', 80);
+
+        if ($title !== '') {
+            $clean['title'] = $title;
+        }
+
+        $unit = $this->cleanReportText($block['unit'] ?? '', 12);
+
+        if ($unit !== '') {
+            $clean['unit'] = $unit;
+        }
+
+        return $clean;
+    }
+
+    private function sanitizeTableBlock(array $block): ?array
+    {
+        $columns = [];
+
+        foreach (array_slice((array) ($block['columns'] ?? []), 0, 8) as $column) {
+            $column = $this->cleanReportText($column, 40);
+
+            if ($column !== '') {
+                $columns[] = $column;
+            }
+        }
+
+        $rows = [];
+
+        foreach (array_slice((array) ($block['rows'] ?? []), 0, 30) as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+
+            $cells = [];
+
+            foreach (array_slice($row, 0, count($columns) ?: 8) as $cell) {
+                if (is_array($cell)) {
+                    $cell = $cell['text'] ?? $cell['value'] ?? '';
+                }
+
+                if (is_scalar($cell) || $cell === null) {
+                    $cells[] = $this->cleanReportText((string) $cell, 200);
+                }
+            }
+
+            if ($cells !== []) {
+                $rows[] = $cells;
+            }
+        }
+
+        if ($columns === [] || $rows === []) {
+            return null;
+        }
+
+        $clean = ['type' => 'table', 'columns' => $columns, 'rows' => $rows];
+        $title = $this->cleanReportText($block['title'] ?? '', 80);
+
+        if ($title !== '') {
+            $clean['title'] = $title;
+        }
+
+        return $clean;
+    }
+
+    private function sanitizeStepsBlock(array $block): ?array
+    {
+        $items = [];
+
+        foreach (array_slice((array) ($block['items'] ?? []), 0, 12) as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $title = $this->cleanReportText($item['title'] ?? '', 80);
+
+            if ($title === '') {
+                continue;
+            }
+
+            $entry = [
+                'title' => $title,
+                'text' => $this->cleanReportText($item['text'] ?? '', 300),
+            ];
+
+            $action = $this->sanitizeReportAction($item['action'] ?? null);
+
+            if ($action !== null) {
+                $entry['action'] = $action;
+            }
+
+            $items[] = $entry;
+        }
+
+        return $items === [] ? null : ['type' => 'steps', 'items' => $items];
+    }
+
+    /**
+     * Acciones del reporte: solo los targets de navegacion conocidos
+     * (mismo mapa que la guia) y prompts cortos para el chat. Cualquier
+     * otra cosa se descarta — el modelo no puede inyectar URLs libres.
+     *
+     * @return array{kind: string, label: string, url?: string, prompt?: string}|null
+     */
+    private function sanitizeReportAction(mixed $action): ?array
+    {
+        if (! is_array($action)) {
+            return null;
+        }
+
+        $label = $this->cleanReportText($action['label'] ?? '', 60);
+
+        if (($action['kind'] ?? '') === 'url') {
+            $target = (string) ($action['target'] ?? '');
+            $class = AppGuide::URLS[$target] ?? null;
+
+            if ($class === null) {
+                return null;
+            }
+
+            return [
+                'kind' => 'url',
+                'label' => $label !== '' ? $label : __('assistant.guide.go_to', ['section' => __('assistant.sections.'.$target)]),
+                'url' => $class::getUrl(),
+            ];
+        }
+
+        if (($action['kind'] ?? '') === 'prompt') {
+            $prompt = $this->cleanReportText($action['prompt'] ?? '', 200);
+
+            if ($prompt === '') {
+                return null;
+            }
+
+            return [
+                'kind' => 'prompt',
+                'label' => $label !== '' ? $label : __('assistant.guide.try_it'),
+                'prompt' => $prompt,
+            ];
+        }
+
+        return null;
+    }
+
+    private function sanitizeCalloutsBlock(array $block): ?array
+    {
+        $items = [];
+
+        foreach (array_slice((array) ($block['items'] ?? []), 0, 8) as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $title = $this->cleanReportText($item['title'] ?? '', 80);
+            $text = $this->cleanReportText($item['text'] ?? '', 400);
+
+            if ($title === '' && $text === '') {
+                continue;
+            }
+
+            $entry = ['title' => $title, 'text' => $text];
+            $tone = (string) ($item['tone'] ?? '');
+
+            if (in_array($tone, self::BADGE_COLORS, true)) {
+                $entry['tone'] = $tone;
+            }
+
+            $items[] = $entry;
+        }
+
+        return $items === [] ? null : ['type' => 'callouts', 'items' => $items];
+    }
+
+    private function sanitizeListBlock(array $block): ?array
+    {
+        $items = [];
+
+        foreach (array_slice((array) ($block['items'] ?? []), 0, 20) as $item) {
+            if (is_array($item)) {
+                $item = $item['text'] ?? '';
+            }
+
+            $item = $this->cleanReportText((string) $item, 300);
+
+            if ($item !== '') {
+                $items[] = $item;
+            }
+        }
+
+        return $items === [] ? null : ['type' => 'list', 'items' => $items];
+    }
+
+    private function cleanReportText(mixed $value, int $max, bool $keepMarkdown = false): string
+    {
+        if (! is_scalar($value)) {
+            return '';
+        }
+
+        $text = trim((string) $value);
+
+        if (! $keepMarkdown) {
+            $text = trim(preg_replace('/[*_`#>]+/u', '', $text) ?? $text);
+        }
+
+        return mb_strlen($text) > $max ? mb_substr($text, 0, $max).'…' : $text;
+    }
+
+    /**
+     * Sugerencias del reporte: mismo saneamiento que withAiSuggestions
+     * pero sobre una lista cruda (el reporte no es un AssistantReply).
+     *
+     * @return list<string>
+     */
+    private function cleanSuggestions(mixed $raw): array
+    {
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        $suggestions = [];
+
+        foreach ($raw as $item) {
+            if (! is_string($item)) {
+                continue;
+            }
+
+            $item = trim(preg_replace('/[*_`#>]+/u', '', $item) ?? $item);
+
+            if ($item === '' || mb_strlen($item) > 80 || in_array($item, $suggestions, true)) {
+                continue;
+            }
+
+            $suggestions[] = $item;
+
+            if (count($suggestions) >= 4) {
+                break;
+            }
+        }
+
+        return $suggestions;
+    }
+
+    /**
+     * System prompt del compositor de reportes: la IA decide que
+     * investigar y que componentes usar; el vocabulario es una guia,
+     * no una plantilla — puede combinar los bloques que el caso pida.
+     *
+     * @param  array<string, mixed>  $digest
+     */
+    private function reportSystemPrompt(array $digest, int $userId): string
+    {
+        $sqlRules = 'una sola sentencia SELECT (o WITH...SELECT); dialecto SQL estandar; NUNCA INSERT/UPDATE/DELETE/DDL; tablas de datos del usuario SIEMPRE con filtro user_id = '.$userId.' (las globales ipc_rates, ipc_series, geographies, app_settings no llevan user_id); la tabla users se filtra por users.id = '.$userId.'; evita columnas password/remember_token; LIMIT 50 por defecto; alias en espanol para columnas calculadas; JOINs, GROUP BY, agregados (SUM/COUNT/AVG), subconsultas y CTEs permitidos';
+
+        return implode("\n", [
+            'Eres el ANALISTA del copiloto de Prometheus, una app de gestion de arriendos informales urbanos en Colombia (Ley 820).',
+            'El usuario te pide un ANALISIS o una GUIA personalizada. Tu trabajo NO es clasificar: es INVESTIGAR la base de datos real del usuario y construir la respuesta que mejor lo ayude a decidir, en el formato JSON de reporte que se indica abajo.',
+            'Investiga como un analista: que datos importan para ESTA pregunta concreta, que relaciones del esquema los unen, que comparaciones o tendencias revelan algo, y que recomendarías con evidencia. No hay una plantilla fija: tu criterio decide que secciones y componentes incluye el reporte.',
+            'Analiza con PROFUNDIDAD, no con una sola consulta superficial: busca CRUCES que revelen lo que una tabla suelta no muestra — por ejemplo, cruzar facturas vencidas con el canon y el historial de pagos de cada inquilino para ver si la mora se concentra en pocos o es generalizada; comparar el periodo actual contra el anterior para ver tendencias reales; segmentar por propiedad o tipo de arriendo para encontrar focos de riesgo u oportunidad; detectar patrones (quien paga siempre tarde, propiedades sin facturar, canon desalineado con el mercado del sector). Si una conclusion necesita dos tablas relacionadas, juntalas en la misma consulta con JOIN/CTE en vez de asumir.',
+            'El usuario puede escribir en ESPAÑOL o en INGLES: el reporte va en el MISMO idioma del usuario.',
+            '',
+            'PROCESO (obligatorio):',
+            '1. PIENSA que necesitas saber para responder bien. Si te falta un dato que la base de datos puede darte, devuelve PRIMERO una consulta de apoyo y espera los resultados reales.',
+            '2. Puedes hacer hasta 3 consultas de apoyo encadenadas: cada respuesta tuya puede ser {"lookup":{...}} o el reporte final. No te limites a una sola consulta si el analisis lo amerita.',
+            '3. Con los datos reales en la mano, devuelve el reporte final. NUNCA inventes cifras: todo numero del reporte debe venir de una consulta ejecutada o del CONTEXTO DEL PORTAFOLIO.',
+            '4. Si la pregunta pide una guia de uso, investiga el estado REAL del usuario (que ya tiene registrado, que le falta) y arma los pasos con acciones concretas que pueda ejecutar desde el chat.',
+            '',
+            'CONSULTA DE APOYO (lookup):',
+            '- {"lookup":{"sql":"SELECT ..."}} — '.$sqlRules.'.',
+            '- {"lookup":{"table":"nombre_tabla"}} — ficha completa de la tabla: columnas, tipos, enums, relaciones, total de filas del usuario.',
+            '- Los resultados vuelven como JSON en el siguiente paso, dentro de las notas de tu pregunta.',
+            '',
+            'FORMATO DE RESPUESTA FINAL (un solo objeto JSON, sin markdown):',
+            '{"report":{"title":"...","intro":"...","sections":[{"title":"...","blocks":[ ... ]}]},"suggestions":["pregunta corta 1","pregunta corta 2"]}',
+            '',
+            'BLOQUES DISPONIBLES (combina los que el caso pida; no uses todos por obligacion):',
+            '- {"type":"text","text":"parrafo en markdown ligero (**negrita**, listas con -)"} — narrativa, conclusiones, contexto.',
+            '- {"type":"metrics","items":[{"label":"...","value":"...","hint":"...","tone":"success|warning|danger|info"}]} — tarjetas de cifra clave (max 6). tone pinta el valor: success=bueno, warning=atencion, danger=problema, info=neutro. Omite tone si no aplica.',
+            '- {"type":"table","title":"...","columns":["Col1","Col2"],"rows":[["a","b"]]} — datos tabulares reales (max 8 columnas, 30 filas). Para rankings o listados.',
+            '- {"type":"chart","chart":"bar|line|donut","title":"...","labels":["ene","feb"],"values":[1200,3400],"unit":"$"} — grafica visual (max 12 puntos). bar=comparacion de categorias, line=serie en el tiempo o tendencia, donut=composicion/porcentajes del total. Usala SIEMPRE que la pregunta hable de evolucion, comparacion entre periodos, ranking visual o distribucion — una grafica comunica mejor que una tabla para eso. labels cortos (max ~10 chars), values solo numeros (sin simbolos de moneda ni separadores de miles).',
+            '- {"type":"steps","items":[{"title":"Paso","text":"detalle","action":{"kind":"url","target":"invoices","label":"Ir a Facturas"}}]} — pasos accionables para guias o planes (max 12). action.kind="url" navega a una seccion: targets validos = invoices, rentals, tenants, properties, delivery_acts, adjustments, finances, documents, profile, settings, ipc. action.kind="prompt" con "prompt":"texto a enviar al chat" ejecuta una accion guiada (ej: "registra un pago de $100.000 a la factura FV-2026-0001"). Omite action si el paso es solo informativo.',
+            '- {"type":"callouts","items":[{"title":"...","text":"...","tone":"warning"}]} — alertas/avisos destacados (max 8).',
+            '- {"type":"list","items":["punto 1","punto 2"]} — listas simples (max 20).',
+            '',
+            'REGLAS DEL REPORTE:',
+            '- title: corto y descriptivo (max ~8 palabras). intro: 1-2 frases que enmarcan lo que el usuario va a ver.',
+            '- sections: max 6, orden logico (primero lo que el usuario pidio, luego el detalle). Cada section: title corto + blocks.',
+            '- Tono de ASESOR profesional: directo, con evidencia, con recomendaciones accionables cuando la pregunta lo pida.',
+            '- Si la pregunta es de GUIA (como usar la app, que hacer primero, paso a paso): los pasos deben ser concretos para ESTE usuario — menciona sus entidades reales cuando aporten (ej: "tu arriendo de Camila Torres ya tiene 2 facturas vencidas: cobra primero esas").',
+            '- Cifras con formato $1.234.567 (COP). Fechas en lenguaje natural o YYYY-MM.',
+            '- suggestions: 2-3 preguntas de seguimiento CORTAS (max 60 chars) en el idioma del usuario, concretas segun lo que mostraste.',
+            '',
+            'CONTEXTO DEL PORTAFOLIO DEL USUARIO:',
+            json_encode($digest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            '',
+            'ESQUEMA DE LA BASE DE DATOS (para tus consultas lookup.sql; [filtrar user_id] = tabla del usuario, [global] = sin user_id):',
+            $this->schema->forPrompt(),
+            '',
+            'SIGNIFICADO DE LOS DATOS (semantica de negocio: OBLIGATORIO respetarla al escribir SQL):',
+            $this->schema->semanticsForPrompt(),
+            '',
+            'Hoy es '.now()->format('Y-m-d').'.',
+        ]);
+    }
+
+    /**
      * Si la respuesta pide un texto redactado (recordatorio/aviso), se
      * genera con la IA usando los datos reales del contexto y se reemplaza
      * el texto de respaldo.
@@ -656,6 +1397,7 @@ PROMPT;
             sections: $reply->sections,
             pendingForm: $reply->pendingForm,
             badgeColors: $reply->badgeColors,
+            options: $reply->options,
         );
     }
 
@@ -669,6 +1411,16 @@ PROMPT;
      *
      * @param  array<string, mixed>  $body
      */
+    /**
+     * Presupuesto total de Gemini para la peticion actual. Un `ask`
+     * encadena varias llamadas (classify, lookups, compose, reporte,
+     * sugerencias) y cada una puede reintentar hasta 3 modelos: sin este
+     * tope global, un GEMINI_TIMEOUT alto hacia que el request de
+     * Livewire muriera por max_execution_time de PHP a mitad de la
+     * espera de cURL. Se fija en la primera llamada y se agota una vez.
+     */
+    private ?float $geminiDeadline = null;
+
     private function generate(array $body, ?int $timeout = null, ?int $userId = null): string
     {
         $key = (string) config('services.gemini.key');
@@ -677,22 +1429,62 @@ PROMPT;
             return '';
         }
 
-        // El timeout debe quedar MUY por debajo del max_execution_time de PHP
-        // (30s): si la API se cuelga, el request de Livewire moriria a mitad
-        // de camino y el chat quedaria congelado sin respuesta.
+        // El timeout por llamada queda por debajo del presupuesto total:
+        // si la API se cuelga, el request de Livewire no puede esperar
+        // indefinidamente.
         $timeout ??= (int) config('services.gemini.timeout', 10);
+        $this->geminiDeadline ??= microtime(true) + $this->requestBudgetSeconds();
 
         // Se intenta el modelo del usuario (o el configurado) y, si falla,
         // un respaldo: el free tier satura modelos con 503/high demand.
+        // El ultimo modelo que respondio bien va primero: si la saturacion
+        // es por modelo y no por cuenta, se evita quemar tiempo en los
+        // que estan caidos.
         foreach ($this->modelCandidates($userId) as $model) {
-            $text = $this->generateWithModel($key, $model, $body, $timeout);
+            $remaining = $this->geminiDeadline - microtime(true);
+
+            if ($remaining <= 0.5) {
+                return '';
+            }
+
+            $text = $this->generateWithModel($key, $model, $body, min($timeout, (int) ceil($remaining)));
 
             if ($text !== '') {
+                $this->rememberWorkingModel($userId, $model);
+
                 return $text;
             }
         }
 
         return '';
+    }
+
+    /**
+     * El modelo que respondio por ultima vez se recuerda por usuario:
+     * en la siguiente llamada se prueba primero y los modelos saturados
+     * quedan de respaldo en vez de bloquear el arranque de cada intento.
+     */
+    private function rememberWorkingModel(?int $userId, string $model): void
+    {
+        Cache::put('assistant.gemini_model.'.($userId ?? 'global'), $model, now()->addHours(12));
+    }
+
+    private function rememberedModel(?int $userId): ?string
+    {
+        $model = Cache::get('assistant.gemini_model.'.($userId ?? 'global'));
+
+        return is_string($model) && $model !== '' ? $model : null;
+    }
+
+    /**
+     * Segundos totales que puede esperar Gemini dentro de UNA peticion
+     * de chat. Cubre el classify principal mas las llamadas secundarias
+     * (compose, sugerencias, reporte) sin dejar que un timeout alto se
+     * convierta en minutos de espera.
+     */
+    private function requestBudgetSeconds(): int
+    {
+        return max(45, (int) config('services.gemini.timeout', 10) * 2);
     }
 
     /**
@@ -713,6 +1505,13 @@ PROMPT;
             'gemini-3.1-flash-lite',
             'gemini-3.6-flash',
         ])));
+
+        // El modelo que funciono por ultima vez encabeza la lista.
+        $remembered = $this->rememberedModel($userId);
+
+        if ($remembered !== null && in_array($remembered, $candidates, true)) {
+            $candidates = array_merge([$remembered], array_values(array_diff($candidates, [$remembered])));
+        }
 
         return array_slice($candidates, 0, 3);
     }
@@ -746,6 +1545,47 @@ PROMPT;
      */
     private function generateWithModel(string $key, string $model, array $body, int $timeout): string
     {
+        // Fallos transitorios (503 high demand, 429, timeouts de red) se
+        // reintentan UNA vez con una pausa corta: la saturacion del free
+        // tier suele ser por rafagas de segundos. Errores definitivos
+        // (400/401/403/404) no se reintentan. El reintento solo corre si
+        // el presupuesto global de la peticion todavia tiene margen.
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            $effectiveTimeout = $timeout;
+
+            if ($attempt === 1) {
+                $remaining = ($this->geminiDeadline ?? 0) - microtime(true);
+
+                if ($remaining < 8) {
+                    return '';
+                }
+
+                usleep(2_000_000);
+
+                // El reintento no puede volver a gastar el timeout entero:
+                // se recorta a lo que queda del presupuesto global.
+                $effectiveTimeout = min($timeout, max(1, (int) ceil($remaining) - 2));
+            }
+
+            [$text, $retryable] = $this->attemptGenerate($key, $model, $body, $effectiveTimeout);
+
+            if ($text !== '' || ! $retryable) {
+                return $text;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Un intento HTTP contra generateContent. Devuelve [texto, reintentable]:
+     * reintentable=true solo para fallos transitorios de la API o de red.
+     *
+     * @param  array<string, mixed>  $body
+     * @return array{0: string, 1: bool}
+     */
+    private function attemptGenerate(string $key, string $model, array $body, int $timeout): array
+    {
         try {
             $request = Http::withHeaders(['x-goog-api-key' => $key])
                 ->connectTimeout(5)
@@ -770,23 +1610,27 @@ PROMPT;
                     'body' => mb_substr($response->body(), 0, 500),
                 ]);
 
-                return '';
+                return ['', in_array($response->status(), [408, 429, 500, 502, 503, 504], true)];
             }
 
             $parts = data_get($response->json(), 'candidates.0.content.parts', []);
 
-            return collect($parts)
+            return [collect($parts)
                 ->reject(fn (array $part): bool => ($part['thought'] ?? false) === true)
                 ->pluck('text')
                 ->filter()
-                ->implode('');
+                ->implode(''), false];
         } catch (Throwable $exception) {
             Log::warning('gemini.assistant.exception', [
                 'model' => $model,
                 'error' => $exception->getMessage(),
             ]);
 
-            return '';
+            // Solo errores de red/timeout son transitorios; un fallo de
+            // programacion no mejora reintentando.
+            $retryable = (bool) preg_match('/cURL error|timed? ?out|Connection|resolve host/i', $exception->getMessage());
+
+            return ['', $retryable];
         }
     }
 
@@ -815,9 +1659,11 @@ PROMPT;
             '- ENRIQUECE CON RELACIONES: cuando la pregunta se responde con una herramienta pero la respuesta seria mas completa y util consultando datos relacionados del esquema (ej: "cuentame del inquilino X" gana si tambien ves sus facturas pendientes y su arriendo), puedes hacer lookup_data primero para traerte esas relaciones y luego responder o proponer con el panorama completo. No te limites a la respuesta minima si una consulta barata la mejora.',
             '- RESPONDE EXACTAMENTE LO PEDIDO: si el usuario nombra una entidad (un inquilino, un arriendo, una factura, un acta), la respuesta se limita a ESA entidad. Nunca devuelvas el listado general cuando pidieron uno especifico; si la entidad no tiene el dato pedido, dilo con claridad ("esa acta no registra items danados") en vez de mostrar datos de otros.',
             '- "peores/mayores deudores", "mas morosos", "peor pagador" NO son palabras ofensivas ni ambiguas: significan los inquilinos con mayor saldo vencido o peor comportamiento de pago. Interpretalas siempre asi y responde con la tabla ordenada por ese criterio.',
-            '- El historial de la conversacion es contexto: si el usuario aclara un dato ("el nombre", "NOMBRE"), esa aclaracion completa la peticion anterior. Nunca vuelvas a preguntar algo que el usuario ya respondio.',
+            '- MENSAJE NUEVO vs SEGUIMIENTO (razonamiento, no reglas): el historial de la conversacion SIEMPRE esta disponible, pero TU decides por razonamiento si el mensaje actual DEPENDE de el o es independiente. Por defecto un mensaje con sujeto y verbo propios es una peticion NUEVA que se entiende sola — clasificala solo por lo que dice, sin heredar el tema del turno anterior: "analiza mis finanzas" despues de "que facturas vencieron" es un analisis GENERAL del negocio, no de las vencidas; "cuanto me deben" despues de hablar de un inquilino es la cartera completa. El historial SOLO aplica cuando el mensaje depende explicitamente de el: respuestas sueltas a una pregunta pendiente ("el nombre", "NOMBRE", "cc 123", "si"), referencias con pronombres o demostrativos ("esos", "de esos", "y los que...", "la segunda", "solo esos"), o continuaciones explicitas ("y ahora...", "y de una vez...", "lo mismo para..."). Ante la duda entre "seguimiento" y "peticion nueva", prefiere la lectura literal del mensaje actual.',
+            '- Cuando el mensaje SI sea seguimiento, correlaciona los datos sueltos con la ultima peticion pendiente del historial y completa los params faltantes. Nunca vuelvas a preguntar algo que el usuario ya respondio.',
             '- NUNCA inventes cifras ni datos: tu salida es solo la clasificacion; los numeros los calcula el sistema.',
-            '- Tu salida es UN SOLO objeto JSON valido con las claves domain, intent, params, confidence y requests. Nada de markdown, explicaciones ni texto fuera del JSON.',
+            '- Tu salida es UN SOLO objeto JSON valido con las claves domain, intent, params, confidence, requests, suggestions y options (las dos ultimas opcionales). Nada de markdown, explicaciones ni texto fuera del JSON.',
+            '- options: SOLO cuando la pregunta admite 2 a 4 interpretaciones concretas y genuinamente ambiguas que el usuario debe elegir (que documento necesita, a que entidad se refiere, que periodo quiere). Cada opcion es un texto corto que reenvia la peticion ya desambiguada (ej: "el estado de cuenta de Camila Torres", "la factura FV-2026-0003"). NO la uses para sugerencias de seguimiento ni cuando una sola interpretacion es claramente la correcta: para eso esta la extraccion normal de params.',
             '- Si la pregunta no tiene que ver con la administracion de arriendos (precios de otros productos, tareas ajenas, trivialidades, opinion politica, codigo, etc.), domain="offtopic".',
             '- Si la pregunta es ambigua pero claramente del dominio, elige el intent mas cercano con confidence 0.5 en vez de "unknown". Reserva "unknown" solo para lo realmente incomprensible.',
             '- params lleva los campos que la pregunta menciona explicitamente; completa ademas lo que el CONTEXTO DEL PORTAFOLIO o una consulta de apoyo resuelvan con certeza (nunca inventes valores).',
@@ -833,8 +1679,9 @@ PROMPT;
             '- "mis actas de entrega / actas / inventario del acta / elementos del inventario" -> list_delivery_acts (tambien cuando pidan "los datos", "la tabla" o "el detalle" de las actas). Si la pregunta nombra UN arriendo o inquilino ("el acta del arriendo de X", "actas de Juan"), incluye rental_name con ese nombre: el sistema acota el listado a esa entidad.',
             '- "las propiedades y por cada una sus actas / arriendos con sus actas / inquilinos con sus arriendos" -> usa el intent ANIDADO cuando exista: list_properties_with_acts devuelve cada propiedad con sus actas adentro (no pidas las tablas por separado ni uses batch para esto).',
             '- "cuanto recaude / ingresos / cuanto cobre este mes" -> income_period (params.period: "YYYY-MM", "last_month" o "YYYY").',
-            '- "analiza mis finanzas / metricas / tendencias / como va el negocio" -> financial_analysis.',
-            '- "que pasaria si sigo asi / predice / pronostica / proyeccion / que puntos puedo mejorar / recomendaciones para mejorar / vale la pena tener a este inquilino / este inquilino es buen pagador / analiza a fondo mi negocio / que riesgos tengo" -> business_insights. Es el analisis predictivo de corto plazo: la respuesta se calcula con datos reales y se muestra como tarjeta estructurada (pronostico + salud por inquilino + recomendaciones). NO lo uses para una sola metrica puntual (eso va por la herramienta especifica); lo usas cuando el usuario pide razonamiento, prediccion, valoracion de un inquilino o mejoras. params.focus = el TEMA de la pregunta en una palabra (income|risk|improve|tenant|acts|portfolio); params.entity_name = la entidad concreta si nombra una ("el inquilino X", "el arriendo de Y"); si pide "analisis completo/a fondo", deja focus vacio para el panorama entero.',
+            '- financial_analysis -> metricas instantaneas del momento: recaudo del mes, tasa de recaudo, facturas vencidas. Una MIRADA RAPIDA, sin investigacion. Elegila solo cuando el usuario pida un vistazo/estado actual de cifras sueltas.',
+            '- business_insights -> ANALISIS PROFUNDO: el sistema investiga la base de datos por su cuenta, cruza datos entre periodos/entidades y compone un reporte con conclusiones, graficas, alertas y recomendaciones. Elegila cuando el usuario pida analisis, diagnostico, prediccion, proyeccion, comparaciones, rankings, "a fondo", "completo", "detallado", "reporte" — o cualquier pregunta que requiera investigar mas alla de una cifra suelta. LA PROFUNDIDAD LA DECIDE EL USUARIO POR RAZONAMIENTO, no por una lista de frases: si pide rapido/sencillo/resumen, no es esto; si pide completo/a fondo/analisis, si lo es. params.entity_name = la entidad concreta si nombra una ("el inquilino X", "el arriendo de Y"); el resto lo decide el analisis.',
+            '- business_insights TAMBIEN cuando la pregunta pida ANALISIS y no solo datos: preguntas de evolucion temporal ("como evoluciona/va X por mes o periodo"), de distribucion o ranking ("que propiedades/inquilinos me generan mas", "mejores/peores segun criterio"), de comparacion ("compara X con Y o entre periodos") o que pidan conclusiones/recomendaciones ("en que me estoy equivocando", "que esta pasando con mi cartera"). Razonamiento: si la respuesta exige investigar, cruzar o concluir — y no solo listar — es business_insights para que el reporte salga con graficas y cruces. query_data queda para cuando el usuario pide literalmente una tabla/lista sin analisis ("muestrame las facturas", "dame la lista de inquilinos").',
             '- "cuando toca reajustar / proximo ajuste / ipc" -> next_adjustments. "que contratos vencen/terminan" -> expiring_contracts.',
             '- "redactame/ayudame a escribir" un mensaje de cobro o recordatorio -> draft_reminder; un aviso de incremento, reajuste o terminacion -> draft_notice. params.rental_name con el nombre del alquiler o inquilino si lo menciona.',
             '- "genera/haz/crea las facturas del mes" -> propose_generate_invoices (params.period "YYYY-MM" si lo menciona).',
@@ -849,7 +1696,8 @@ PROMPT;
             '- "lista/muestra los reajustes registrados" -> list_adjustments. "como va el reajuste/la cadena de reajustes del arriendo X" -> adjustment_detail. "que IPC aplicaria/porcentaje saldria para X en fecha Y" -> preview_adjustment_ipc.',
             '- "registra/propone un reajuste para el arriendo X" -> record_adjustment (params.rental_name, effective_from, new_rent si lo menciona). "aplica el reajuste N" -> apply_adjustment (params.adjustment_id o number). "marca el reajuste N como notificado" -> mark_adjustment_notified (params.adjustment_id/number + notified_on + notification_method: postal|contractual|in_person|email). "recalcula la cadena de reajustes" -> recalculate_adjustments.',
             '- "anula/cancela la factura N" -> annul_invoice (params.invoice_number o invoice_id; si es referencia relativa, resuelvela desde pending_invoices igual que en pagos).',
-            '- "dame/pasame/genera el documento/el comprobante/la carta/el estado de cuenta" -> generate_document (params.doc_type: rent_invoice|payment_receipt|adjustment_letter|monthly_statement + invoice_number|rental_name|adjustment_id|period + format text|pdf|json). Referencias de factura relativas se resuelven desde pending_invoices como en pagos.',
+            '- "dame/pasame/genera el documento/el comprobante/la carta/el estado de cuenta" -> generate_document (params.doc_type: rent_invoice|payment_receipt|adjustment_letter|monthly_statement + invoice_number|rental_name|adjustment_id|period + format text|pdf|json). Referencias de factura relativas se resuelven desde pending_invoices como en pagos. Solo cuando el usuario pide GENERAR el documento ahora; si pide uno que no existe en el catalogo (documento del portafolio completo, carta personalizada, reporte en PDF) responde con general_answer explicando que documentos hay y que ese no esta disponible.',
+            '- PREGUNTAS DE CAPACIDAD O POSIBILIDAD (razonamiento, no ejecucion): "puedes/es posible/se puede...?, soporta/hace/maneja X?, es muy complejo?, como genero/hago X?" preguntan SI se puede o COMO, no piden ejecutarlo en este mensaje -> general_answer. En params.answer escribe TÚ la respuesta completa y honesta en el idioma del usuario: que puede hacer el asistente, que documentos/formatos existen (factura de arriendo, comprobante de pago, carta de reajuste y estado de cuenta en texto, PDF o JSON; NO hay documentos personalizados ni del portafolio completo por ahora) y, si aplica, el comando o paso sugerido para lograrlo. Reserva generate_document y demas intents de escritura para cuando el usuario pide la accion concreta ("generame la factura de X", "registrame un pago").',
             '- "factura/genera la factura del arriendo de X para el periodo Y" -> bill_single_rental (params.rental_name + period "YYYY-MM").',
             '- "cartera vencida por rangos/rangos de dias/aging" -> aging_report. "quienes son mis peores/mayores deudores" -> top_debtors. "cuanto recaudare por cada metodo/por nequi/por transferencia" -> payments_by_method. "tasa de recaudo/dias promedio de atraso/cobranza" -> collection_rate.',
             '- "crea/llena un acta de entrega" -> create_delivery_act (params.rental_name si lo menciona; si no, el sistema guia paso a paso).',
@@ -866,10 +1714,10 @@ PROMPT;
             '  * params.sql = un SELECT de solo lectura ('.$sqlRules.').',
             '  * params.table = el nombre de una tabla del esquema -> el sistema te devuelve su FICHA completa: columnas con tipo/null/default, enums, relaciones y total de filas del usuario. Usalo cuando dudes de una columna, una relacion o quieras aprender una tabla mas alla del resumen.',
             '  El sistema ejecuta tu consulta o ficha y te devuelve los resultados REALES en el siguiente paso; con eso devuelves el intent final con los params completos y correctos. Usala siempre que una referencia sea resoluble en la BD pero no en el contexto (numero exacto de factura, relacion entre tablas, dato que el digest no trae). NO la uses para responder lecturas al usuario (eso es query_data) ni para pedir datos que ya estan en el contexto. Maximo dos consultas de apoyo por mensaje: si tras los resultados algo sigue ambiguo, pregunta.',
-            '- CONSULTA PARA EL USUARIO (query_data): para CUALQUIER pregunta de datos del negocio que ninguna herramienta especifica responda — cruces de tablas, comparaciones entre periodos, rankings personalizados, "cuantos dias en promedio tarda en pagar X" — devuelve intent=query_data con params.sql = un SELECT de solo lectura ('.$sqlRules.' params.question = la pregunta original). El resultado se muestra al usuario como tabla. Si necesitas datos intermedios para RAZONAR antes de responder o proponer una accion, usa lookup_data; si la pregunta ES la consulta, usa query_data.',
+            '- CONSULTA PARA EL USUARIO (query_data): para CUALQUIER pregunta de datos del negocio que ninguna herramienta especifica responda — cruces de tablas, comparaciones entre periodos, rankings personalizados, "cuantos dias en promedio tarda en pagar X" — devuelve intent=query_data con params.sql = un SELECT de solo lectura ('.$sqlRules.' params.question = la pregunta original). El resultado se muestra al usuario como tabla. OJO: si la pregunta pide analisis/evolucion/conclusiones/recomendaciones ("como evoluciona X", "que genera mas Y", "analiza Z"), NO es query_data: es business_insights. Si necesitas datos intermedios para RAZONAR antes de responder o proponer una accion, usa lookup_data; si la pregunta ES la consulta, usa query_data.',
             '- JERARQUIA: si existe una herramienta especifica para el caso (listados, updates, pagos, documentos, ajustes...), PREFIERELA: trae previews, confirmaciones, campos editables y navegacion que la consulta libre no tiene. La consulta libre es para lecturas; NUNCA la uses para proponer cambios (los writes siempre van por sus intents con confirmacion).',
-            '- Si ninguna herramienta ni query_data aplican y la pregunta es del dominio pero muy ambigua, general_answer puede reconocer la duda y orientar al usuario sobre que puede pedir.',
-            '- GUIA DE USO (app_guide): cuando el usuario pregunta COMO usar la app, que hacer primero, es nuevo, quiere que lo guies, o pide "paso a paso"/"tutorial"/"how do I" de una funcionalidad -> app_guide con params.topic. Temas: start=primeros pasos/onboarding completo ("que hago primero", "soy nuevo", "por donde empiezo"), setup=registrar propiedades/inmuebles/inquilinos y agendar arriendos, billing=facturas, collections=recaudo/pagos/cobros, adjustments=reajustes IPC, delivery_acts=actas de entrega, documents=documentos/comprobantes/estados de cuenta, settings=configuracion del negocio. Elige el tema MAS ESPECIFICO que pida el usuario; solo usa start si pregunta por empezar de cero. La guia se muestra como pasos accionables: no repitas los pasos en params ni en otra parte.',
+            '- Si ninguna herramienta ni query_data aplican y la pregunta es del dominio pero muy ambigua, o es una pregunta de capacidad/uso, general_answer es la respuesta: escribe la respuesta completa en params.answer (texto plano, mismo idioma del usuario, honesto sobre lo que el sistema soporta).',
+            '- GUIA DE USO (app_guide): cuando el usuario pregunta COMO usar la app, que hacer primero, es nuevo, quiere que lo guies, o pide "paso a paso"/"tutorial"/"how do I" de una funcionalidad -> app_guide. El sistema investiga el estado real del usuario y compone una guia personalizada con pasos accionables; no hace falta params.topic.',
             '',
             'VARIAS COSAS EN UN MENSAJE (batch):',
             '- Si el usuario pide DOS O MAS cosas distintas en el mismo mensaje (ej: "muéstrame mis inquilinos y mis propiedades", "registra estos 3 inquilinos y 2 propiedades", "cuánto me deben y lista las facturas"), llena `requests` con UN elemento por cada peticion, cada uno con su intent y sus params completos.',
@@ -928,10 +1776,11 @@ PROMPT;
             '- En creaciones, si falta algun campo obligatorio devuelve el intent igual con lo que tengas: el sistema preguntara lo que falte. No omitas el intent por params incompletos.',
             '- EN UPDATES (update_tenant/property/rental/settings): la ENTIDAD va en tenant_name/property_name/rental_name (o entity_name), NUNCA en "name" si tambien hay un valor nuevo; el valor nuevo va en el campo correspondiente: new_name para el nombre de persona/entidad, phone_number, email, document, address, monthly_amount, etc. Ej: "cambia el nombre de X a Y" -> {tenant_name:"X", new_name:"Y"}.',
             '',
-            'SEGUIMIENTO Y CONTEXTO (el historial de la conversacion es tu memoria):',
-            '- Si el usuario responde con datos sueltos ("cc 123, tel 300"), correlacionalos con la ultima peticion pendiente del historial y completa los params faltantes.',
+            'SEGUIMIENTO Y CONTEXTO (el historial solo manda cuando el mensaje depende de el):',
+            '- Respuestas sueltas a una pregunta pendiente ("cc 123, tel 300", "el nombre es X", "si", "para enero"): completan la ultima peticion del historial — no son peticiones nuevas.',
+            '- Referencias al turno anterior ("esos", "de esos", "los mismos", "la segunda", "y esos tambien"): heredan la entidad/tema del mensaje previo.',
             '- Si pide "la tabla", "esos datos", "listalos", "muestramelos", "genera una tabla" tras un listado: re-emite el intent de listado correspondiente (el sistema re-ejecuta y muestra los datos frescos).',
-            '- Si cambia de tema (menciona otra entidad), trata la pregunta como nueva.',
+            '- Si el mensaje es autocontenido — nombra su propio sujeto y se entiende sin el turno anterior — clasificalo como peticion nueva AUNQUE el tema sea parecido al anterior.',
             '',
             'SUGERENCIAS DE SEGUIMIENTO (clave "suggestions" del JSON):',
             '- Incluye SIEMPRE "suggestions": una lista de 2 a 3 preguntas de seguimiento CORTAS (max 60 caracteres cada una), en el MISMO idioma del usuario, que el arrendador podria hacer a continuacion.',

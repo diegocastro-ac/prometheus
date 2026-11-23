@@ -19,12 +19,20 @@
         // la respuesta de Livewire, sin esperar el roundtrip para verlos.
         pendingMsgs: [],
         sending: false,
+        // Texto del input al momento (Alpine): wire:model es diferido,
+        // asi que el boton enviar se deshabilita con esto, no con $wire.
+        inputText: '',
         // Cambio de chat o de modelo: la UI responde al instante (optimista)
         // y muestra skeleton/spinner hasta que Livewire confirma.
         chatBusy: false,
-        // Preview del modal (tablas/accion): skeleton inmediato mientras
-        // Livewire prepara el contenido, igual que chatBusy.
+        // Preview del modal (tablas/accion): el modal se abre al instante
+        // con skeleton y Livewire lo rellena cuando llega el contenido.
         previewBusy: false,
+        // Secuencia de aperturas: si el usuario cierra el modal mientras
+        // la peticion sigue en vuelo, el resultado que llega despues se
+        // descarta en vez de reabrir el modal solo.
+        previewSeq: 0,
+        previewDismissed: false,
         modelSel: null,
         modelBusy: false,
         // Ancho del drawer en px (null = default del CSS). Solo se usa en
@@ -112,7 +120,7 @@
             const drawer = this.$refs.drawer;
             if (! drawer) return;
             if (drawer === event.target || drawer.contains(event.target)) return;
-            const el = this.$wire.preview !== null
+            const el = this.previewVisible()
                 ? this.$refs.previewScroll
                 : (this.chatView === 'chats' ? this.$refs.chatsScroll : this.$refs.messagesScroll);
             if (! el || el.scrollHeight <= el.clientHeight) return;
@@ -206,6 +214,7 @@
                 input.value = '';
                 input.style.height = 'auto';
             }
+            this.inputText = '';
             return this.echoAndSend(text, () => this.$wire.send(), () => {
                 if (! input) return;
                 input.value = text;
@@ -228,18 +237,65 @@
             this.chatView = 'chat';
             this.$wire.closeDrawer();
         },
+        // El modal es visible mientras carga (previewBusy) o cuando el
+        // servidor ya entrego el contenido ($wire.preview).
+        previewVisible() {
+            return this.previewBusy || this.$wire.preview !== null;
+        },
+        // Abre el modal al instante y lanza la carga en segundo plano:
+        // el skeleton se ve dentro del modal, no tapando el chat.
+        async openPreview(call) {
+            this.previewSeq++;
+            this.previewDismissed = false;
+            this.previewBusy = true;
+            try {
+                await call();
+            } finally {
+                this.previewBusy = false;
+                if (this.previewDismissed) this.$wire.closePreview();
+            }
+        },
+        // Cierra el modal desde Alpine: si hay una carga en vuelo se marca
+        // como descartada para que su respuesta no lo reabra.
+        closePreviewModal() {
+            if (this.previewBusy) this.previewDismissed = true;
+            this.previewBusy = false;
+            this.$wire.closePreview();
+        },
+        // Esc cierra en orden de prioridad: primero el modal de preview,
+        // luego el selector de modelo y al final el drawer completo.
+        escapeKey() {
+            if (! this.drawerOpen) return;
+            if (this.previewVisible()) {
+                this.closePreviewModal();
+                return;
+            }
+            if (this.modelOpen) {
+                this.modelOpen = false;
+                return;
+            }
+            this.closeDrawer();
+        },
         init() {
             // Al enviar, Livewire limpia `input` por morph (sin evento input):
             // hay que devolver el textarea a una linea manualmente.
             this.$wire.$watch('input', (value) => {
                 if (value === '' && this.$refs.chatInput) {
                     this.$refs.chatInput.style.height = 'auto';
+                    this.inputText = '';
                 }
             });
             // Si el servidor cambio `view` (selectChat, newChat, etc.) el
             // panel visible se ajusta solo.
             this.$wire.$watch('view', (value) => {
                 this.chatView = value;
+            });
+            // Al abrir el drawer el foco va al input: el usuario puede
+            // escribir de una vez sin hacer click extra.
+            this.$watch('drawerOpen', (open) => {
+                if (open) {
+                    this.$nextTick(() => this.$refs.chatInput?.focus());
+                }
             });
             // La rueda fuera del drawer sigue moviendo el scroll del chat.
             window.addEventListener('wheel', (event) => this.forwardWheel(event), { passive: false });
@@ -262,7 +318,7 @@
             }, 2200);
         },
     }"
-    x-on:keydown.escape.window="drawerOpen && closeDrawer()"
+    x-on:keydown.escape.window="escapeKey()"
     x-on:assistant-close.window="closeDrawer()"
     x-on:assistant-theme.window="
         window.dispatchEvent(new CustomEvent('theme-changed', { detail: $event.detail.theme }));
@@ -315,7 +371,10 @@
     <aside
         x-show="drawerOpen"
         x-ref="drawer"
-        :style="drawerWidth ? 'width: ' + drawerWidth + 'px; max-width: ' + drawerWidth + 'px' : ''"
+        {{-- El ancho personalizado solo aplica en escritorio (lg+): en
+             pantallas menores el drawer siempre ocupa el ancho completo
+             aunque haya un ancho guardado de una sesion anterior. --}}
+        :style="drawerWidth && window.innerWidth >= 1024 ? 'width: ' + drawerWidth + 'px; max-width: ' + drawerWidth + 'px' : ''"
         x-transition:enter="transition-transform duration-300 ease-out"
         x-transition:enter-start="translate-x-full"
         x-transition:enter-end="translate-x-0"
@@ -349,7 +408,10 @@
                         <span wire:ignore.self x-show="chatView === 'chat'">{{ __('assistant.title') }}</span>
                         <span wire:ignore.self x-show="chatView === 'chats'">{{ __('assistant.chats_title') }}</span>
                     </h2>
-                    <p class="truncate text-xs text-gray-500 dark:text-gray-400">{{ __('assistant.subtitle') }}</p>
+                    <p class="truncate text-xs text-gray-500 dark:text-gray-400">
+                        <span wire:ignore.self x-show="chatView === 'chat'">{{ __('assistant.subtitle') }}</span>
+                        <span wire:ignore.self x-show="chatView === 'chats'">{{ $chatsLoaded ? __('assistant.chats_subtitle', ['count' => count($chats)]) : __('assistant.chats_loading') }}</span>
+                    </p>
                     @if ($pendingForm !== null)
                         <p class="mt-0.5 flex items-center gap-1 truncate text-[10px] font-semibold text-primary-600 dark:text-primary-400">
                             <svg class="h-3 w-3 shrink-0 animate-pulse" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
@@ -468,9 +530,10 @@
                     </button>
                     <button
                         type="button"
+                        x-bind:disabled="chatBusy"
                         x-on:click="chatView = 'chat'; chatBusy = true; $wire.newChat().finally(() => chatBusy = false)"
                         title="{{ __('assistant.new_chat') }}"
-                        class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
+                        class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-gray-200"
                     >
                         <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -499,13 +562,14 @@
             wire:ignore.self
             x-show="chatView === 'chats'"
             x-ref="chatsScroll"
-            class="flex-1 overflow-y-auto bg-gray-50 px-3 py-3 [overscroll-behavior:contain] dark:bg-gray-950/60"
+            class="assistant-scroll flex-1 overflow-y-auto bg-gray-50 px-3 py-3 [overscroll-behavior:contain] dark:bg-gray-950/60"
         >
                 {{-- Historial de conversaciones --}}
                 <button
                     type="button"
+                    x-bind:disabled="chatBusy"
                     x-on:click="chatView = 'chat'; chatBusy = true; $wire.newChat().finally(() => chatBusy = false)"
-                    class="mb-3 flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-300 px-4 py-3 text-sm font-semibold text-gray-500 transition hover:border-primary-400 hover:text-primary-600 dark:border-white/15 dark:text-gray-400 dark:hover:border-primary-500 dark:hover:text-primary-400"
+                    class="mb-3 flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-300 px-4 py-3 text-sm font-semibold text-gray-500 transition hover:border-primary-400 hover:text-primary-600 disabled:opacity-60 dark:border-white/15 dark:text-gray-400 dark:hover:border-primary-500 dark:hover:text-primary-400"
                 >
                     <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -540,8 +604,9 @@
                         >
                             <button
                                 type="button"
+                                x-bind:disabled="chatBusy"
                                 x-on:click="chatView = 'chat'; chatBusy = true; $wire.selectChat({{ $chat['id'] }}).finally(() => chatBusy = false)"
-                                class="flex min-w-0 flex-1 items-center gap-3 text-left"
+                                class="flex min-w-0 flex-1 items-center gap-3 text-left disabled:opacity-60"
                             >
                                 <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-200 text-gray-500 dark:bg-white/10 dark:text-gray-400">
                                     <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
@@ -560,7 +625,7 @@
                                 x-data
                                 x-on:click="if (confirm(@js(__('assistant.delete_chat_confirm')))) { $wire.deleteChat({{ $chat['id'] }}) }"
                                 title="{{ __('assistant.delete_chat') }}"
-                                class="rounded-lg p-1.5 text-gray-300 opacity-0 transition hover:bg-red-50 hover:text-red-500 group-hover:opacity-100 dark:text-gray-600 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                                class="rounded-lg p-1.5 text-gray-300 opacity-100 transition hover:bg-red-50 hover:text-red-500 focus-within:opacity-100 group-hover:opacity-100 sm:opacity-0 dark:text-gray-600 dark:hover:bg-red-500/10 dark:hover:text-red-400"
                             >
                                 <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
@@ -583,9 +648,10 @@
             <div
                 x-ref="messagesScroll"
                 x-init="$nextTick(() => { $el.scrollTop = $el.scrollHeight })"
-                x-on:assistant-scroll.window="$nextTick(() => { $el.scrollTop = $el.scrollHeight })"
+                x-on:assistant-scroll.window="$nextTick(() => { if (atBottom) { $el.scrollTop = $el.scrollHeight } })"
                 x-on:scroll.passive="updateAtBottom()"
-                class="flex-1 space-y-4 overflow-y-auto bg-gray-50 px-4 py-4 [overscroll-behavior:contain] dark:bg-gray-950/60"
+                aria-live="polite"
+                class="assistant-scroll flex-1 space-y-4 overflow-y-auto bg-gray-50 px-4 py-4 [overscroll-behavior:contain] dark:bg-gray-950/60"
             >
                 @php
                     $lastAssistantIndex = -1;
@@ -595,6 +661,17 @@
                             $lastAssistantIndex = $i;
                         }
                     }
+                    // Iniciales del usuario para su avatar: nombre completo
+                    // si existe, si no el correo, si no un icono generico.
+                    $userDisplay = trim((string) (auth()->user()?->name ?? ''));
+                    if ($userDisplay === '') {
+                        $userDisplay = (string) (auth()->user()?->email ?? '');
+                    }
+                    $userInitials = collect(preg_split('/\s+/', $userDisplay) ?: [])
+                        ->filter()
+                        ->take(2)
+                        ->map(fn (string $w): string => mb_strtoupper(mb_substr($w, 0, 1)))
+                        ->implode('');
                 @endphp
 
                 @if (! $messagesLoaded)
@@ -625,14 +702,51 @@
                                 </span>
                             </div>
                         @endif
+                        @php
+                            $isUserMessage = $message['role'] === 'user';
+                            // Mensajes consecutivos del mismo rol se agrupan
+                            // (menos aire) y el avatar se oculta salvo en el
+                            // primero del bloque, estilo chat moderno. El
+                            // agrupado se rompe en los separadores de dia.
+                            $sameRoleAsPrev = $index > 0
+                                && ! $showDaySeparator
+                                && ($messages[$index - 1]['role'] ?? null) === $message['role'];
+                            // La hora solo se muestra en el ultimo mensaje
+                            // del grupo: una sola marca de tiempo por bloque,
+                            // no una por burbuja.
+                            $nextMessage = $messages[$index + 1] ?? null;
+                            $nextMessageDay = $nextMessage !== null && ! empty($nextMessage['at'])
+                                ? \Illuminate\Support\Carbon::parse($nextMessage['at'])->toDateString()
+                                : null;
+                            $sameRoleAsNext = $nextMessage !== null
+                                && $nextMessage['role'] === $message['role']
+                                && ($messageDay === null || $nextMessageDay === $messageDay->toDateString());
+                        @endphp
                         <div
                             wire:key="msg-{{ $message['id'] ?? $index }}"
-                            class="assistant-msg flex {{ $message['role'] === 'user' ? 'justify-end' : 'justify-start' }}"
+                            {{-- 10px en vez de los 16px de space-y-4: agrupa
+                                 el bloque sin que las burbujas se solapen
+                                 (un margin negativo aqui las encimaba). --}}
+                            @if ($sameRoleAsPrev) style="margin-top:10px" @endif
+                            class="assistant-msg flex items-end gap-2 {{ $isUserMessage ? 'justify-end' : 'justify-start' }}"
                         >
+                            @if (! $isUserMessage)
+                                <span
+                                    @class([
+                                        'flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-50 text-primary-600 ring-1 ring-primary-600/10 transition dark:bg-primary-500/15 dark:text-primary-300 dark:ring-primary-400/25',
+                                        'invisible' => $sameRoleAsPrev,
+                                    ])
+                                    aria-hidden="true"
+                                >
+                                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" />
+                                    </svg>
+                                </span>
+                            @endif
                             <div @class([
-                                'relative max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm',
-                                'rounded-br-md bg-primary-600 text-white' => $message['role'] === 'user',
-                                'rounded-bl-md bg-white text-gray-800 ring-1 ring-gray-950/5 dark:bg-gray-800 dark:text-gray-100 dark:ring-white/10' => $message['role'] === 'assistant',
+                                'relative max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm lg:max-w-3xl',
+                                'rounded-br-md bg-primary-600 text-white' => $isUserMessage,
+                                'rounded-bl-md bg-white text-gray-800 ring-1 ring-gray-950/5 dark:bg-gray-800 dark:text-gray-100 dark:ring-white/10' => ! $isUserMessage,
                             ])>
                                 {{-- Respuestas batch: cada seccion lleva su texto
                                      seguido de sus tablas, en el orden en que el
@@ -645,45 +759,37 @@
                                         @include('livewire.partials.assistant-tables', ['data' => $section['data'] ?? null, 'messageIndex' => $index, 'badgeColors' => $message['badge_colors'] ?? []])
                                     @endforeach
                                 @else
-                                    <div class="assistant-md leading-relaxed">{!! \Illuminate\Support\Str::markdown($message['text'], ['html_input' => 'escape', 'allow_unsafe_links' => false]) !!}</div>
+                                    {{-- Markdown solo para el asistente: el texto
+                                         del usuario se muestra literal — un * o _ en
+                                         un nombre/cantidad no debe alterar el formato. --}}
+                                    @if ($isUserMessage)
+                                        <p class="whitespace-pre-line leading-relaxed">{{ $message['text'] }}</p>
+                                    @else
+                                        <div class="assistant-md leading-relaxed">{!! \Illuminate\Support\Str::markdown($message['text'], ['html_input' => 'escape', 'allow_unsafe_links' => false]) !!}</div>
+                                    @endif
 
                                     {{-- Datos estructurados: tabla compacta cuando el
                                          intent devolvio filas. --}}
                                     @include('livewire.partials.assistant-tables', ['data' => $message['data'] ?? null, 'messageIndex' => $index, 'badgeColors' => $message['badge_colors'] ?? []])
                                 @endif
 
-                                {{-- Guia de uso (app_guide): resumen en la
-                                     burbuja; la guia completa se abre en el
-                                     modal de preview con pasos accionables. --}}
-                                @include('livewire.partials.assistant-guide', ['data' => $message['data'] ?? null, 'compact' => true, 'messageIndex' => $index])
-                                @if (! empty($message['data']['guide']['steps']))
-                                    <button
-                                        type="button"
-                                        wire:click="previewBusy = true; $wire.previewGuide({{ $index }}).finally(() => previewBusy = false)"
-                                        class="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-sky-700 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-sky-50 dark:bg-gray-800 dark:text-sky-300 dark:ring-white/10 dark:hover:bg-sky-500/10"
-                                    >
-                                        {{ __('assistant.guide.view_full') }}
-                                        <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
-                                    </button>
-                                @endif
+                                {{-- Guia de uso (app_guide): la tarjeta
+                                     compacta es clickeable y abre la guia
+                                     completa en el modal de preview. --}}
+                                @include('livewire.partials.assistant-guide', ['data' => $message['data'] ?? null, 'compact' => true, 'messageIndex' => $index, 'previewMethod' => 'previewGuide', 'previewIndex' => $index])
 
                                 {{-- Respuesta ambigua: chips clicables con
                                      los candidatos. Elegir uno re-ejecuta
                                      la peticion original sobre esa entidad. --}}
                                 {{-- Analisis predictivo (business_insights):
-                                     resumen en la burbuja; la tarjeta
-                                     completa se abre en el modal. --}}
-                                @include('livewire.partials.assistant-insights', ['data' => $message['data'] ?? null, 'compact' => true])
-                                @if (! empty($message['data']['insights']))
-                                    <button
-                                        type="button"
-                                        wire:click="previewBusy = true; $wire.previewInsights({{ $index }}).finally(() => previewBusy = false)"
-                                        class="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-indigo-700 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-indigo-50 dark:bg-gray-800 dark:text-indigo-300 dark:ring-white/10 dark:hover:bg-indigo-500/10"
-                                    >
-                                        {{ __('assistant.insights.view_full') }}
-                                        <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
-                                    </button>
-                                @endif
+                                     la tarjeta compacta es clickeable y abre
+                                     el analisis completo en el modal. --}}
+                                @include('livewire.partials.assistant-insights', ['data' => $message['data'] ?? null, 'compact' => true, 'previewMethod' => 'previewInsights', 'previewIndex' => $index])
+
+                                {{-- Reporte compuesto por la IA (analisis o
+                                     guia): la tarjeta compacta es clickeable
+                                     y abre el reporte completo en el modal. --}}
+                                @include('livewire.partials.assistant-report', ['data' => $message['data'] ?? null, 'compact' => true, 'previewMethod' => 'previewReport', 'previewIndex' => $index])
 
                                 @php $candidates = $message['data']['candidates'] ?? null; @endphp
                                 @if (is_array($candidates) && $candidates !== [])
@@ -721,10 +827,9 @@
                                         <div class="flex items-stretch">
                                             <button
                                                 type="button"
-                                                wire:click="previewFile({{ $index }})"
-                                                wire:loading.attr="disabled"
+                                                x-on:click="openPreview(() => $wire.previewFile({{ $index }}))"
                                                 title="{{ __('assistant.preview.view_file') }}"
-                                                class="flex items-center justify-center px-3 text-gray-400 transition hover:bg-cyan-50 hover:text-cyan-600 dark:hover:bg-cyan-500/10 dark:hover:text-cyan-300"
+                                                class="flex items-center justify-center px-3 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
                                             >
                                                 <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
                                                     <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
@@ -735,9 +840,9 @@
                                                 type="button"
                                                 wire:click="downloadFile('{{ $file['token'] }}')"
                                                 wire:loading.attr="disabled"
-                                                class="flex w-full items-center gap-3 px-3.5 py-3 text-left transition hover:bg-cyan-50 dark:hover:bg-cyan-500/10"
+                                                class="flex w-full items-center gap-3 px-3.5 py-3 text-left transition hover:bg-gray-50 dark:hover:bg-white/5"
                                             >
-                                                <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-100 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300">
+                                                <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-300">
                                                     <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
                                                         <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
                                                     </svg>
@@ -813,54 +918,77 @@
                                             </ul>
                                         @endif
                                         <div class="mt-2.5 flex flex-wrap items-center gap-2">
-                                            @if (empty($message['action']['editable']))
-                                                {{-- Sin campos editables no hace falta modal:
-                                                     la confirmacion va directo en el mensaje. --}}
-                                                <button
-                                                    type="button"
-                                                    wire:click="confirmAction({{ $index }})"
-                                                    wire:loading.attr="disabled"
-                                                    wire:target="confirmAction,confirmPreview"
-                                                    class="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-primary-500 disabled:opacity-50"
-                                                >
-                                                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                                                    </svg>
-                                                    {{ __('assistant.confirm') }}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    wire:click="cancelAction({{ $index }})"
-                                                    class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-gray-700"
-                                                >
-                                                    {{ __('assistant.cancel') }}
-                                                </button>
-                                            @else
-                                                <button
-                                                    type="button"
-                                                    x-on:click="previewBusy = true; $wire.previewAction({{ $index }}).finally(() => previewBusy = false)"
-                                                    class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:ring-white/15 dark:hover:bg-gray-700"
-                                                >
-                                                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
-                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-                                                    </svg>
-                                                    {{ __('assistant.preview.action_title') }}
-                                                </button>
-                                            @endif
+                                            {{-- Estandar para TODA accion: preview en el
+                                                 modal (con datos completos y campos
+                                                 editables si los hay) y, si el usuario
+                                                 prefiere, confirmacion directa aqui. --}}
+                                            <button
+                                                type="button"
+                                                x-on:click="openPreview(() => $wire.previewAction({{ $index }}))"
+                                                class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:ring-white/15 dark:hover:bg-gray-700"
+                                            >
+                                                <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                                                </svg>
+                                                {{ __('assistant.preview.action_title') }}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                wire:click="confirmAction({{ $index }})"
+                                                wire:loading.attr="disabled"
+                                                wire:target="confirmAction,confirmPreview"
+                                                class="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-primary-500 disabled:opacity-50"
+                                            >
+                                                <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                                </svg>
+                                                {{ __('assistant.confirm') }}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                wire:click="cancelAction({{ $index }})"
+                                                class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-gray-700"
+                                            >
+                                                {{ __('assistant.cancel') }}
+                                            </button>
                                         </div>
                                     </div>
-                                @elseif (($message['action_resolved'] ?? false) === true)
+                                @elseif (($message['action_resolved'] ?? false) === true || ($message['action_cancelled'] ?? false))
                                     @php
                                         $resolvedAction = $message['resolved_action'] ?? null;
                                         $resolvedType = is_array($resolvedAction) ? (string) ($resolvedAction['type'] ?? '') : '';
                                         $resolvedSummaryKey = 'assistant.actions.'.$resolvedType.'_summary';
                                         $resolvedSummary = __($resolvedSummaryKey);
-                                        $resolvedLabel = $resolvedSummary === $resolvedSummaryKey
-                                            ? ucfirst(str_replace('_', ' ', $resolvedType))
-                                            : $resolvedSummary;
+                                        // batch_summary lleva :items y no se puede
+                                        // resolver aqui: etiqueta propia sin params.
+                                        if ($resolvedType === 'batch') {
+                                            $resolvedLabel = __('assistant.actions.batch_label');
+                                        } else {
+                                            $resolvedLabel = $resolvedSummary === $resolvedSummaryKey || str_contains($resolvedSummary, ':')
+                                                ? ucfirst(str_replace('_', ' ', $resolvedType))
+                                                : $resolvedSummary;
+                                        }
                                         $resolvedChanges = is_array($resolvedAction['changes'] ?? null) ? $resolvedAction['changes'] : [];
                                     @endphp
+                                    @if ($message['action_cancelled'] ?? false)
+                                        {{-- Accion descartada: tarjeta neutra — NO
+                                             debe verse como si el cambio se
+                                             hubiera aplicado. --}}
+                                        <div class="mt-3 overflow-hidden rounded-xl border border-gray-300 bg-gray-50 dark:border-white/15 dark:bg-white/5">
+                                            <div class="flex items-center gap-2 px-3 py-2">
+                                                <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gray-200 text-gray-500 dark:bg-white/10 dark:text-gray-400">
+                                                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                                                    </svg>
+                                                </span>
+                                                <div class="min-w-0 flex-1">
+                                                    <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ __('assistant.action_cancelled_title') }}</p>
+                                                    <p class="truncate text-xs font-semibold text-gray-700 dark:text-gray-200">{{ $resolvedLabel !== '' ? $resolvedLabel : __('assistant.action_resolved') }}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    @else
                                     <div class="mt-3 overflow-hidden rounded-xl border border-emerald-300 bg-emerald-50/70 dark:border-emerald-500/40 dark:bg-emerald-500/10">
                                         <div class="flex items-center gap-2 px-3 py-2">
                                             <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
@@ -895,6 +1023,7 @@
                                             </dl>
                                         @endif
                                     </div>
+                                    @endif
                                 @endif
 
                                 {{-- Acciones del mensaje: "ver todas las tablas"
@@ -905,7 +1034,7 @@
                                         @if (($message['table_count'] ?? 0) > 1)
                                             <button
                                                 type="button"
-                                                x-on:click="previewBusy = true; $wire.previewAllData({{ $index }}).finally(() => previewBusy = false)"
+                                                x-on:click="openPreview(() => $wire.previewAllData({{ $index }}))"
                                                 class="inline-flex items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-primary-100 hover:text-primary-700 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-primary-500/20 dark:hover:text-primary-300"
                                             >
                                                 <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
@@ -929,6 +1058,32 @@
                                     </div>
                                 @endif
 
+                                {{-- Opciones A-D: cuando la IA pregunta algo
+                                     con interpretaciones concretas, cada
+                                     opcion es un texto que se re-envia por
+                                     el mismo input; el texto libre sigue
+                                     disponible. Solo en el ultimo mensaje. --}}
+                                @if (! empty($message['options']) && is_array($message['options']) && $index === $lastAssistantIndex)
+                                    <div class="mt-3">
+                                        <p class="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">{{ __('assistant.options.pick_one') }}</p>
+                                        <div class="space-y-1.5">
+                                            @foreach (array_slice($message['options'], 0, 4) as $optionIndex => $option)
+                                                <button
+                                                    type="button"
+                                                    x-on:click="sendSuggestion(@js($option))"
+                                                    x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
+                                                    title="{{ $option }}"
+                                                    class="group flex w-full items-center gap-2.5 rounded-lg bg-white px-2.5 py-2 text-left text-xs font-medium text-gray-700 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-primary-50 hover:ring-primary-300 dark:bg-gray-800 dark:text-gray-200 dark:ring-white/10 dark:hover:bg-primary-500/10"
+                                                >
+                                                    <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gray-100 text-[10px] font-bold text-gray-500 ring-1 ring-gray-950/5 transition group-hover:bg-primary-100 group-hover:text-primary-700 dark:bg-white/10 dark:text-gray-400 dark:ring-white/10 dark:group-hover:bg-primary-500/20 dark:group-hover:text-primary-300">{{ chr(65 + $optionIndex) }}</span>
+                                                    <span class="line-clamp-2 min-w-0 flex-1 break-words">{{ $option }}</span>
+                                                </button>
+                                            @endforeach
+                                        </div>
+                                        <p class="mt-1.5 text-[10px] text-gray-400 dark:text-gray-500">{{ __('assistant.options.or_type') }}</p>
+                                    </div>
+                                @endif
+
                                 {{-- Sugerencias: solo en el ultimo mensaje del
                                      asistente para no saturar el historial. --}}
                                 @if (! empty($message['suggestions']) && $index === $lastAssistantIndex)
@@ -936,7 +1091,8 @@
                                         @foreach ($message['suggestions'] as $suggestion)
                                             <button
                                                 type="button"
-                                                x-on:click="sendSuggestion('{{ addslashes($suggestion) }}')"
+                                                x-on:click="sendSuggestion(@js($suggestion))"
+                                                x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
                                                 class="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 transition hover:bg-primary-100 hover:text-primary-700 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-primary-500/20 dark:hover:text-primary-300"
                                             >
                                                 {{ $suggestion }}
@@ -962,12 +1118,26 @@
                                     </button>
                                 @endif
 
-                                @if ($message['at'] ?? null)
-                                    <p class="mt-1.5 {{ $message['role'] === 'assistant' ? 'pr-8' : '' }} text-right text-[10px] {{ $message['role'] === 'user' ? 'text-white/70' : 'text-gray-500 dark:text-gray-400' }}">
-                                        {{ \Illuminate\Support\Carbon::parse($message['at'])->format('h:i A') }}
+                                @if (($message['at'] ?? null) && ! $sameRoleAsNext)
+                                    <p
+                                        class="mt-1.5 {{ $isUserMessage ? '' : 'pr-8' }} text-right text-[10px] {{ $isUserMessage ? 'text-white/70' : 'text-gray-500 dark:text-gray-400' }}"
+                                        title="{{ \Illuminate\Support\Carbon::parse($message['at'])->translatedFormat('d/m/Y h:i A') }}"
+                                    >
+                                        {{ \Illuminate\Support\Carbon::parse($message['at'])->translatedFormat('h:i A') }}
                                     </p>
                                 @endif
                             </div>
+                            @if ($isUserMessage)
+                                <span
+                                    @class([
+                                        'flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-100 text-[10px] font-bold text-primary-700 ring-1 ring-primary-600/15 transition dark:bg-primary-500/15 dark:text-primary-300 dark:ring-primary-400/25',
+                                        'invisible' => $sameRoleAsPrev,
+                                    ])
+                                    aria-hidden="true"
+                                >
+                                    {{ $userInitials !== '' ? $userInitials : '·' }}
+                                </span>
+                            @endif
                         </div>
                     @empty
                         {{-- Estado vacio con sugerencias clicables. --}}
@@ -985,7 +1155,8 @@
                                 @foreach (['portfolio', 'overdue', 'analysis', 'tenants'] as $key)
                                     <button
                                         type="button"
-                                        x-on:click="sendSuggestion('{{ addslashes(__("assistant.suggestions.{$key}")) }}')"
+                                        x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
+                                        x-on:click="sendSuggestion(@js(__("assistant.suggestions.{$key}")))"
                                         class="rounded-full bg-white px-3 py-1.5 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-primary-50 hover:text-primary-700 hover:ring-primary-600/30 dark:bg-white/5 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-primary-500/10 dark:hover:text-primary-300"
                                     >
                                         {{ __("assistant.suggestions.{$key}") }}
@@ -999,10 +1170,13 @@
                          instante mientras Gemini piensa; el mensaje real lo
                          reemplaza cuando llega la respuesta. --}}
                     <template x-for="(pendingText, pendingIndex) in pendingMsgs" :key="'pending-' + pendingIndex">
-                        <div class="assistant-msg flex justify-end">
-                            <div class="relative max-w-[85%] rounded-2xl rounded-br-md bg-primary-600 px-4 py-3 text-sm text-white shadow-sm">
+                        <div class="assistant-msg flex items-end justify-end gap-2">
+                            <div class="relative max-w-[85%] rounded-2xl rounded-br-md bg-primary-600 px-4 py-3 text-sm text-white shadow-sm lg:max-w-3xl">
                                 <p class="whitespace-pre-line leading-relaxed" x-text="pendingText"></p>
                             </div>
+                            <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-100 text-[10px] font-bold text-primary-700 ring-1 ring-primary-600/15 dark:bg-primary-500/15 dark:text-primary-300 dark:ring-primary-400/25" aria-hidden="true">
+                                {{ $userInitials !== '' ? $userInitials : '·' }}
+                            </span>
                         </div>
                     </template>
 
@@ -1012,8 +1186,13 @@
                     <div
                         x-show="sending"
                         x-cloak
-                        class="flex justify-start"
+                        class="flex items-end justify-start gap-2"
                     >
+                        <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-50 text-primary-600 ring-1 ring-primary-600/10 dark:bg-primary-500/15 dark:text-primary-300 dark:ring-primary-400/25" aria-hidden="true">
+                            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" />
+                            </svg>
+                        </span>
                         <div class="flex items-center gap-2 rounded-2xl rounded-bl-md bg-white px-4 py-3 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-800 dark:ring-white/10">
                             <span class="flex gap-1">
                                 <span class="assistant-dot h-1.5 w-1.5 rounded-full bg-primary-500"></span>
@@ -1047,18 +1226,6 @@
                 @foreach ([1, 2, 3] as $i)
                     <div @class(['h-12 w-2/3 animate-pulse rounded-2xl bg-gray-200 dark:bg-white/10', 'self-end' => $i % 2 === 0])></div>
                 @endforeach
-            </div>
-
-            {{-- Skeleton del modal de preview: aparece al instante del click
-                 y cubre el drawer hasta que Livewire devuelve el contenido. --}}
-            <div
-                x-show="previewBusy"
-                x-cloak
-                class="absolute inset-0 z-30 flex flex-col gap-4 bg-gray-50 px-4 py-4 dark:bg-gray-950/60"
-            >
-                <div class="h-4 w-1/3 animate-pulse rounded bg-gray-200 dark:bg-white/10"></div>
-                <div class="h-40 animate-pulse rounded-xl bg-gray-200 dark:bg-white/10"></div>
-                <div class="h-24 animate-pulse rounded-xl bg-gray-200 dark:bg-white/5"></div>
             </div>
 
             {{-- Flecha "bajar al final": solo visible si el usuario subio
@@ -1147,7 +1314,8 @@
                                 @foreach ($contextSuggestions as $key)
                                     <button
                                         type="button"
-                                        x-on:click="sendSuggestion('{{ addslashes(__("assistant.suggestions.{$key}")) }}')"
+                                        x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
+                                        x-on:click="sendSuggestion(@js(__("assistant.suggestions.{$key}")))"
                                         class="flex shrink-0 items-center gap-1.5 rounded-full bg-white py-1.5 pl-2.5 pr-3 text-xs font-medium text-gray-700 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-primary-50 hover:text-primary-700 hover:ring-primary-600/30 dark:bg-white/5 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-primary-500/10 dark:hover:text-primary-300"
                                     >
                                         <svg class="h-3.5 w-3.5 shrink-0 text-primary-500 dark:text-primary-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
@@ -1186,7 +1354,8 @@
                                             @foreach ($category['items'] as $prompt)
                                                 <button
                                                     type="button"
-                                                    x-on:click="helpOpen = false; sendSuggestion('{{ addslashes($prompt) }}')"
+                                                    x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
+                                                    x-on:click="helpOpen = false; sendSuggestion(@js($prompt))"
                                                     class="rounded-lg px-2 py-1.5 text-left text-xs text-gray-600 transition hover:bg-white hover:text-primary-700 hover:shadow-sm dark:text-gray-300 dark:hover:bg-white/10 dark:hover:text-primary-300"
                                                 >
                                                     {{ $prompt }}
@@ -1207,7 +1376,7 @@
                         $wizardStep = max(1, min((int) ($pendingForm['step'] ?? 1), (int) ($pendingForm['total_steps'] ?? 1)));
                         $wizardTotal = max(1, (int) ($pendingForm['total_steps'] ?? 1));
                     @endphp
-                    <div class="mb-2 rounded-xl bg-primary-50 p-3 ring-1 ring-primary-600/15 dark:bg-primary-500/10 dark:ring-primary-400/25">
+                    <div class="mb-2 rounded-xl bg-primary-50 p-3 ring-1 ring-primary-600/15 dark:bg-primary-500/10 dark:ring-primary-400/25" x-data="{ open: true }">
                         <div class="flex items-center justify-between gap-2">
                             <p class="flex min-w-0 items-center gap-1.5 text-xs font-bold text-primary-700 dark:text-primary-300">
                                 <svg class="h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
@@ -1218,14 +1387,27 @@
                                     · {{ __('assistant.wizard.step_of', ['step' => $wizardStep, 'total' => $wizardTotal]) }}
                                 </span>
                             </p>
-                            <button
-                                type="button"
-                                wire:click="cancelForm"
-                                class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold text-red-600 transition hover:bg-red-100 dark:text-red-400 dark:hover:bg-red-500/15"
-                            >
-                                {{ __('assistant.wizard.cancel') }}
-                            </button>
+                            <span class="flex shrink-0 items-center gap-1">
+                                <button
+                                    type="button"
+                                    x-on:click="open = ! open"
+                                    x-bind:title="open ? '{{ __('assistant.wizard.collapse') }}' : '{{ __('assistant.wizard.expand') }}'"
+                                    class="rounded-full p-1 text-primary-500 transition hover:bg-primary-100 dark:hover:bg-white/10"
+                                >
+                                    <svg class="h-3.5 w-3.5 transition-transform" x-bind:class="open ? '' : 'rotate-180'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
+                                    </svg>
+                                </button>
+                                <button
+                                    type="button"
+                                    wire:click="cancelForm"
+                                    class="rounded-full px-2 py-0.5 text-[10px] font-semibold text-red-600 transition hover:bg-red-100 dark:text-red-400 dark:hover:bg-red-500/15"
+                                >
+                                    {{ __('assistant.wizard.cancel') }}
+                                </button>
+                            </span>
                         </div>
+                        <div x-show="open" x-transition.opacity.duration.150ms>
                         <div class="mt-2 flex items-center gap-1">
                             @for ($stepIndex = 1; $stepIndex <= $wizardTotal; $stepIndex++)
                                 <span
@@ -1248,8 +1430,12 @@
                         @if (is_array($wfFields) && $wfFields !== [])
                             <form
                                 x-on:submit.prevent="$wire.submitForm(Object.fromEntries(new FormData($el).entries()))"
-                                class="mt-2 grid gap-2 sm:grid-cols-2"
+                                class="mt-2 grid max-h-72 gap-2 overflow-y-auto overscroll-contain pr-1 sm:grid-cols-2"
                             >
+                                {{-- Discriminador de sesion: en un batch mixto
+                                     pueden coexistir cola de creacion y de
+                                     update; el envio cae en la correcta. --}}
+                                <input type="hidden" name="__form" value="{{ $pendingForm['form'] ?? '' }}">
                                 @foreach ($wfFields as $wfField)
                                     @php
                                         $fk = (string) ($wfField['key'] ?? '');
@@ -1266,7 +1452,7 @@
                                     <label class="block text-[11px] {{ $fkind === 'textarea' ? 'sm:col-span-2' : '' }}">
                                         <span class="mb-0.5 block font-medium text-gray-500 dark:text-gray-400">{{ $flabel }}@if ($freq)<span class="ml-0.5 text-red-500" aria-hidden="true">*</span>@endif</span>
                                         @if ($fkind === 'textarea')
-                                            <textarea name="{{ $fk }}" rows="2" @if ($freq) required @endif class="{{ $fClass }}"></textarea>
+                                            <textarea name="{{ $fk }}" rows="2" @if ($freq) required @endif class="{{ $fClass }}">{{ $fval }}</textarea>
                                         @elseif ($fkind === 'date')
                                             <input type="date" name="{{ $fk }}" value="{{ $fval }}" @if ($freq) required @endif class="{{ $fClass }}">
                                         @elseif ($fkind === 'datetime')
@@ -1347,6 +1533,39 @@
                                     </select>
                                 @elseif ($wfKind === 'textarea')
                                     <textarea name="fv" rows="2" class="{{ $wfClass }}"></textarea>
+                                @elseif ($wfKind === 'entity_select' && ! empty($wfInput['options']))
+                                    {{-- Select buscable de entidades reales: el
+                                         usuario filtra por nombre y elige; tambien
+                                         puede escribir un nombre a mano. --}}
+                                    <div
+                                        x-data="{ q: '', picked: '', options: {{ \Illuminate\Support\Js::from($wfInput['options']) }} }"
+                                        class="relative w-full"
+                                    >
+                                        <input
+                                            type="text"
+                                            x-model="q"
+                                            x-on:input="picked = ''"
+                                            x-on:focus="picked = ''"
+                                            placeholder="{{ $wfInput['label'] ?? '' }}"
+                                            autocomplete="off"
+                                            class="{{ $wfClass }}"
+                                        >
+                                        <input type="hidden" name="fv" x-bind:value="picked !== '' ? picked : q">
+                                        <div
+                                            x-show="picked === '' && q.trim() !== '' && options.filter(o => (o.label + ' ' + o.value).toLowerCase().includes(q.toLowerCase())).length > 0"
+                                            x-on:click.outside="picked = q"
+                                            class="absolute z-30 mt-1 max-h-52 w-full overflow-y-auto rounded-lg bg-white py-1 shadow-lg ring-1 ring-gray-950/10 dark:bg-gray-800 dark:ring-white/15"
+                                        >
+                                            <template x-for="opt in options.filter(o => (o.label + ' ' + o.value).toLowerCase().includes(q.toLowerCase())).slice(0, 12)" :key="opt.value">
+                                                <button
+                                                    type="button"
+                                                    x-on:click="picked = opt.value; q = opt.label"
+                                                    class="block w-full px-3 py-1.5 text-left text-xs text-gray-700 transition hover:bg-primary-50 dark:text-gray-200 dark:hover:bg-primary-500/10"
+                                                    x-text="opt.label"
+                                                ></button>
+                                            </template>
+                                        </div>
+                                    </div>
                                 @else
                                     <input type="text" name="fv" autocomplete="off" class="{{ $wfClass }}">
                                 @endif
@@ -1364,7 +1583,8 @@
                                 @foreach ($pendingForm['quick_replies'] as $reply)
                                     <button
                                         type="button"
-                                        x-on:click="sendSuggestion('{{ addslashes($reply) }}')"
+                                        x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
+                                        x-on:click="sendSuggestion(@js($reply))"
                                         class="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-primary-700 ring-1 ring-primary-600/20 transition hover:bg-primary-600 hover:text-white dark:bg-white/10 dark:text-primary-300 dark:ring-primary-400/30 dark:hover:bg-primary-500/30"
                                     >
                                         {{ $reply }}
@@ -1372,31 +1592,40 @@
                                 @endforeach
                             </div>
                         @endif
+                        </div>
                     </div>
                 @endif
 
-                <form x-on:submit.prevent="sendNow()" class="flex items-end gap-2">
+                <form
+                    x-on:submit.prevent="sendNow()"
+                    class="flex items-end gap-2"
+                >
                     <textarea
                         x-ref="chatInput"
                         wire:model="input"
                         rows="1"
+                        enterkeyhint="send"
+                        aria-label="{{ __('assistant.placeholder') }}"
                         placeholder="{{ __('assistant.placeholder') }}"
                         autocomplete="off"
-                        x-on:input="$el.style.height = 'auto'; $el.style.height = Math.min($el.scrollHeight, 160) + 'px'"
+                        x-on:input="inputText = $el.value; $el.style.height = 'auto'; $el.style.height = Math.min($el.scrollHeight, 160) + 'px'"
                         x-on:keydown="if ($event.key === 'Enter' && ! $event.shiftKey) { $event.preventDefault(); $el.form.requestSubmit(); }"
                         class="max-h-40 min-h-[42px] flex-1 resize-none overflow-y-auto rounded-2xl border-0 bg-gray-100 px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:bg-white focus:ring-2 focus:ring-primary-500 dark:bg-white/10 dark:text-white dark:placeholder:text-gray-500 dark:focus:bg-white/15"
-                        wire:loading.attr="disabled"
-                        wire:target="send,askSuggestion,confirmAction,cancelAction"
                     ></textarea>
                     <button
                         type="submit"
                         aria-label="{{ __('assistant.send') }}"
-                        class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white shadow-md transition hover:bg-primary-500 disabled:opacity-50"
+                        x-bind:disabled="sending || inputText.trim() === ''"
+                        class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white shadow-md transition hover:bg-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
                         wire:loading.attr="disabled"
                         wire:target="send,askSuggestion,confirmAction,cancelAction"
                     >
-                        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                        <svg x-show="! sending" class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+                        </svg>
+                        <svg x-show="sending" x-cloak class="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z"></path>
                         </svg>
                     </button>
                 </form>
@@ -1410,16 +1639,43 @@
 
         {{-- Modal de preview: acciones por confirmar o tablas expandidas.
              Vive DENTRO del drawer (absolute), asi no pelea con el z-index
-             de modales de Filament ni se sale del contexto del chat. --}}
-        @if ($preview !== null)
-            <div class="absolute inset-0 z-20 flex flex-col bg-white dark:bg-gray-900">
+             de modales de Filament ni se sale del contexto del chat.
+             El shell esta siempre en el DOM y Alpine lo muestra al
+             instante (previewBusy) con skeleton dentro; Livewire rellena
+             el contenido cuando la respuesta llega. --}}
+        <div
+            x-show="previewVisible()"
+            x-cloak
+            class="absolute inset-0 z-20 flex flex-col bg-white dark:bg-gray-900"
+        >
                 <header class="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3 dark:border-white/10">
-                    <h3 class="truncate text-sm font-bold text-gray-900 dark:text-white">
-                        {{ $preview['kind'] === 'action' ? __('assistant.preview.action_title') : $preview['title'] }}
-                    </h3>
+                    <div class="flex min-w-0 items-center gap-2.5">
+                        <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-500 ring-1 ring-gray-950/5 dark:bg-white/5 dark:text-gray-400 dark:ring-white/10">
+                            @php $previewKind = $preview['kind'] ?? ''; @endphp
+                            @if ($previewKind === 'action')
+                                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                                </svg>
+                            @elseif ($previewKind === 'file')
+                                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                                </svg>
+                            @else
+                                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                                </svg>
+                            @endif
+                        </span>
+                        <h3 class="truncate text-sm font-bold text-gray-900 dark:text-white">
+                            {{ $preview === null
+                                ? __('assistant.preview.loading_title')
+                                : ($previewKind === 'action' ? __('assistant.preview.action_title') : $preview['title']) }}
+                        </h3>
+                    </div>
                     <button
                         type="button"
-                        wire:click="closePreview"
+                        x-on:click="closePreviewModal()"
                         title="{{ __('assistant.close') }}"
                         class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
                     >
@@ -1429,8 +1685,19 @@
                     </button>
                 </header>
 
-                <div x-ref="previewScroll" class="min-h-0 flex-1 overflow-y-auto px-4 py-4 [overscroll-behavior:contain]">
-                    @if ($preview['kind'] === 'action')
+                <div x-ref="previewScroll" class="assistant-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4 [overscroll-behavior:contain]">
+                    @if ($preview === null)
+                        {{-- Skeleton dentro del modal: la vista abre al
+                             instante del click y se llena cuando Livewire
+                             devuelve el contenido. --}}
+                        <div class="space-y-3">
+                            <div class="h-4 w-1/3 animate-pulse rounded bg-gray-200 dark:bg-white/10"></div>
+                            <div class="h-32 animate-pulse rounded-xl bg-gray-200 dark:bg-white/5"></div>
+                            <div class="h-24 animate-pulse rounded-xl bg-gray-200 dark:bg-white/5"></div>
+                            <div class="h-24 animate-pulse rounded-xl bg-gray-200 dark:bg-white/5"></div>
+                        </div>
+                    @else
+                    @if ($previewKind === 'action')
                         @php
                             $previewAction = $preview['action'] ?? [];
                             $previewWarnings = is_array($previewAction['warnings'] ?? null) ? $previewAction['warnings'] : [];
@@ -1508,16 +1775,106 @@
                                     @else
                                         <div class="flex items-start justify-between gap-3 text-sm {{ ($row['item'] ?? false) ? 'pl-3' : '' }}">
                                             <dt class="shrink-0 {{ ($row['item'] ?? false) ? 'text-gray-400 dark:text-gray-500' : 'text-gray-500 dark:text-gray-400' }}">{{ $fieldTitle((string) $row['label']) }}</dt>
-                                            <dd class="text-right font-medium text-gray-900 dark:text-white">{{ $row['value'] }}</dd>
+                                            <dd class="text-right font-medium text-gray-900 dark:text-white">
+                                                @if (! empty($row['badge']))
+                                                    @php
+                                                        $badgeTone = match ((string) $row['badge']) {
+                                                            'document' => 'bg-sky-50 text-sky-700 ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-400/30',
+                                                            'payment' => 'bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/30',
+                                                            'danger' => 'bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-400/30',
+                                                            'settings' => 'bg-violet-50 text-violet-700 ring-violet-600/20 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-400/30',
+                                                            default => 'bg-gray-100 text-gray-700 ring-gray-950/10 dark:bg-white/10 dark:text-gray-200 dark:ring-white/15',
+                                                        };
+                                                    @endphp
+                                                    <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ring-1 {{ $badgeTone }}">{{ $row['value'] }}</span>
+                                                @else
+                                                    {{ $row['value'] }}
+                                                @endif
+                                            </dd>
                                         </div>
                                     @endif
                                 @endforeach
                             </dl>
                         @endif
 
+                        {{-- 3b. Batch: cada elemento del paquete se puede
+                             excluir y tiene sus propios campos editables
+                             (keys "b{indice}_{campo}" en previewEdits). --}}
+                        @if (($previewAction['type'] ?? '') === 'batch' && is_array($previewAction['items'] ?? null))
+                            <div class="mt-3 space-y-2">
+                                <p class="px-0.5 text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                                    {{ __('assistant.preview.batch_items_title') }}
+                                </p>
+                                @foreach ($previewAction['items'] as $itemIndex => $batchItem)
+                                    @continue(! is_array($batchItem) || ! isset($batchItem['type']))
+                                    @php
+                                        $itemParams = is_array($batchItem['params'] ?? null) ? $batchItem['params'] : [];
+                                        $itemName = trim((string) ($itemParams['name'] ?? $itemParams['tenant_name'] ?? $itemParams['rental_name'] ?? ''));
+                                        $itemEditable = is_array($batchItem['editable'] ?? null) ? $batchItem['editable'] : [];
+                                    @endphp
+                                    <div class="rounded-xl bg-gray-50 p-3 ring-1 ring-gray-950/5 dark:bg-white/5 dark:ring-white/10">
+                                        <label class="flex items-center gap-2 text-xs font-semibold text-gray-700 dark:text-gray-200">
+                                            <input
+                                                type="checkbox"
+                                                wire:model.blur="previewEdits.drop_{{ $itemIndex }}"
+                                                true-value="1"
+                                                false-value="0"
+                                                class="h-3.5 w-3.5 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                                            >
+                                            <span class="min-w-0 flex-1 truncate">
+                                                {{ $itemName !== '' ? $itemName : ($batchItem['summary'] ?? __('assistant.batch_types.'.$batchItem['type'], ['count' => 1])) }}
+                                            </span>
+                                            <span class="shrink-0 text-[10px] font-normal text-gray-400">{{ __('assistant.batch_types.'.$batchItem['type'], ['count' => 1]) }}</span>
+                                        </label>
+                                        @if ($itemEditable !== [])
+                                            <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                                                @foreach ($itemEditable as $itemField)
+                                                    @php
+                                                        $ifKey = 'b'.$itemIndex.'_'.(string) ($itemField['key'] ?? '');
+                                                        $ifKind = (string) ($itemField['kind'] ?? 'text');
+                                                    @endphp
+                                                    <label class="block text-[11px]">
+                                                        <span class="mb-0.5 block font-medium text-gray-500 dark:text-gray-400">{{ $fieldTitle((string) ($itemField['label'] ?? $ifKey)) }}@if (! empty($itemField['required']))<span class="ml-0.5 text-red-500">*</span>@endif</span>
+                                                        @if ($ifKind === 'textarea')
+                                                            <textarea wire:model.blur="previewEdits.{{ $ifKey }}" rows="2" class="w-full rounded-lg border-0 bg-white px-2 py-1 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10"></textarea>
+                                                        @elseif ($ifKind === 'bool')
+                                                            <select wire:model.blur="previewEdits.{{ $ifKey }}" class="w-full rounded-lg border-0 bg-white px-2 py-1 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10">
+                                                                <option value="1">{{ __('assistant.yes') }}</option>
+                                                                <option value="0">{{ __('assistant.no') }}</option>
+                                                            </select>
+                                                        @elseif ($ifKind === 'select' && is_array($itemField['options'] ?? null) && $itemField['options'] !== [])
+                                                            <select wire:model.blur="previewEdits.{{ $ifKey }}" class="w-full rounded-lg border-0 bg-white px-2 py-1 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10">
+                                                                @foreach ($itemField['options'] as $optValue => $optLabel)
+                                                                    @if (is_array($optLabel))
+                                                                        <option value="{{ $optLabel['value'] ?? '' }}">{{ $optLabel['label'] ?? '' }}</option>
+                                                                    @else
+                                                                        <option value="{{ is_int($optValue) ? $optLabel : $optValue }}">{{ $optLabel }}</option>
+                                                                    @endif
+                                                                @endforeach
+                                                            </select>
+                                                        @else
+                                                            <input
+                                                                type="{{ in_array($ifKind, ['number', 'date', 'email', 'tel', 'datetime', 'range'], true) ? $ifKind : 'text' }}"
+                                                                @if ($ifKind === 'number') inputmode="decimal" @endif
+                                                                @if (isset($itemField['min'])) min="{{ $itemField['min'] }}" @endif
+                                                                @if (isset($itemField['max'])) max="{{ $itemField['max'] }}" @endif
+                                                                @if (isset($itemField['step'])) step="{{ $itemField['step'] }}" @endif
+                                                                wire:model.blur="previewEdits.{{ $ifKey }}"
+                                                                class="w-full rounded-lg border-0 bg-white px-2 py-1 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10"
+                                                            >
+                                                        @endif
+                                                    </label>
+                                                @endforeach
+                                            </div>
+                                        @endif
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endif
+
                         {{-- 4. Campos editables: lo que el usuario puede
                              corregir antes de confirmar. --}}
-                        @if ($previewEditable !== [])
+                        @if ($previewEditable !== [] && ($previewAction['type'] ?? '') !== 'batch')
                             <div class="mt-3">
                                 <p class="mb-1.5 px-0.5 text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
                                     {{ __('assistant.preview.editable_title') }}
@@ -1526,7 +1883,7 @@
                                     @foreach ($previewEditable as $field)
                                         @php $editKey = (string) ($field['key'] ?? ''); @endphp
                                         <label class="block text-xs">
-                                            <span class="mb-0.5 block font-medium text-gray-500 dark:text-gray-400">{{ $fieldTitle((string) ($field['label'] ?? $editKey)) }}</span>
+                                            <span class="mb-0.5 block font-medium text-gray-500 dark:text-gray-400">{{ $fieldTitle((string) ($field['label'] ?? $editKey)) }}@if (! empty($field['required']))<span class="ml-0.5 text-red-500" aria-hidden="true">*</span>@endif</span>
                                             @if (($field['kind'] ?? 'text') === 'textarea')
                                                 <textarea
                                                     wire:model.blur="previewEdits.{{ $editKey }}"
@@ -1556,8 +1913,11 @@
                                                 </select>
                                             @else
                                                 <input
-                                                    type="{{ in_array($field['kind'] ?? 'text', ['number', 'date', 'email', 'tel', 'datetime'], true) ? $field['kind'] : 'text' }}"
+                                                    type="{{ in_array($field['kind'] ?? 'text', ['number', 'date', 'email', 'tel', 'datetime', 'range'], true) ? $field['kind'] : 'text' }}"
                                                     @if (($field['kind'] ?? 'text') === 'number') inputmode="decimal" @endif
+                                                    @if (isset($field['min'])) min="{{ $field['min'] }}" @endif
+                                                    @if (isset($field['max'])) max="{{ $field['max'] }}" @endif
+                                                    @if (isset($field['step'])) step="{{ $field['step'] }}" @endif
                                                     wire:model.blur="previewEdits.{{ $editKey }}"
                                                     class="w-full rounded-lg border-0 bg-white px-2.5 py-1.5 text-xs text-gray-900 ring-1 ring-gray-950/10 focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-white dark:ring-white/10"
                                                 >
@@ -1583,25 +1943,19 @@
                         {{-- Guia de uso completa: mismos botones, mismo cierre
                              de modal antes de preguntar al chat. --}}
                         @include('livewire.partials.assistant-guide', ['data' => ['guide' => $preview['payload'] ?? null], 'compact' => false, 'fromPreview' => true])
+                    @elseif ($preview['kind'] === 'report')
+                        {{-- Reporte compuesto por la IA: mismas acciones
+                             prompt/url que en la burbuja, cerrando el modal
+                             antes de enviar al chat. --}}
+                        @include('livewire.partials.assistant-report', ['data' => ['report' => $preview['payload'] ?? null], 'compact' => false, 'fromPreview' => true])
                     @elseif ($preview['kind'] === 'file')
-                        {{-- Documento generado: se embebe por la ruta con
-                             control de acceso; la descarga sigue por token. --}}
-                        <div class="flex h-full min-h-0 flex-col gap-3">
-                            <iframe
-                                src="{{ $preview['file_url'] }}"
-                                title="{{ $preview['title'] }}"
-                                class="h-[65vh] w-full rounded-xl bg-white ring-1 ring-gray-950/10 dark:bg-gray-900 dark:ring-white/10"
-                            ></iframe>
-                            <div class="flex justify-end">
-                                <button
-                                    type="button"
-                                    wire:click="downloadFile('{{ $preview['file_token'] }}')"
-                                    class="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-primary-500"
-                                >
-                                    {{ __('assistant.download_file') }}
-                                </button>
-                            </div>
-                        </div>
+                        {{-- Documento generado: ocupa TODA la altura del
+                             drawer; el visor del iframe ya trae descarga. --}}
+                        <iframe
+                            src="{{ $preview['file_url'] }}"
+                            title="{{ $preview['title'] }}"
+                            class="h-full w-full flex-1 rounded-xl bg-white ring-1 ring-gray-950/10 dark:bg-gray-900 dark:ring-white/10"
+                        ></iframe>
                     @else
                         {{-- data / data_all: una o varias tablas. Las celdas con
                              listas de filas se despliegan igual que en las
@@ -1622,7 +1976,7 @@
                                             <thead class="bg-gray-50 dark:bg-gray-800">
                                                 <tr>
                                                     @foreach ($table['columns'] as $column)
-                                                        <th class="px-2.5 py-2 text-left font-semibold text-gray-500 dark:text-gray-400">{{ $column }}</th>
+                                                        <th class="whitespace-nowrap px-2.5 py-2 text-left font-semibold text-gray-500 dark:text-gray-400">{{ $column }}</th>
                                                     @endforeach
                                                 </tr>
                                             </thead>
@@ -1658,7 +2012,7 @@
                                                                             <thead>
                                                                                 <tr>
                                                                                     @foreach (array_keys($nestedRows[0]) as $nestedColumn)
-                                                                                        <th class="px-2 py-1 text-left font-semibold text-gray-400 dark:text-gray-500">
+                                                                                        <th class="whitespace-nowrap px-2 py-1 text-left font-semibold text-gray-400 dark:text-gray-500">
                                                                                             {{ __("assistant.columns.{$nestedColumn}") !== "assistant.columns.{$nestedColumn}" ? __("assistant.columns.{$nestedColumn}") : str_replace('_', ' ', ucfirst($nestedColumn)) }}
                                                                                         </th>
                                                                                     @endforeach
@@ -1690,9 +2044,10 @@
                             <p class="mt-2 text-center text-[11px] text-gray-400">{{ __('assistant.preview.truncated') }}</p>
                         @endif
                     @endif
+                    @endif
                 </div>
 
-                @if ($preview['kind'] === 'action')
+                @if (($preview['kind'] ?? '') === 'action')
                     <footer class="flex gap-2 border-t border-gray-200 px-4 py-3 dark:border-white/10">
                         <button
                             type="button"
@@ -1705,15 +2060,14 @@
                         </button>
                         <button
                             type="button"
-                            wire:click="closePreview"
+                            x-on:click="closePreviewModal()"
                             class="flex-1 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-600 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-gray-700"
                         >
                             {{ __('assistant.cancel') }}
                         </button>
                     </footer>
                 @endif
-            </div>
-        @endif
+        </div>
     </aside>
 
     <style>
@@ -1731,6 +2085,35 @@
         @keyframes assistant-dot-bounce {
             0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
             30% { transform: translateY(-3px); opacity: 1; }
+        }
+        /* Scrollbars finos y discretos en los contenedores del chat. */
+        .assistant-scroll {
+            scrollbar-width: thin;
+            scrollbar-color: rgba(100, 116, 139, 0.35) transparent;
+        }
+        .assistant-scroll::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        .assistant-scroll::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .assistant-scroll::-webkit-scrollbar-thumb {
+            background-color: rgba(100, 116, 139, 0.3);
+            border-radius: 999px;
+        }
+        .dark .assistant-scroll {
+            scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
+        }
+        .dark .assistant-scroll::-webkit-scrollbar-thumb {
+            background-color: rgba(148, 163, 184, 0.25);
+        }
+        /* Accesibilidad: sin animaciones si el SO pide movimiento reducido. */
+        @media (prefers-reduced-motion: reduce) {
+            .assistant-msg,
+            .assistant-dot {
+                animation: none !important;
+            }
         }
     </style>
 </div>

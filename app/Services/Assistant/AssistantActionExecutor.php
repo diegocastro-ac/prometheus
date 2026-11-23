@@ -382,7 +382,8 @@ class AssistantActionExecutor
             'agreement_path' => null,
             'is_active' => true,
             'billing_cadence' => $cadence->value,
-            'rental_type' => RentalType::Residential->value,
+            'rental_type' => RentalType::tryFrom(Str::lower((string) ($params['rental_type'] ?? '')))?->value
+                ?? RentalType::Residential->value,
             'commercial_value' => null,
             'catastral_appraisal' => null,
             'anchor_monthly_amount' => $amount,

@@ -23,6 +23,9 @@ namespace App\Dto;
  * - badgeColors: mapa {tabla: {columna: color}} propuesto por la IA
  *   para pintar badges de estado. Solo aplica cuando el valor no
  *   matchea un enum conocido; los colores de dominio siempre ganan.
+ * - options: respuestas candidatas cuando la IA necesita que el
+ *   usuario elija entre interpretaciones concretas (max 4). Se pintan
+ *   como opciones A-D; el texto libre sigue disponible en el input.
  */
 final class AssistantReply
 {
@@ -31,6 +34,7 @@ final class AssistantReply
      * @param  array<string, mixed>|null  $action
      * @param  array{instruction: string, context: array<string, mixed>}|null  $draft
      * @param  list<string>  $suggestions
+     * @param  list<string>  $options
      * @param  list<array{text: string, data: array<string, mixed>|null}>|null  $sections
      * @param  array{form: string, step: int, total_steps: int, field: string, prompt: string, quick_replies?: list<string>}|null  $pendingForm
      * @param  array<string, array<string, string>>|null  $badgeColors
@@ -46,6 +50,7 @@ final class AssistantReply
         public readonly ?array $sections = null,
         public readonly ?array $pendingForm = null,
         public readonly ?array $badgeColors = null,
+        public readonly array $options = [],
     ) {}
 
     public function withIntent(string $intent): self
@@ -61,6 +66,7 @@ final class AssistantReply
             $this->sections,
             $this->pendingForm,
             $this->badgeColors,
+            $this->options,
         );
     }
 
@@ -83,6 +89,31 @@ final class AssistantReply
             $this->sections,
             $this->pendingForm,
             $this->badgeColors,
+            $this->options,
+        );
+    }
+
+    /**
+     * Opciones de respuesta para preguntas de la IA: textos cortos que
+     * el usuario puede elegir (se re-envian por el chat) o ignorar
+     * escribiendo libremente.
+     *
+     * @param  list<string>  $options
+     */
+    public function withOptions(array $options): self
+    {
+        return new self(
+            $this->text,
+            $this->data,
+            $this->action,
+            $this->redirect,
+            $this->suggestions,
+            $this->draft,
+            $this->intent,
+            $this->sections,
+            $this->pendingForm,
+            $this->badgeColors,
+            $options,
         );
     }
 
@@ -102,6 +133,7 @@ final class AssistantReply
             $this->sections,
             $this->pendingForm,
             $badgeColors,
+            $this->options,
         );
     }
 
