@@ -12,9 +12,14 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  */
 class AssistantChat extends Model
 {
+    public const KIND_USER = 'user';
+
+    public const KIND_BRIEFING = 'briefing';
+
     protected $fillable = [
         'user_id',
         'title',
+        'kind',
     ];
 
     public function user(): BelongsTo

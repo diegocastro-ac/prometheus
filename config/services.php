@@ -110,4 +110,30 @@ return [
         'ca_bundle' => env('GEMINI_CA_BUNDLE'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Proveedor de IA del asistente
+    |--------------------------------------------------------------------------
+    |
+    | AI_DRIVER elige el transporte: 'gemini' (default, la API de Google)
+    | o 'openai_compatible' (cualquier endpoint /chat/completions: Groq,
+    | OpenAI, OpenRouter, etc.). Con openai_compatible la configuracion
+    | vive aqui; con gemini se usa la seccion 'gemini' de arriba.
+    |
+    */
+
+    'ai' => [
+        'driver' => env('AI_DRIVER', 'gemini'),
+        'base_url' => env('AI_BASE_URL'),
+        'key' => env('AI_API_KEY'),
+        'model' => env('AI_MODEL'),
+        'fallback_model' => env('AI_FALLBACK_MODEL'),
+        'timeout' => (int) env('AI_TIMEOUT', 120),
+
+        // Opciones del selector de modelos del chat, separadas por coma.
+        // Vacio = defaults del proveedor (los chat models de Groq cuando
+        // base_url es groq.com; si no, modelo configurado + respaldo).
+        'models' => env('AI_MODELS'),
+    ],
+
 ];

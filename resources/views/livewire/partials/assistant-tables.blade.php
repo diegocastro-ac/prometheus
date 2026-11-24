@@ -27,6 +27,18 @@
                     // Colores de badge propuestos por la IA para esta tabla
                     // ({columna: color}); solo aplican a estados sin enum.
                     $tableColors = $badgeColors[$key] ?? [];
+                    // Accion por fila "ver detalle": solo datasets cuya
+                    // entidad tiene ficha propia via entity_detail. El
+                    // nombre de la entidad se toma de una columna
+                    // conocida; el resto de tablas no la lleva.
+                    $rowEntity = [
+                        'rentals' => ['rental', 'name'],
+                        'tenant_rentals' => ['rental', 'name'],
+                        'property_rentals' => ['rental', 'name'],
+                        'tenants' => ['tenant', 'name'],
+                        'properties' => ['property', 'name'],
+                        'invoices' => ['invoice', 'number'],
+                    ][$key] ?? null;
                 @endphp
                 <div>
                     <p class="mb-1 px-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">{{ $tableTitle }}</p>
@@ -59,13 +71,35 @@
                                             @include('livewire.partials.assistant-cell', ['cell' => $cell, 'column' => is_string($column) ? $column : null, 'aiColor' => $tableColors[is_string($column) ? $column : ''] ?? null, 'expandKey' => is_string($column) ? $column : 'default'])
                                         </td>
                                     @endforeach
+                                    @if ($rowEntity !== null)
+                                        @php
+                                            [$rowEntityType, $rowNameColumn] = $rowEntity;
+                                            $rowEntityName = $row[$rowNameColumn] ?? null;
+                                            $rowEntityName = is_scalar($rowEntityName) ? trim((string) $rowEntityName) : '';
+                                        @endphp
+                                        @if ($rowEntityName !== '')
+                                            <td class="px-1 py-1.5 text-right">
+                                                <button
+                                                    type="button"
+                                                    x-on:click="sendSuggestion(@js(__('assistant.row_detail_prompt', ['type' => __('assistant.row_detail_types.'.$rowEntityType), 'name' => $rowEntityName])))"
+                                                    x-bind:class="sending ? 'pointer-events-none opacity-50' : ''"
+                                                    title="{{ __('assistant.row_detail') }}"
+                                                    class="inline-flex h-5 w-5 items-center justify-center rounded-md text-gray-300 transition hover:bg-primary-50 hover:text-primary-600 dark:text-gray-600 dark:hover:bg-primary-500/10 dark:hover:text-primary-400"
+                                                >
+                                                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+                                                    </svg>
+                                                </button>
+                                            </td>
+                                        @endif
+                                    @endif
                                 </tr>
                                 {{-- Una fila expandible POR relacion anidada:
                                      cada una se abre/colapsa de forma
                                      independiente con su propia llave. --}}
                                 @foreach ($nestedCells as $nestedKey => $nestedRows)
                                     <tr x-show="open[{{ Js::from($nestedKey) }}]">
-                                        <td colspan="{{ count($columns) }}" class="bg-gray-50/60 px-3 py-2.5 dark:bg-white/5">
+                                        <td colspan="{{ count($columns) + ($rowEntity !== null ? 1 : 0) }}" class="bg-gray-50/60 px-3 py-2.5 dark:bg-white/5">
                                             <table class="w-full text-[11px]">
                                                 <thead>
                                                     <tr>

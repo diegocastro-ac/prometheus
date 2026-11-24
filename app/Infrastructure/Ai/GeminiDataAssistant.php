@@ -7,6 +7,8 @@ use App\Dto\AssistantReply;
 use App\Models\User;
 use App\Services\Assistant\AppGuide;
 use App\Services\Assistant\AssistantFormSession;
+use App\Services\Assistant\AssistantNavigator;
+use App\Services\Assistant\AssistantProvider;
 use App\Services\Assistant\AssistantToolInvoker;
 use App\Services\Assistant\DatabaseSchemaDigest;
 use App\Services\Assistant\PortfolioContextBuilder;
@@ -93,6 +95,7 @@ class GeminiDataAssistant implements DataAssistantInterface
         'ipc_status',
         'sync_ipc',
         'entity_detail',
+        'entity_relations',
         'export_csv',
         'navigate',
         'query_data',
@@ -108,11 +111,47 @@ class GeminiDataAssistant implements DataAssistantInterface
         private readonly PortfolioContextBuilder $context,
         private readonly AssistantFormSession $forms,
         private readonly DatabaseSchemaDigest $schema,
+        private readonly AssistantNavigator $navigator,
     ) {}
 
-    public function ask(string $question, array $history, int $userId): AssistantReply
+    /**
+     * La IA decidio (campo "deep" de su JSON de clasificacion) que la
+     * peticion amerita analisis exhaustivo: el compositor investiga
+     * mas (mas rondas de lookup, topes de reporte ampliados) y el
+     * presupuesto de tiempo del proveedor se multiplica. Se enciende
+     * tras el classify y gobierna todo lo que sigue en ask().
+     */
+    private bool $deepMode = false;
+
+    /**
+     * Contexto del sanitizeReport en curso: userId para resolver las
+     * URLs de las acciones del reporte via AssistantNavigator y el flag
+     * deep para relajar los topes de bloques/filas.
+     */
+    private int $reportUserId = 0;
+
+    private bool $reportDeep = false;
+
+    /**
+     * Callback de cancelacion del request en vuelo (nonce del chat). PHP
+     * no puede abortar la llamada HTTP a Gemini, pero si el usuario
+     * force-sendeo o cancelo, esto evita que el pipeline escriba sesiones
+     * de formulario o encole propuestas del turno descartado.
+     */
+    private $abortCheck = null;
+
+    public function ask(string $question, array $history, int $userId, ?callable $abortCheck = null): AssistantReply
     {
-        $activeForm = $this->forms->form($userId);
+        $this->abortCheck = $abortCheck;
+
+        // La profundidad del analisis NO se decide por palabras clave:
+        // la IA la declara en su JSON de clasificacion (campo "deep")
+        // razonando sobre la pregunta y el contexto. Se lee tras el
+        // classify y gobierna lookups extra, topes del reporte y
+        // presupuestos de tiempo de todo lo que sigue.
+        $this->deepMode = false;
+
+        $activeForm = $this->forms->wizard($userId);
 
         // Sin API key no hay razonamiento posible: el chat lo dice
         // explicitamente en vez de responder con plantillas locales que
@@ -120,6 +159,10 @@ class GeminiDataAssistant implements DataAssistantInterface
         // via determinista, que no necesita IA.
         if (! $this->isConfigured()) {
             if ($activeForm !== null) {
+                if ($this->aborted()) {
+                    return $this->cancelledReply();
+                }
+
                 $reply = $this->invoker->handleFormField($question, $userId);
 
                 return $this->maybeDraft($this->withBadgeColors($reply, $question, $userId), $userId);
@@ -150,6 +193,10 @@ class GeminiDataAssistant implements DataAssistantInterface
         // pudiendo interpretar la respuesta del formulario sin IA.
         if ($parsed === null) {
             if ($activeForm !== null) {
+                if ($this->aborted()) {
+                    return $this->cancelledReply();
+                }
+
                 $reply = $this->invoker->handleFormField($question, $userId);
 
                 return $this->maybeDraft($this->withBadgeColors($reply, $question, $userId), $userId);
@@ -158,11 +205,21 @@ class GeminiDataAssistant implements DataAssistantInterface
             return AssistantReply::say(__('assistant.error'));
         }
 
+        // El modelo decide si la peticion amerita modo exhaustivo. Si
+        // lo enciendo aqui, el presupuesto de tiempo y el limite de PHP
+        // se amplian ANTES de la cadena de lookups y del reporte.
+        $this->applyDeepFlag($parsed);
+
         // Razonamiento con datos reales: si el modelo pidio lookup_data
         // (una consulta de apoyo para resolver una referencia), se
         // ejecuta su SQL y se re-clasifica con las filas reales. El
         // modelo decide que buscar y que hacer con el resultado.
         $parsed = $this->resolveLookups($question, $history, $digest->toArray(), $parsed, $userId) ?? $parsed;
+
+        // La re-clasificacion posterior a los lookups tambien puede
+        // declarar deep (el modelo ve los datos y decide con mas
+        // informacion); una vez encendido no se apaga.
+        $this->applyDeepFlag($parsed);
 
         if (($parsed['domain'] ?? 'app') === 'offtopic') {
             return $this->maybeCompose(AssistantReply::offTopic(), $question, $history, $userId);
@@ -180,9 +237,17 @@ class GeminiDataAssistant implements DataAssistantInterface
         // Una intencion real del dominio — o varias peticiones en un
         // mensaje — sigue el pipeline normal y no es secuestrada.
         if ($activeForm !== null && $this->isWizardAnswer($requests, $confidence)) {
+            if ($this->aborted()) {
+                return $this->cancelledReply();
+            }
+
             $reply = $this->invoker->handleFormField($question, $userId);
 
             return $this->maybeDraft($this->withBadgeColors($reply, $question, $userId), $userId);
+        }
+
+        if ($this->aborted()) {
+            return $this->cancelledReply();
         }
 
         if (count($requests) > 1) {
@@ -212,6 +277,10 @@ class GeminiDataAssistant implements DataAssistantInterface
         // se ejecuta su consulta como respuesta de datos — mejor mostrar
         // lo que encontro que un "no entendi".
         if ($intent === 'lookup_data') {
+            if ($this->aborted()) {
+                return $this->cancelledReply();
+            }
+
             $reply = $this->invoker->invoke('query_data', $params + ['_question' => $question], $userId);
             $reply = $this->withBadgeColors($reply, $question, $userId);
             $reply = $this->withAiSuggestions($reply, $parsed);
@@ -230,6 +299,11 @@ class GeminiDataAssistant implements DataAssistantInterface
             if ($spec !== null) {
                 $params['spec'] = $spec;
                 $params['_question'] = $question;
+
+                if ($this->aborted()) {
+                    return $this->cancelledReply();
+                }
+
                 $reply = $this->invoker->invoke('custom_document', $params, $userId);
                 $reply = $this->withAiSuggestions($reply, $parsed);
                 $reply = $this->withBadgeColors($reply, $question, $userId);
@@ -266,6 +340,11 @@ class GeminiDataAssistant implements DataAssistantInterface
         // que razonan sobre el pedido (insights, drafts) la necesitan
         // para no responder algo generico.
         $params['_question'] = $question;
+
+        if ($this->aborted()) {
+            return $this->cancelledReply();
+        }
+
         $reply = $this->invoker->invoke($intent, $params, $userId);
 
         // query_data con SQL invalido o fallido: una sola oportunidad de
@@ -283,7 +362,7 @@ class GeminiDataAssistant implements DataAssistantInterface
             if ($retry !== null) {
                 $retried = $this->extractRequests($retry);
 
-                if (count($retried) === 1) {
+                if (count($retried) === 1 && ! $this->aborted()) {
                     $reply = $this->invoker->invoke($retried[0]['intent'], $retried[0]['params'], $userId);
                 }
             }
@@ -294,6 +373,21 @@ class GeminiDataAssistant implements DataAssistantInterface
         $reply = $this->maybeDraft($this->maybeCompose($reply, $question, $history, $userId), $userId);
 
         return $this->withOptionsFromModel($reply, $parsed);
+    }
+
+    /**
+     * true si el usuario cancelo o force-sendeo mientras la IA pensaba:
+     * a partir de aqui ninguna rama debe escribir sesiones ni proponer
+     * acciones del turno descartado.
+     */
+    private function aborted(): bool
+    {
+        return $this->abortCheck !== null && ($this->abortCheck)();
+    }
+
+    private function cancelledReply(): AssistantReply
+    {
+        return AssistantReply::say(__('assistant.replies.request_cancelled'));
     }
 
     /**
@@ -649,7 +743,7 @@ PROMPT;
 
     private function isConfigured(): bool
     {
-        return (string) config('services.gemini.key') !== '';
+        return AssistantProvider::isConfigured();
     }
 
     public function title(string $firstMessage): ?string
@@ -703,11 +797,6 @@ PROMPT;
     // ---------------------------------------------------------------
 
     /**
-     * @param  list<array{role: string, text: string}>  $history
-     * @param  array<string, mixed>  $digest
-     * @return array{domain?: string, intent?: string, params?: array<string, mixed>, confidence?: float}|null
-     */
-    /**
      * Nota de contexto que se agrega a la pregunta cuando hay un wizard
      * activo, para que el modelo distinga "respuesta del formulario" de
      * "peticion nueva".
@@ -748,6 +837,11 @@ PROMPT;
         return $intent === 'unknown' || $confidence < 0.4;
     }
 
+    /**
+     * @param  list<array{role: string, text: string}>  $history
+     * @param  array<string, mixed>  $digest
+     * @return array{domain?: string, intent?: string, params?: array<string, mixed>, confidence?: float}|null
+     */
     private function classify(string $question, array $history, array $digest, int $userId): ?array
     {
         $contents = [];
@@ -843,9 +937,13 @@ PROMPT;
      */
     private function composeReport(string $question, array $history, array $digest, int $userId, string $intent = 'business_insights'): ?array
     {
+        // En modo exhaustivo el compositor puede encadenar mas
+        // consultas de apoyo: un analisis profundo necesita mas de una
+        // pasada sobre tablas relacionadas antes de redactar.
+        $maxRounds = $this->deepMode ? 6 : 4;
         $notes = [];
 
-        for ($round = 0; $round < 4; $round++) {
+        for ($round = 0; $round < $maxRounds; $round++) {
             $parsed = $this->classifyReport($question, $history, $digest, $notes, $userId, $intent);
 
             if ($parsed === null) {
@@ -854,17 +952,17 @@ PROMPT;
 
             $lookup = $parsed['lookup'] ?? null;
 
-            if (is_array($lookup) && $lookup !== [] && $round < 3) {
+            if (is_array($lookup) && $lookup !== [] && $round < $maxRounds - 1) {
                 $result = $this->invoker->lookupData($lookup, $userId);
 
                 $notes[] = isset($result['rows'])
-                    ? '[Tu consulta de apoyo '.$round.' — RESULTADOS REALES de la base de datos (JSON): '.json_encode(array_slice($result['rows'], 0, 60), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).'. Continúa investigando con otra consulta si hace falta, o devuelve el reporte final.]'
+                    ? '[Tu consulta de apoyo '.$round.' — RESULTADOS REALES de la base de datos (JSON): '.json_encode(array_slice($result['rows'], 0, $this->deepMode ? 200 : 60), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).'. Continúa investigando con otra consulta si hace falta, o devuelve el reporte final.]'
                     : '[Tu consulta de apoyo '.$round.' fue rechazada o fallo: '.($result['error'] ?? 'error desconocido').'. Ajusta params.sql/params.table o responde con lo que ya tienes.]';
 
                 continue;
             }
 
-            $report = $this->sanitizeReport($parsed['report'] ?? null, $intent === 'app_guide' ? 8 : 6);
+            $report = $this->sanitizeReport($parsed['report'] ?? null, $this->deepMode ? 20 : ($intent === 'app_guide' ? 8 : 6), $userId);
 
             if ($report === null) {
                 return null;
@@ -890,6 +988,16 @@ PROMPT;
     private function classifyReport(string $question, array $history, array $digest, array $notes, int $userId, string $intent = 'business_insights'): ?array
     {
         return $this->classifyJson($question, $history, $this->reportSystemPrompt($digest, $userId, $intent), $notes, $userId);
+    }
+
+    /**
+     * Timeout por llamada en modo exhaustivo: el reporte profundo
+     * genera JSONs mucho mas grandes y la cadena de lookups es mas
+     * larga, asi que cada llamada puede tardar bastante mas.
+     */
+    private function deepCallTimeout(): int
+    {
+        return max(90, $this->aiTimeout() * 6);
     }
 
     /**
@@ -930,7 +1038,7 @@ PROMPT;
             ],
         ];
 
-        $text = $this->generate($body, null, $userId);
+        $text = $this->generate($body, $this->deepMode ? $this->deepCallTimeout() : null, $userId);
 
         if ($text === '') {
             return null;
@@ -1032,11 +1140,13 @@ PROMPT;
             '- table: SOLO datos tabulares reales de las consultas (headers max 8, filas max 30). Nunca una tabla de texto narrativo.',
             '- El tono es formal de documento de negocio: directo, preciso, sin emojis ni markdown. Cifras con formato $1.234.567 (COP); fechas legibles.',
             '',
-            'CONTEXTO DEL PORTAFOLIO DEL USUARIO:',
-            json_encode($digest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            '',
+            // Prefijo cacheable primero (context caching implicito):
+            // el esquema es estatico; el digest va al final.
             'ESQUEMA DE LA BASE DE DATOS (para tus consultas lookup.sql; [filtrar user_id] = tabla del usuario, [global] = sin user_id):',
             $this->schema->forPrompt(),
+            '',
+            'CONTEXTO DEL PORTAFOLIO DEL USUARIO:',
+            json_encode($digest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             '',
             'Hoy es '.now()->format('Y-m-d').'.',
         ]);
@@ -1175,11 +1285,17 @@ PROMPT;
      *
      * @return array{title: string, intro: string, sections: list<array<string, mixed>>}|null
      */
-    private function sanitizeReport(mixed $raw, int $maxSections = 6): ?array
+    private function sanitizeReport(mixed $raw, int $maxSections = 6, int $userId = 0): ?array
     {
         if (! is_array($raw) || ! isset($raw['sections']) || ! is_array($raw['sections'])) {
             return null;
         }
+
+        // Contexto para los sanitizadores internos: con que usuario
+        // resolver las URLs de las acciones y si el analisis es
+        // exhaustivo (topes ampliados via cap()).
+        $this->reportUserId = $userId;
+        $this->reportDeep = $this->deepMode;
 
         $title = $this->cleanReportText($raw['title'] ?? '', 120);
         $intro = $this->cleanReportText($raw['intro'] ?? '', 800);
@@ -1224,7 +1340,7 @@ PROMPT;
 
         $out = [];
 
-        foreach (array_slice($blocks, 0, 8) as $block) {
+        foreach (array_slice($blocks, 0, $this->cap(8, 24)) as $block) {
             if (! is_array($block)) {
                 continue;
             }
@@ -1259,7 +1375,7 @@ PROMPT;
     {
         $items = [];
 
-        foreach (array_slice((array) ($block['items'] ?? []), 0, 6) as $item) {
+        foreach (array_slice((array) ($block['items'] ?? []), 0, $this->cap(6, 12)) as $item) {
             if (! is_array($item)) {
                 continue;
             }
@@ -1309,7 +1425,7 @@ PROMPT;
         $rawLabels = (array) ($block['labels'] ?? []);
         $rawValues = (array) ($block['values'] ?? []);
 
-        foreach (array_slice($rawLabels, 0, 12) as $i => $label) {
+        foreach (array_slice($rawLabels, 0, $this->cap(12, 24)) as $i => $label) {
             $label = $this->cleanReportText($label, 24);
 
             if ($label === '') {
@@ -1350,7 +1466,7 @@ PROMPT;
     {
         $columns = [];
 
-        foreach (array_slice((array) ($block['columns'] ?? []), 0, 8) as $column) {
+        foreach (array_slice((array) ($block['columns'] ?? []), 0, $this->cap(8, 12)) as $column) {
             $column = $this->cleanReportText($column, 40);
 
             if ($column !== '') {
@@ -1360,7 +1476,7 @@ PROMPT;
 
         $rows = [];
 
-        foreach (array_slice((array) ($block['rows'] ?? []), 0, 30) as $row) {
+        foreach (array_slice((array) ($block['rows'] ?? []), 0, $this->cap(30, 200)) as $row) {
             if (! is_array($row)) {
                 continue;
             }
@@ -1400,7 +1516,7 @@ PROMPT;
     {
         $items = [];
 
-        foreach (array_slice((array) ($block['items'] ?? []), 0, 12) as $item) {
+        foreach (array_slice((array) ($block['items'] ?? []), 0, $this->cap(12, 24)) as $item) {
             if (! is_array($item)) {
                 continue;
             }
@@ -1451,10 +1567,30 @@ PROMPT;
                 return null;
             }
 
+            // Navegacion inteligente: si la accion trae una entidad
+            // (inquilino/arriendo/propiedad/factura concreta), un
+            // filtro o una busqueda, AssistantNavigator resuelve la
+            // MEJOR pantalla — ficha del arriendo cuando hay un solo
+            // contrato, lista filtrada por tableSearch, o filtro de
+            // estado de factura. Sin esos campos cae a la seccion.
+            $entity = $this->cleanReportText($action['entity'] ?? '', 120);
+            $filter = $this->cleanReportText($action['filter'] ?? '', 30);
+            $search = $this->cleanReportText($action['search'] ?? '', 120);
+
+            $resolved = $this->reportUserId > 0
+                ? $this->navigator->urlFor(
+                    $target,
+                    $entity !== '' ? $entity : null,
+                    $filter !== '' ? $filter : null,
+                    $search !== '' ? $search : null,
+                    $this->reportUserId,
+                )
+                : null;
+
             return [
                 'kind' => 'url',
                 'label' => $label !== '' ? $label : __('assistant.guide.go_to', ['section' => __('assistant.sections.'.$target)]),
-                'url' => $class::getUrl(),
+                'url' => $resolved['url'] ?? $class::getUrl(),
             ];
         }
 
@@ -1479,7 +1615,7 @@ PROMPT;
     {
         $items = [];
 
-        foreach (array_slice((array) ($block['items'] ?? []), 0, 8) as $item) {
+        foreach (array_slice((array) ($block['items'] ?? []), 0, $this->cap(8, 16)) as $item) {
             if (! is_array($item)) {
                 continue;
             }
@@ -1508,7 +1644,7 @@ PROMPT;
     {
         $items = [];
 
-        foreach (array_slice((array) ($block['items'] ?? []), 0, 20) as $item) {
+        foreach (array_slice((array) ($block['items'] ?? []), 0, $this->cap(20, 40)) as $item) {
             if (is_array($item)) {
                 $item = $item['text'] ?? '';
             }
@@ -1521,6 +1657,15 @@ PROMPT;
         }
 
         return $items === [] ? null : ['type' => 'list', 'items' => $items];
+    }
+
+    /**
+     * Tope de un bloque del reporte: el analisis exhaustivo relaja los
+     * limites (el usuario pidio "sin limite" explicitamente).
+     */
+    private function cap(int $normal, int $deep): int
+    {
+        return $this->reportDeep ? $deep : $normal;
     }
 
     private function cleanReportText(mixed $value, int $max, bool $keepMarkdown = false): string
@@ -1619,7 +1764,7 @@ PROMPT;
             '',
             'PROCESO (obligatorio):',
             '1. PIENSA que necesitas saber para responder bien. Si te falta un dato que la base de datos puede darte, devuelve PRIMERO una consulta de apoyo y espera los resultados reales.',
-            '2. Puedes hacer hasta 3 consultas de apoyo encadenadas: cada respuesta tuya puede ser {"lookup":{...}} o el reporte final. No te limites a una sola consulta si el caso lo amerita.',
+            '2. Puedes hacer hasta '.($this->deepMode ? '5' : '3').' consultas de apoyo encadenadas: cada respuesta tuya puede ser {"lookup":{...}} o el reporte final. No te limites a una sola consulta si el caso lo amerita.',
             '3. Con los datos reales en la mano, devuelve el reporte final. NUNCA inventes cifras ni funcionalidades: todo numero del reporte debe venir de una consulta ejecutada o del CONTEXTO DEL PORTAFOLIO, y toda funcion mencionada debe existir en la app.',
             $guideStep,
             '',
@@ -1633,16 +1778,16 @@ PROMPT;
             '',
             'BLOQUES DISPONIBLES (combina los que el caso pida; no uses todos por obligacion):',
             '- {"type":"text","text":"parrafo en markdown ligero (**negrita**, listas con -)"} — narrativa, conclusiones, contexto.',
-            '- {"type":"metrics","items":[{"label":"...","value":"...","hint":"...","tone":"success|warning|danger|info"}]} — tarjetas de cifra clave (max 6). tone pinta el valor: success=bueno, warning=atencion, danger=problema, info=neutro. Omite tone si no aplica.',
-            '- {"type":"table","title":"...","columns":["Col1","Col2"],"rows":[["a","b"]]} — datos tabulares reales (max 8 columnas, 30 filas). Para rankings o listados.',
-            '- {"type":"chart","chart":"bar|line|donut","title":"...","labels":["ene","feb"],"values":[1200,3400],"unit":"$"} — grafica visual (max 12 puntos). bar=comparacion de categorias, line=serie en el tiempo o tendencia, donut=composicion/porcentajes del total. Usala SIEMPRE que la pregunta hable de evolucion, comparacion entre periodos, ranking visual o distribucion — una grafica comunica mejor que una tabla para eso. labels cortos (max ~10 chars), values solo numeros (sin simbolos de moneda ni separadores de miles).',
-            '- {"type":"steps","items":[{"title":"Paso","text":"detalle","action":{"kind":"url","target":"invoices","label":"Ir a Facturas"}}]} — pasos accionables para guias o planes (max 12). action.kind="url" navega a una seccion: targets validos = invoices, rentals, tenants, properties, delivery_acts, adjustments, finances, documents, profile, settings, ipc. action.kind="prompt" con "prompt":"texto a enviar al chat" ejecuta una accion guiada (ej: "registra un pago de $100.000 a la factura FV-2026-0001"). Omite action si el paso es solo informativo.',
+            '- {"type":"metrics","items":[{"label":"...","value":"...","hint":"...","tone":"success|warning|danger|info"}]} — tarjetas de cifra clave (max '.($this->deepMode ? 12 : 6).'). tone pinta el valor: success=bueno, warning=atencion, danger=problema, info=neutro. Omite tone si no aplica.',
+            '- {"type":"table","title":"...","columns":["Col1","Col2"],"rows":[["a","b"]]} — datos tabulares reales (max '.($this->deepMode ? 12 : 8).' columnas, '.($this->deepMode ? 200 : 30).' filas). Para rankings o listados.',
+            '- {"type":"chart","chart":"bar|line|donut","title":"...","labels":["ene","feb"],"values":[1200,3400],"unit":"$"} — grafica visual (max '.($this->deepMode ? 24 : 12).' puntos). bar=comparacion de categorias, line=serie en el tiempo o tendencia, donut=composicion/porcentajes del total. Usala SIEMPRE que la pregunta hable de evolucion, comparacion entre periodos, ranking visual o distribucion — una grafica comunica mejor que una tabla para eso. labels cortos (max ~10 chars), values solo numeros (sin simbolos de moneda ni separadores de miles).',
+            '- {"type":"steps","items":[{"title":"Paso","text":"detalle","action":{"kind":"url","target":"invoices","label":"Ir a Facturas","entity":"Nombre del inquilino/arriendo/propiedad/factura","filter":"VENCIDA","search":"termino libre"}}]} — pasos accionables para guias o planes (max 12). action.kind="url" navega a una seccion: targets validos = invoices, rentals, tenants, properties, delivery_acts, adjustments, finances, documents, profile, settings, ipc. Para que la navegacion sea INTELIGENTE incluye siempre que aplique: "entity" = la entidad concreta del caso (ej: el inquilino del que habla el paso — el sistema la resuelve y te lleva a su mejor pantalla: la ficha del arriendo si es un solo contrato, o la lista filtrada por su nombre); "filter" = estado de factura cuando aplique (EMITIDA|VENCIDA|PAGADA|ANULADA); "search" = termino libre de tabla como alternativa simple a entity. NUNCA uses entity con valores genericos ("el inquilino", "la propiedad"): si no conoces el nombre exacto, usa search con lo que si sabes o deja la accion sin entidad. action.kind="prompt" con "prompt":"texto a enviar al chat" ejecuta una accion guiada (ej: "registra un pago de $100.000 a la factura FV-2026-0001"). Omite action si el paso es solo informativo.',
             '- {"type":"callouts","items":[{"title":"...","text":"...","tone":"warning"}]} — alertas/avisos destacados (max 8).',
             '- {"type":"list","items":["punto 1","punto 2"]} — listas simples (max 20).',
             '',
             'REGLAS DEL REPORTE:',
             '- title: corto y descriptivo (max ~8 palabras). intro: 1-2 frases que enmarcan lo que el usuario va a ver.',
-            '- sections: '.($isGuide ? 'max 8' : 'max 6').', orden logico (primero lo que el usuario pidio, luego el detalle). Cada section: title corto + blocks.',
+            '- sections: '.($this->deepMode ? 'hasta 20' : ($isGuide ? 'max 8' : 'max 6')).', orden logico (primero lo que el usuario pidio, luego el detalle). Cada section: title corto + blocks.',
             '- Tono de ASESOR profesional: directo, con evidencia, con recomendaciones accionables cuando la pregunta lo pida.',
             $isGuide
                 ? '- GUIA: el bloque "steps" es el corazon del reporte — cada paso debe tener action (url a la seccion o prompt que lanza la accion guiada por el chat) siempre que exista una forma de ejecutar ese paso desde la app. Estructura sugerida para una guia completa: una seccion de texto de introduccion personalizada, luego una seccion por modulo (Registro, Facturacion, Cobros, Reajustes IPC, Actas, Documentos, Ajustos) cada una con 2-5 pasos en bloque steps. metrics/chart solo si aportan contexto (ej: "tienes N facturas vencidas"); evita charts decorativos.'
@@ -1650,15 +1795,21 @@ PROMPT;
             '- Cifras con formato $1.234.567 (COP). Fechas en lenguaje natural o YYYY-MM.',
             '- suggestions: 2-3 preguntas de seguimiento CORTAS (max 60 chars) en el idioma del usuario, concretas segun lo que mostraste.',
             '',
-            'CONTEXTO DEL PORTAFOLIO DEL USUARIO:',
-            json_encode($digest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            '',
+            // Prefijo cacheable primero (context caching implicito):
+            // esquema y semantica son estaticos; el digest cambia por
+            // request y va al final para no romper el prefijo.
             'ESQUEMA DE LA BASE DE DATOS (para tus consultas lookup.sql; [filtrar user_id] = tabla del usuario, [global] = sin user_id):',
             $this->schema->forPrompt(),
             '',
             'SIGNIFICADO DE LOS DATOS (semantica de negocio: OBLIGATORIO respetarla al escribir SQL):',
             $this->schema->semanticsForPrompt(),
             '',
+            'CONTEXTO DEL PORTAFOLIO DEL USUARIO:',
+            json_encode($digest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            '',
+            $this->deepMode
+                ? 'MODO EXHAUSTIVO (el usuario pidio un analisis a fondo): se exhaustivo de verdad — hasta 5 consultas de apoyo encadenadas, cruza TODAS las tablas relevantes (facturas + pagos + arriendos + inquilinos + propiedades + actas), compara periodos, segmenta por entidad y por estado, y devuelve un reporte MUY completo: hasta 20 secciones, bloques variados por seccion (texto narrativo + metrics + charts + tables + steps + callouts), tablas con todas las filas relevantes (hasta 200), graficas para cada comparacion o distribucion que aportes, y una conclusion final que responda explicitamente la pregunta de decision del usuario (si vale la pena, que riesgo tiene, que hacer). El usuario quiere profundidad y evidencia, no un resumen.'
+                : '',
             'Hoy es '.now()->format('Y-m-d').'.',
         ]);
     }
@@ -1727,11 +1878,28 @@ PROMPT;
      */
     private bool $aiUnavailable = false;
 
+    /**
+     * Proveedor que atiende la peticion en curso y la eleccion cruda
+     * del usuario, cacheadas por request (generate() se llama varias
+     * veces por mensaje y la preferencia no cambia a mitad del ask()).
+     *
+     * @var array<int, string>
+     */
+    private array $effectiveDrivers = [];
+
+    private array $userChoices = [];
+
+    private ?string $activeDriver = null;
+
     private function generate(array $body, ?int $timeout = null, ?int $userId = null): string
     {
-        $key = (string) config('services.gemini.key');
+        // El modelo que eligio el usuario define el proveedor de ESTA
+        // llamada: un id de Gemini va a Google aunque AI_DRIVER prefiera
+        // Groq, y viceversa. Sin eleccion valida manda el preferido.
+        $driver = $this->effectiveDriver($userId);
+        $this->activeDriver = $driver;
 
-        if ($key === '') {
+        if (! AssistantProvider::isConfiguredDriver($driver)) {
             return '';
         }
 
@@ -1740,7 +1908,7 @@ PROMPT;
         // El timeout por llamada queda por debajo del presupuesto total:
         // si la API se cuelga, el request de Livewire no puede esperar
         // indefinidamente.
-        $timeout ??= (int) config('services.gemini.timeout', 10);
+        $timeout ??= AssistantProvider::timeoutForDriver($driver);
         $this->geminiDeadline ??= microtime(true) + $this->requestBudgetSeconds();
 
         // Se intenta el modelo del usuario (o el configurado) y, si falla,
@@ -1757,7 +1925,7 @@ PROMPT;
                 return '';
             }
 
-            $text = $this->generateWithModel($key, $model, $body, min($timeout, (int) ceil($remaining)));
+            $text = $this->generateWithModel($driver, $model, $body, min($timeout, (int) ceil($remaining)));
 
             if ($text !== '') {
                 $this->rememberWorkingModel($userId, $model);
@@ -1778,25 +1946,124 @@ PROMPT;
      */
     private function rememberWorkingModel(?int $userId, string $model): void
     {
-        Cache::put('assistant.gemini_model.'.($userId ?? 'global'), $model, now()->addHours(12));
+        Cache::put($this->modelCacheKey($userId), $model, now()->addHours(12));
     }
 
     private function rememberedModel(?int $userId): ?string
     {
-        $model = Cache::get('assistant.gemini_model.'.($userId ?? 'global'));
+        $model = Cache::get($this->modelCacheKey($userId));
 
         return is_string($model) && $model !== '' ? $model : null;
     }
 
     /**
-     * Segundos totales que puede esperar Gemini dentro de UNA peticion
-     * de chat. Cubre el classify principal mas las llamadas secundarias
-     * (compose, sugerencias, reporte) sin dejar que un timeout alto se
-     * convierta en minutos de espera.
+     * El modelo recordado es por proveedor: un nombre de Groq no debe
+     * colarse como candidato de Gemini ni al reves.
+     */
+    private function modelCacheKey(?int $userId): string
+    {
+        return 'assistant.'.($this->activeDriver ?? AssistantProvider::driver()).'_model.'.($userId ?? 'global');
+    }
+
+    /**
+     * Proveedor que atiende esta peticion: el dueño del modelo que el
+     * usuario eligio en el selector; si no eligio (o el id ya no es
+     * elegible), el proveedor efectivo por defecto de la configuracion.
+     * Se memoriza por usuario porque generate() se llama varias veces
+     * por mensaje y la preferencia no cambia a mitad del ask().
+     */
+    private function effectiveDriver(?int $userId): string
+    {
+        $key = $userId ?? 0;
+
+        return $this->effectiveDrivers[$key] ??= AssistantProvider::driverForModel(
+            $this->userModelChoice($userId),
+        ) ?? AssistantProvider::driver();
+    }
+
+    /**
+     * Eleccion cruda del usuario ('' si no tiene o no hay usuario).
+     * Cacheada por request: varias llamadas por mensaje la releian.
+     */
+    private function userModelChoice(?int $userId): string
+    {
+        if ($userId === null) {
+            return '';
+        }
+
+        return $this->userChoices[$userId] ??= (string) (
+            User::query()->whereKey($userId)->value('assistant_model') ?: ''
+        );
+    }
+
+    /**
+     * Timeout del proveedor que esta atendiendo la peticion en curso.
+     */
+    private function aiTimeout(): int
+    {
+        return AssistantProvider::timeoutForDriver(
+            $this->activeDriver ?? AssistantProvider::driver(),
+        );
+    }
+
+    /**
+     * Lee el flag "deep" del JSON del modelo. Solo lo enciende: si el
+     * modelo no lo declara (o lo declara false) el modo queda como
+     * estaba — una vez activo no se apaga dentro del mismo ask().
+     *
+     * @param  array<string, mixed>  $parsed
+     */
+    private function applyDeepFlag(array $parsed): void
+    {
+        $wantsDeep = filter_var($parsed['deep'] ?? $parsed['deep_analysis'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
+        if (! $wantsDeep || $this->deepMode) {
+            return;
+        }
+
+        $this->deepMode = true;
+
+        // El deadline global se habia fijado con el presupuesto normal
+        // durante el classify: se extiende (sin perder lo ya transcurrido)
+        // para que la cadena profunda quepa entera. El limite de PHP se
+        // amplia en el mismo request para acompanarla.
+        $this->geminiDeadline = max(
+            $this->geminiDeadline ?? 0,
+            microtime(true) + $this->requestBudgetSeconds(),
+        );
+        $this->extendPhpTimeLimit();
+    }
+
+    /**
+     * max_execution_time de PHP acompana al presupuesto del proveedor:
+     * la cadena classify -> lookups -> reporte puede tardar minutos en
+     * modo profundo. Se puede llamar de nuevo para extender el limite
+     * una vez la IA ya declaro la profundidad.
+     */
+    private function extendPhpTimeLimit(): void
+    {
+        set_time_limit($this->deepMode
+            ? max(480, ($this->aiTimeout() * 24) + 120)
+            : max(90, ($this->aiTimeout() * 2) + 60));
+    }
+
+    /**
+     * Segundos totales que puede esperar el proveedor dentro de UNA
+     * peticion de chat. Cubre el classify principal mas las llamadas
+     * secundarias (compose, sugerencias, reporte) sin dejar que un
+     * timeout alto se convierta en minutos de espera.
      */
     private function requestBudgetSeconds(): int
     {
-        return max(45, (int) config('services.gemini.timeout', 10) * 2);
+        // Modo exhaustivo: la cadena classify -> N lookups -> reporte
+        // puede encadenar 6+ llamadas de hasta ~90s cada una; el
+        // presupuesto sube a ~8 min y PHP lo acompana (AssistantChat
+        // fija set_time_limit con el mismo criterio).
+        if ($this->deepMode) {
+            return max(300, $this->aiTimeout() * 24);
+        }
+
+        return max(45, $this->aiTimeout() * 2);
     }
 
     /**
@@ -1808,7 +2075,30 @@ PROMPT;
      */
     private function modelCandidates(?int $userId): array
     {
-        $primary = $this->primaryModel($userId);
+        // Con un endpoint OpenAI-compatible el modelo lo elige el
+        // usuario en el selector (o AI_MODEL por defecto); las opciones
+        // vienen de AI_MODELS/los defaults del host, nunca del catalogo
+        // de Gemini.
+        $driver = $this->effectiveDriver($userId);
+
+        if ($driver === AssistantProvider::OPENAI_COMPATIBLE) {
+            $userChoice = $this->userModelChoice($userId);
+
+            // El fallback SIEMPRE es del mismo proveedor: AI_MODEL y
+            // AI_FALLBACK_MODEL son ids del endpoint OpenAI-compatible,
+            // nunca modelos de Gemini.
+            $explicit = in_array($userChoice, AssistantProvider::openAiModelIds(), true);
+
+            $candidates = array_values(array_unique(array_filter([
+                $explicit ? $userChoice : '',
+                (string) config('services.ai.model'),
+                (string) config('services.ai.fallback_model'),
+            ])));
+
+            return array_slice($this->orderCandidates($candidates, $userId, $explicit), 0, 2);
+        }
+
+        $primary = $this->primaryModel($userId, AssistantProvider::GEMINI);
         $fallback = (string) config('services.gemini.fallback_model', 'gemini-3.5-flash-lite');
 
         $candidates = array_values(array_unique(array_filter([
@@ -1818,44 +2108,70 @@ PROMPT;
             'gemini-3.6-flash',
         ])));
 
-        // El modelo que funciono por ultima vez encabeza la lista.
-        $remembered = $this->rememberedModel($userId);
+        // Solo la eleccion explicita del picker va pineada: el default
+        // de config puede ceder el primer intento al modelo recordado.
+        $choice = $this->userModelChoice($userId);
+        $explicit = $choice !== ''
+            && AssistantProvider::driverForModel($choice) === AssistantProvider::GEMINI;
 
-        if ($remembered !== null && in_array($remembered, $candidates, true)) {
-            $candidates = array_merge([$remembered], array_values(array_diff($candidates, [$remembered])));
-        }
-
-        return array_slice($candidates, 0, 3);
+        return array_slice($this->orderCandidates($candidates, $userId, $explicit), 0, 3);
     }
 
     /**
-     * Modelo que el usuario eligio en el chat; si no eligio ninguno, el de
-     * configuracion. Se cachea por request para no repetir la consulta.
+     * Reordena los candidatos segun el modelo que respondio bien la
+     * ultima vez. Con eleccion explicita del usuario ($pinHead) esa
+     * eleccion conserva siempre el primer intento y el recordado solo
+     * adelanta entre los respaldos; sin eleccion, el recordado encabeza
+     * la lista completa para esquivar modelos saturados.
      *
-     * @var array<int, string>
+     * @param  list<string>  $candidates
+     * @return list<string>
      */
-    private array $userModels = [];
-
-    private function primaryModel(?int $userId): string
+    private function orderCandidates(array $candidates, ?int $userId, bool $pinHead): array
     {
-        $configured = (string) config('services.gemini.model', 'gemini-3.5-flash-lite');
+        $remembered = $this->rememberedModel($userId);
 
-        if ($userId === null) {
-            return $configured;
+        if ($remembered === null || ! in_array($remembered, $candidates, true)) {
+            return $candidates;
         }
 
-        return $this->userModels[$userId] ??= (string) (
-            User::query()->whereKey($userId)->value('assistant_model') ?: $configured
+        if (! $pinHead) {
+            return array_merge([$remembered], array_values(array_diff($candidates, [$remembered])));
+        }
+
+        if ($remembered === $candidates[0]) {
+            return $candidates;
+        }
+
+        return array_merge(
+            [$candidates[0]],
+            array_merge([$remembered], array_values(array_diff(array_slice($candidates, 1), [$remembered]))),
         );
     }
 
+    private function primaryModel(?int $userId, string $driver = ''): string
+    {
+        $driver = $driver !== '' ? $driver : ($this->activeDriver ?? AssistantProvider::driver());
+
+        // Solo se honra la eleccion del usuario si pertenece al
+        // proveedor que esta atendiendo: un id de Groq jamas se intenta
+        // contra la API de Gemini ni al reves.
+        $choice = $this->userModelChoice($userId);
+
+        if ($choice !== '' && AssistantProvider::driverForModel($choice) === $driver) {
+            return $choice;
+        }
+
+        return AssistantProvider::modelForDriver($driver);
+    }
+
     /**
-     * Un intento de generateContent contra un modelo concreto. Devuelve el
+     * Un intento de generate contra un modelo concreto. Devuelve el
      * texto de la primera parte o '' si la API falla.
      *
      * @param  array<string, mixed>  $body
      */
-    private function generateWithModel(string $key, string $model, array $body, int $timeout): string
+    private function generateWithModel(string $driver, string $model, array $body, int $timeout): string
     {
         // Fallos transitorios (503 high demand, 429, timeouts de red) se
         // reintentan UNA vez con una pausa corta: la saturacion del free
@@ -1879,7 +2195,7 @@ PROMPT;
                 $effectiveTimeout = min($timeout, max(1, (int) ceil($remaining) - 2));
             }
 
-            [$text, $retryable] = $this->attemptGenerate($key, $model, $body, $effectiveTimeout);
+            [$text, $retryable] = $this->attemptGenerate($driver, $model, $body, $effectiveTimeout);
 
             if ($text !== '' || ! $retryable) {
                 return $text;
@@ -1890,14 +2206,31 @@ PROMPT;
     }
 
     /**
-     * Un intento HTTP contra generateContent. Devuelve [texto, reintentable]:
-     * reintentable=true solo para fallos transitorios de la API o de red.
+     * Un intento HTTP contra el proveedor activo. Devuelve [texto,
+     * reintentable]: reintentable=true solo para fallos transitorios de
+     * la API o de red.
      *
      * @param  array<string, mixed>  $body
      * @return array{0: string, 1: bool}
      */
-    private function attemptGenerate(string $key, string $model, array $body, int $timeout): array
+    private function attemptGenerate(string $driver, string $model, array $body, int $timeout): array
     {
+        return $driver === AssistantProvider::OPENAI_COMPATIBLE
+            ? $this->attemptChatCompletions($model, $body, $timeout)
+            : $this->attemptGemini($model, $body, $timeout);
+    }
+
+    /**
+     * Un intento HTTP contra generateContent de Gemini. Devuelve
+     * [texto, reintentable].
+     *
+     * @param  array<string, mixed>  $body
+     * @return array{0: string, 1: bool}
+     */
+    private function attemptGemini(string $model, array $body, int $timeout): array
+    {
+        $key = (string) config('services.gemini.key');
+
         try {
             $request = Http::withHeaders(['x-goog-api-key' => $key])
                 ->connectTimeout(5)
@@ -1944,6 +2277,119 @@ PROMPT;
 
             return ['', $retryable];
         }
+    }
+
+    /**
+     * Un intento HTTP contra /chat/completions de un endpoint
+     * OpenAI-compatible (Groq, OpenAI, OpenRouter...). El cuerpo se
+     * construye en formato Gemini y se traduce aqui para no duplicar
+     * los ~20 puntos donde se arma la peticion.
+     *
+     * @param  array<string, mixed>  $body
+     * @return array{0: string, 1: bool}
+     */
+    private function attemptChatCompletions(string $model, array $body, int $timeout): array
+    {
+        try {
+            $request = Http::withToken(AssistantProvider::openAiKey())
+                ->acceptJson()
+                ->connectTimeout(5)
+                ->timeout($timeout);
+
+            // Mismo motivo que en Gemini: en Windows PHP no lee el almacen
+            // de certificados del sistema y toda llamada HTTPS muere con
+            // "cURL error 60". Se apunta a un bundle explicito si existe;
+            // nunca se desactiva la verificacion.
+            $caBundle = (string) config('services.gemini.ca_bundle');
+
+            if ($caBundle !== '' && is_file($caBundle)) {
+                $request = $request->withOptions(['verify' => $caBundle]);
+            }
+
+            $response = $request->post(
+                AssistantProvider::openAiBaseUrl().'/chat/completions',
+                $this->toChatCompletionsBody($model, $body),
+            );
+
+            if (! $response->successful()) {
+                Log::warning('assistant.ai.http_error', [
+                    'driver' => 'openai_compatible',
+                    'model' => $model,
+                    'status' => $response->status(),
+                    'body' => mb_substr($response->body(), 0, 500),
+                ]);
+
+                return ['', in_array($response->status(), [408, 429, 500, 502, 503, 504], true)];
+            }
+
+            return [(string) data_get($response->json(), 'choices.0.message.content', ''), false];
+        } catch (Throwable $exception) {
+            Log::warning('assistant.ai.exception', [
+                'driver' => 'openai_compatible',
+                'model' => $model,
+                'error' => $exception->getMessage(),
+            ]);
+
+            $retryable = (bool) preg_match('/cURL error|timed? ?out|Connection|resolve host/i', $exception->getMessage());
+
+            return ['', $retryable];
+        }
+    }
+
+    /**
+     * Traduce el cuerpo con formato Gemini (system_instruction +
+     * contents/parts + generationConfig) al de chat/completions:
+     * system -> mensaje system, parts -> content, role model ->
+     * assistant, responseMimeType json -> response_format json_object
+     * y maxOutputTokens -> max_completion_tokens (los modelos de
+     * razonamiento de Groq lo exigen; max_tokens quedo deprecado).
+     *
+     * @param  array<string, mixed>  $body
+     * @return array<string, mixed>
+     */
+    private function toChatCompletionsBody(string $model, array $body): array
+    {
+        $messages = [];
+
+        $system = data_get($body, 'system_instruction.parts.0.text');
+
+        if (is_string($system) && trim($system) !== '') {
+            $messages[] = ['role' => 'system', 'content' => $system];
+        }
+
+        foreach ((array) ($body['contents'] ?? []) as $turn) {
+            $text = collect((array) ($turn['parts'] ?? []))
+                ->pluck('text')
+                ->filter()
+                ->implode('');
+
+            if ($text === '') {
+                continue;
+            }
+
+            $messages[] = [
+                'role' => ($turn['role'] ?? 'user') === 'model' ? 'assistant' : 'user',
+                'content' => $text,
+            ];
+        }
+
+        $config = (array) ($body['generationConfig'] ?? []);
+
+        $out = [
+            'model' => $model,
+            'messages' => $messages,
+            'temperature' => $config['temperature'] ?? 0.3,
+        ];
+
+        if (isset($config['maxOutputTokens'])) {
+            $out['max_completion_tokens'] = (int) $config['maxOutputTokens'];
+        }
+
+        if (($config['responseMimeType'] ?? '') === 'application/json') {
+            $out['response_format'] = ['type' => 'json_object'];
+        }
+
+        return $out;
     }
 
     // ---------------------------------------------------------------
@@ -2002,7 +2448,7 @@ PROMPT;
             '- "agrega/crea/registra un inquilino/arrendatario" -> create_tenant (params.name, document y phone son OBLIGATORIOS; email opcional). Si falta algun dato, devuelve el intent con lo que tengas: el sistema abre un FORMULARIO dinamico con los campos que falten — nunca pidas los datos por texto ni devuelvas unknown.',
             '- "agrega/crea una propiedad/inmueble/apartamento/local" -> create_property (params.name y address son OBLIGATORIOS). Si falta algun dato, igual devuelve el intent con lo que tengas: el sistema abre el formulario de creacion con los campos faltantes.',
             '- "agenda/arrenda/alquila un arriendo/alquiler para un inquilino" -> create_rental (params.tenant_name, property_name, amount=canon mensual, months=duracion, start_date, cadence: MENSUAL|QUINCENAL|ANTICIPO). Si el inquilino no existe, incluye tenant_document y tenant_phone; si la propiedad no existe, property_address. Si falta algun dato obligatorio, igual devuelve el intent con lo que tengas: el sistema muestra el formulario de creacion con los campos faltantes — nunca pidas los datos por texto.',
-            '- "llevame/muestrame/ir a la seccion de..." -> navigate (params.target: invoices, rentals, tenants, properties, delivery_acts, adjustments, finances, documents, profile; params.filter OPCIONAL con el estado pedido en minusculas: vencida, pagada, emitida, anulada, activo, inactivo). Si la seccion no admite ese filtro, el sistema lo dice y muestra los datos en el chat.',
+            '- "llevame/muestrame/ir a la seccion de..." -> navigate (params.target: invoices, rentals, tenants, properties, delivery_acts, adjustments, finances, documents, profile; params.filter OPCIONAL con el estado pedido en minusculas: vencida, pagada, emitida, anulada, activo, inactivo). Si la seccion no admite ese filtro, el sistema lo dice y muestra los datos en el chat. Cuando la navegacion apunta a una ENTIDAD concreta incluye params.entity con su nombre EXACTO (el sistema la resuelve y te lleva a su mejor pantalla: la ficha del arriendo si hay un solo contrato, o la lista filtrada por su nombre) y/o params.search como termino de busqueda libre. Ej: "llevame a las facturas de Nathan Kunze" -> target=invoices + entity="Nathan Kunze"; "facturas vencidas de X" -> target=invoices + entity + filter=vencida; "busca el apto 902" -> target=properties + search="902".',
             '- "mis datos de cuenta / mi perfil / que correo tengo registrado" -> show_profile.',
             '- "cambia/actualiza mi nombre, correo, documento, telefono o tipo de documento" -> propose_update_profile (params SOLO con los campos mencionados: name, email, document, document_type CC|TI|CE|PAS|NIT, phone_number). La contrasena NUNCA se cambia por el chat: para eso usa navigate a profile.',
             '- "cambia/actualiza/edita el telefono/correo/direccion/nombre del inquilino/propiedad/arriendo X" -> update_tenant/update_property/update_rental (params: nombre de la entidad + SOLO los campos mencionados con su nuevo valor). Si piden EDITAR/ACTUALIZAR una entidad SIN decir que campo ni valor ("actualiza a Juan", "edita la propiedad de la calle 5"), devuelve el intent con SOLO la entidad resuelta: el sistema muestra un formulario con TODOS los campos editables para que el usuario llene lo que quiera — NO pidas los datos por texto ni devuelvas unknown. "desactiva/pausa el arriendo de X" -> update_rental con is_active=false. "sube/baja el canon/monto del arriendo" -> update_rental con monthly_amount.',
@@ -2019,6 +2465,7 @@ PROMPT;
             '- "mis ajustes/datos del negocio/configuracion de facturas" -> show_settings. "cambia el nombre comercial/NIT/direccion del negocio/pie legal" -> update_settings.',
             '- "esta actualizado el IPC/sincroniza el IPC/actualiza los indices" -> ipc_status o sync_ipc.',
             '- "cuentame del arriendo/de la propiedad/del inquilino/detalle de X" -> entity_detail (params.entity_type: rental|property|tenant|invoice|adjustment + name/number).',
+            '- "lista/muestrame/ensemble cada X con su/sus Y" — listados donde cada entidad va CON sus registros relacionados: "cada propiedad con su inquilino", "mis arriendos con sus facturas", "inquilinos con sus pagos", "facturas con sus pagos", "cada acta con su arriendo", "cada pago con su factura" -> entity_relations (params.entity_type: rental|tenant|property|invoice|payment|delivery_act|adjustment — la ENTIDAD PADRE que se lista; params.name solo si nombra UNA entidad concreta, vacio para la coleccion; params.relations = lista de relaciones hijas pedidas: tenant, property, rentals, invoices, payments, delivery_acts, adjustments, rental — en espanol valen inquilino, propiedad, arriendos, facturas, pagos, actas, reajustes; si no se especifica, trae todas). Es la herramienta correcta para relaciones de 1 o MAS saltos: el sistema resuelve la malla entidad->relacion con datos reales y anida las tablas. PREFIERELA sobre query_data+nest para estos casos: nest solo expresa UN salto escrito a mano y falla en cadenas como propiedad->arriendo->inquilino.',
             '- "pásame la tabla a CSV/exporta/descarga en excel" -> export_csv.',
             '- "hola/buenas/buenos dias/hello/hi" -> greeting (saludos y cortesia pura, sin peticion de datos).',
             '- NAVEGACION CON BUSQUEDA: "llévame al inquilino Camila / a la factura FV-2026-0003 / al arriendo de X" -> navigate con params.target + params.search (el nombre o numero a buscar). La seccion buscara el termino.',
@@ -2029,6 +2476,7 @@ PROMPT;
             '  * params.table = el nombre de una tabla del esquema -> el sistema te devuelve su FICHA completa: columnas con tipo/null/default, enums, relaciones y total de filas del usuario. Usalo cuando dudes de una columna, una relacion o quieras aprender una tabla mas alla del resumen.',
             '  El sistema ejecuta tu consulta o ficha y te devuelve los resultados REALES en el siguiente paso; con eso devuelves el intent final con los params completos y correctos. Usala siempre que una referencia sea resoluble en la BD pero no en el contexto (numero exacto de factura, relacion entre tablas, dato que el digest no trae). NO la uses para responder lecturas al usuario (eso es query_data) ni para pedir datos que ya estan en el contexto. Maximo dos consultas de apoyo por mensaje: si tras los resultados algo sigue ambiguo, pregunta.',
             '- CONSULTA PARA EL USUARIO (query_data): para CUALQUIER pregunta de datos del negocio que ninguna herramienta especifica responda — cruces de tablas, comparaciones entre periodos, rankings personalizados, "cuantos dias en promedio tarda en pagar X" — devuelve intent=query_data con params.sql = un SELECT de solo lectura ('.$sqlRules.' params.question = la pregunta original). El resultado se muestra al usuario como tabla. OJO: si la pregunta pide analisis/evolucion/conclusiones/recomendaciones ("como evoluciona X", "que genera mas Y", "analiza Z"), NO es query_data: es business_insights. Si necesitas datos intermedios para RAZONAR antes de responder o proponer una accion, usa lookup_data; si la pregunta ES la consulta, usa query_data.',
+            '- ANIDAR RELACIONES: para "cada X con sus Y" usa PRIMERO entity_relations (la malla resuelve cualquier salto, incluidas cadenas de 2+ relaciones). query_data+nest (siguiente regla) es el plan B cuando la consulta necesita SQL custom que la malla no expresa (filtros, periodos, agregados por grupo).',
             '- ANIDAR RELACIONES EN query_data (OBLIGATORIO cuando la pregunta combina una entidad con SUS registros relacionados — "mis inquilinos y por cada uno sus facturas", "propiedades con sus arriendos", "facturas con sus pagos", "el arriendo de X con su acta e inventario", igual para relaciones 1:1 o 1:N): escribe el JOIN/SELECT plano de siempre y ADEMÁS params.nest = {"parent":[alias de columnas que identifican al padre],"child":[alias de columnas que son del hijo],"as":"nombre_de_la_relacion"} para UNA sola relacion, o {"parent":[...],"children":[{"as":"inquilino","columns":[...]},{"as":"propiedad","columns":[...]}]} cuando el registro tiene VARIAS entidades relacionadas (ej: arriendo -> inquilino Y propiedad: cada una va en SU propia tabla anidada, NUNCA combinadas en una sola fila de columnas mezcladas). El sistema agrupa las filas por los valores del padre y muestra una fila por entidad con sus relacionados como tablas expandibles — NUNCA devuelvas la lista plana del JOIN para estos casos. Reglas del nest: las columnas deben ser los alias EXACTOS del SELECT (usa alias claros en español o los nombres de columna); parent lleva las columnas del registro principal (ej: arriendo, canon); child/columns las del relacionado; "as" es el nombre de la tabla anidada que vera el usuario (ej: "facturas", "inquilino", "propiedad"). IMPORTANTE: para CADA entidad relacionada selecciona sus campos utiles y completos (nombre, documento/contacto, direccion, valores, fechas) — no te limites a dos columnas ni dejes la mitad de la informacion fuera; si la entidad tiene mas datos relevantes en el esquema, traelos. Si una entidad no tiene registros relacionados la fila igual aparece con la tabla vacia — para lograrlo usa LEFT JOIN desde el padre. No uses nest para preguntas de una sola entidad o sin relacion ("lista mis facturas" queda plana), ni para consultas agregadas (GROUP BY, SUM/COUNT por grupo: "total facturado por inquilino" va plana — ahi cada fila ya ES el resumen).',
             '- JERARQUIA: si existe una herramienta especifica para el caso (listados, updates, pagos, documentos, ajustes...), PREFIERELA: trae previews, confirmaciones, campos editables y navegacion que la consulta libre no tiene. La consulta libre es para lecturas; NUNCA la uses para proponer cambios (los writes siempre van por sus intents con confirmacion).',
             '- Si ninguna herramienta ni query_data aplican y la pregunta es del dominio pero muy ambigua, o es una pregunta de capacidad/uso, general_answer es la respuesta: escribe la respuesta completa en params.answer (texto plano, mismo idioma del usuario, honesto sobre lo que el sistema soporta).',
@@ -2038,26 +2486,39 @@ PROMPT;
             '- Si el usuario pide DOS O MAS cosas distintas en el mismo mensaje (ej: "muéstrame mis inquilinos y mis propiedades", "registra estos 3 inquilinos y 2 propiedades", "cuánto me deben y lista las facturas"), llena `requests` con UN elemento por cada peticion, cada uno con su intent y sus params completos.',
             '- Para UNA sola peticion deja `requests` vacio y usa intent/params de siempre.',
             '- En creaciones multiples, un elemento de `requests` por CADA entidad a crear (un create_tenant por inquilino, un create_property por propiedad), nunca agrupados en un solo params.',
+            '- CORRECCIONES: si el usuario enmienda una peticion previa ("me equivoque, son 3", "no, mejor 4", "eran cinco"), la correccion REEMPLAZA a la original: interpreta el mensaje nuevo con ayuda del historial y genera un elemento de `requests` por cada entidad del tipo correcto AUNQUE no repita el nombre ni los datos ("son 3" tras "2 inquilinos" = 3 create_tenant; si la respuesta anterior fue cancelada, la peticion corregida es la que cuenta). LOTE YA COMPLETADO O PARCIAL: si el historial muestra que parte del lote YA se registro/confirmo (resultados de acciones, "registre 2", paquete completado), la correccion aplica SOLO a las entidades que FALTAN: "perdon eran 3" despues de registrar 2 = 1 create_tenant mas, no 3; "eran 5" tras completar 2 de un lote de 3 = 2 mas. Nunca re-propongas entidades que el historial muestra ya creadas.',
+            '- CORRECCION DE TOTAL vs ADICION (analiza el MATIZ del verbo, no solo el numero): "eran/son/eran en total/eran 3" corrige el TOTAL del lote original — descuenta lo ya registrado del historial y crea solo las que FALTAN ("eran 3" con 2 ya hechos = 1 mas). En cambio "agrega/suma/otros/tambien/mas" es ADITIVO: pide entidades NUEVAS encima de lo ya hecho, sin importar el total ("agrega 3" con 2 registrados = 3 create_tenant nuevos; "y 2 mas" = 2). Si el mensaje es ambiguo entre ambos ("pon 3" a secas), usa el historial: si la ultima accion fue un lote que quedo incompleto, lee el numero como correccion del total pendiente; si el lote ya cerro, leelo como adicion. Cuando dudes de verdad entre total-corregido y adicion, prefiere la lectura que el historial haga MAS probable y refleja tu eleccion en params con una nota no es posible — simplemente clasifica; el usuario confirmara el paquete antes de que nada se cree.',
             '- Si una parte del mensaje es ambigua, omite esa peticion en vez de inventarla.',
             '- NO hay limite de peticiones por mensaje: si el usuario pide muchas cosas (o crea decenas de entidades), llena `requests` con TODAS. Si el lote es muy grande el sistema lo divide en grupos que el usuario confirma por partes.',
             '- REGLA DE ORO: si el usuario ya dio los datos de una peticion, params debe llevarlos TODOS extraidos. NUNCA devuelvas params vacio cuando el mensaje contiene los valores. El canon "1.200.000" va como amount=1200000 (numero, sin puntos ni $).',
             '- Ejemplo del formato exacto para "crea la propiedad Apto 301 en Calle 1 y agenda a Juan Perez cc 555 tel 300 por $800.000 por 12 meses":',
             '  {"domain":"app","intent":"unknown","confidence":0.9,"requests":[{"intent":"create_property","params":{"name":"Apto 301","address":"Calle 1"}},{"intent":"create_rental","params":{"tenant_name":"Juan Perez","tenant_document":"555","tenant_phone":"300","property_name":"Apto 301","amount":800000,"months":12}}]}',
             '',
-            $this->domainGuide(),
+            'PROFUNDIDAD DEL ANALISIS (campo "deep", booleano — lo decides TÚ, no el sistema):',
+            '- deep=true SOLO cuando la respuesta se beneficia de una investigacion exhaustiva: el usuario pide explicitamente un analisis a fondo/exhaustivo/muy detallado ("analisis exhaustivo", "a fondo", "deep dive", "go deeper", "profundiza", "amplia el analisis", "20 secciones"), o pide una decision de alto impacto que requiere cruzar muchas fuentes (ej: "determina si vale la pena mantener o terminar el contrato de X" con analisis de riesgo).',
+            '- deep=false para consultas puntuales: un dato, un listado, una entidad concreta, una metrica, o cuando el usuario quiere algo rapido.',
+            '- Si el mensaje es un "go deeper"/"mas detalle"/"profundiza" refiriendose a un analisis del historial, deep=true.',
+            '- Con deep=true el sistema encadena mas consultas de apoyo y permite un reporte de hasta 20 secciones con graficas y tablas; con false el reporte es conciso (max 6 secciones). Ante la duda, false — el usuario siempre puede pedir mas.',
+            '- Incluye "deep": true|false en el JSON de nivel raiz junto a domain/intent/confidence (tambien cuando devuelves requests en batch).',
             '',
-            'Hoy es '.now()->format('Y-m-d').'. Moneda: pesos colombianos (COP).',
+            $this->domainGuide(),
             '',
             'INTENTS VALIDOS: '.implode(', ', self::INTENTS),
             '',
-            'CONTEXTO DEL PORTAFOLIO DEL USUARIO (para desambiguar nombres y resolver referencias en params): rentals = arriendos activos con su canon y fecha de reajuste; totals = agregados; alerts = avisos; pending_invoices = cada factura con saldo pendiente (number exacto, rental, tenant, balance, due_at, days_overdue): usala para convertir "la mas antigua/ultima/vencida" en el invoice_number concreto; catalog = el UNIVERSO completo de entidades del usuario (tenants, properties y rentals TODOS, activos e inactulos con flag active): usalo para escribir el nombre EXACTO de la entidad en los params de cualquier intent (create_*, update_*, documentos, pagos). Si una entidad no aparece ni en catalog ni en pending_invoices, es que no existe o necesita lookup_data.',
-            json_encode($digest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            '',
+            // ORDEN DEL PREFIJO (context caching implicito de Gemini):
+            // todo lo estatico va ANTES del digest, que cambia en cada
+            // request. Esquema+semantica despues del digest quedarian
+            // fuera del prefijo cacheable y se reprocesarian siempre.
             'ESQUEMA DE LA BASE DE DATOS (para query_data; [filtrar user_id] = tabla del usuario, [global] = sin user_id):',
             $this->schema->forPrompt(),
             '',
             'SIGNIFICADO DE LOS DATOS (semantica de negocio: que significan las columnas, campos calculados y trampas. OBLIGATORIO respetarla al escribir SQL):',
             $this->schema->semanticsForPrompt(),
+            '',
+            'CONTEXTO DEL PORTAFOLIO DEL USUARIO (para desambiguar nombres y resolver referencias en params): rentals = arriendos activos con su canon y fecha de reajuste; totals = agregados; alerts = avisos; pending_invoices = cada factura con saldo pendiente (number exacto, rental, tenant, balance, due_at, days_overdue): usala para convertir "la mas antigua/ultima/vencida" en el invoice_number concreto; catalog = el UNIVERSO completo de entidades del usuario (tenants, properties y rentals TODOS, activos e inactulos con flag active): usalo para escribir el nombre EXACTO de la entidad en los params de cualquier intent (create_*, update_*, documentos, pagos). Si una entidad no aparece ni en catalog ni en pending_invoices, es que no existe o necesita lookup_data.',
+            json_encode($digest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            '',
+            'Hoy es '.now()->format('Y-m-d').'. Moneda: pesos colombianos (COP).',
         ]);
     }
 

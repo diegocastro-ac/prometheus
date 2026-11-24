@@ -23,6 +23,7 @@ class User extends Authenticatable
         'name',
         'phone_number',
         'assistant_model',
+        'assistant_brief_enabled',
         'email',
         'password',
     ];
@@ -47,6 +48,7 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'assistant_brief_enabled' => 'boolean',
         ];
     }
 

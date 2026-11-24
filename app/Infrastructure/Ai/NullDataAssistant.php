@@ -13,7 +13,7 @@ use App\Dto\AssistantReply;
  */
 class NullDataAssistant implements DataAssistantInterface
 {
-    public function ask(string $question, array $history, int $userId): AssistantReply
+    public function ask(string $question, array $history, int $userId, ?callable $abortCheck = null): AssistantReply
     {
         return AssistantReply::say(__('assistant.unavailable'));
     }

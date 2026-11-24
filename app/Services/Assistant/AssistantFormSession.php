@@ -28,6 +28,14 @@ class AssistantFormSession
     private const CREATE_PREFIX = 'assistant.createform.';
 
     /**
+     * Pila de snapshots para el boton "anterior" del wizard: cada vez que
+     * el usuario responde un paso se archiva el estado previo de AMBAS
+     * sesiones; retroceder restaura el snapshot y el pendingForm se
+     * reconstruye desde el.
+     */
+    private const HISTORY_PREFIX = 'assistant.nav.';
+
+    /**
      * Formulario activo del usuario: {form, data} o null si no hay wizard.
      *
      * @return array{form: string, data: array<string, mixed>}|null
@@ -52,6 +60,20 @@ class AssistantFormSession
     public function form(int $userId): ?string
     {
         return $this->get($userId)['form'] ?? null;
+    }
+
+    /**
+     * Wizard conversacional que espera datos del usuario. `batch_continue`
+     * tambien vive en PREFIX pero no es wizard: es una cola de acciones
+     * que solo avanza con "continuar" y no debe secuestrar mensajes.
+     */
+    public function wizard(int $userId): ?string
+    {
+        $form = $this->form($userId);
+
+        return in_array($form, ['delivery_act', 'update_clarify', 'update_value'], true)
+            ? $form
+            : null;
     }
 
     /**
@@ -144,5 +166,56 @@ class AssistantFormSession
     public function clearCreate(int $userId): void
     {
         session()->forget(self::CREATE_PREFIX.$userId);
+    }
+
+    /**
+     * Archiva el estado actual de ambas sesiones antes de procesar una
+     * respuesta del wizard. Si es identico al ultimo snapshot no duplica.
+     */
+    public function archive(int $userId): void
+    {
+        $snapshot = [
+            'form' => $this->get($userId),
+            'create' => $this->getCreate($userId),
+        ];
+
+        $history = $this->history($userId);
+
+        if ($history !== [] && end($history) === $snapshot) {
+            return;
+        }
+
+        $history[] = $snapshot;
+        session()->put(self::HISTORY_PREFIX.$userId, array_slice($history, -30));
+    }
+
+    /**
+     * Ultimo snapshot archivado (el estado previo al paso actual).
+     *
+     * @return array{form: array<string, mixed>|null, create: array<string, mixed>|null}|null
+     */
+    public function popHistory(int $userId): ?array
+    {
+        $history = $this->history($userId);
+        $snapshot = array_pop($history);
+
+        session()->put(self::HISTORY_PREFIX.$userId, $history);
+
+        return $snapshot;
+    }
+
+    public function clearHistory(int $userId): void
+    {
+        session()->forget(self::HISTORY_PREFIX.$userId);
+    }
+
+    /**
+     * @return list<array{form: array<string, mixed>|null, create: array<string, mixed>|null}>
+     */
+    private function history(int $userId): array
+    {
+        $history = session()->get(self::HISTORY_PREFIX.$userId);
+
+        return is_array($history) ? $history : [];
     }
 }

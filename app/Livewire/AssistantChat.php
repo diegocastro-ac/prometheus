@@ -13,6 +13,8 @@ use App\Models\Rental;
 use App\Models\User;
 use App\Services\Assistant\AssistantActionExecutor;
 use Filament\Notifications\Notification;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Livewire\Component;
 
@@ -54,6 +56,14 @@ class AssistantChat extends Component
     public ?array $pendingForm = null;
 
     /**
+     * Marca de este request dentro del pipeline de IA (uuid reclamado en
+     * cache al entrar a askAndReply). Null hasta que send/regenerate la
+     * reclama; no es estado Livewire porque cada request es una instancia
+     * nueva del componente.
+     */
+    private ?string $requestMark = null;
+
+    /**
      * Valores editados en el modal de preview antes de confirmar: se
      * siembran desde action.editable y se fusionan sobre action.params.
      *
@@ -86,24 +96,12 @@ class AssistantChat extends Component
      */
     public ?string $assistantModel = null;
 
-    /**
-     * Cancelacion best-effort de la respuesta en curso: el request de la IA
-     * no se puede abortar en PHP, pero si `cancelPending` llega mientras
-     * `send()` sigue procesando, la respuesta se descarta al terminar.
-     * Si llega tarde (encolada), el flag queda en true y el siguiente
-     * send() lo resetea al inicio, asi que nunca descarta una respuesta
-     * que no corresponde.
-     */
-    public bool $cancelPendingReply = false;
+    /** Estado del briefing diario: chat activo, preferencia y composer bloqueado. */
+    public bool $briefChat = false;
 
-    /** Modelos gratuitos que el usuario puede elegir desde el drawer. */
-    private const ASSISTANT_MODELS = [
-        'gemini-3.8-flash',
-        'gemini-3.6-flash',
-        'gemini-3.5-flash-lite',
-        'gemini-3.1-flash-lite',
-        'gemma-4-31b-it',
-    ];
+    public bool $briefEnabled = true;
+
+    public bool $briefMuted = false;
 
     private const LOAD_LIMIT = 50;
 
@@ -115,6 +113,7 @@ class AssistantChat extends Component
         // este componente y consultaria la BD aunque nadie abra el drawer.
         $this->open = false;
         $this->activeChatId = $this->sessionChatId();
+        $this->syncBriefState();
     }
 
     /**
@@ -210,6 +209,7 @@ class AssistantChat extends Component
         $this->hasUnread = false;
         $this->pendingForm = null;
         $this->previewEdits = [];
+        $this->syncBriefState();
 
         session()->put('assistant.chat_id', $chat->id);
         $this->loadMessages();
@@ -229,6 +229,7 @@ class AssistantChat extends Component
         $this->hasUnread = false;
         $this->pendingForm = null;
         $this->previewEdits = [];
+        $this->syncBriefState();
 
         session()->put('assistant.chat_id', null);
         $this->dispatch('assistant-scroll');
@@ -236,9 +237,12 @@ class AssistantChat extends Component
 
     public function deleteChat(int $id): void
     {
+        // El chat de briefing es permanente: lo mantiene el comando
+        // assistant:brief y no se puede borrar desde la UI.
         AssistantChatModel::query()
             ->where('id', $id)
             ->where('user_id', $this->userId())
+            ->where('kind', AssistantChatModel::KIND_USER)
             ->delete();
 
         if ($this->activeChatId === $id) {
@@ -247,6 +251,54 @@ class AssistantChat extends Component
 
         $this->loadChats();
         $this->chatsLoaded = true;
+    }
+
+    /**
+     * Toggle del briefing diario desde el propio chat: apaga el job del
+     * scheduler para este usuario. El chat queda en solo lectura y en la
+     * lista se ve apagado; volver a entrar lo reactiva.
+     */
+    public function toggleBriefing(): void
+    {
+        $user = User::query()->whereKey($this->userId())->first();
+
+        if ($user === null) {
+            return;
+        }
+
+        $user->assistant_brief_enabled = ! $user->assistant_brief_enabled;
+        $user->save();
+
+        $this->syncBriefState();
+        $this->loadChats();
+        $this->chatsLoaded = true;
+    }
+
+    /**
+     * Preferencia del usuario: el comando assistant:brief la respeta.
+     */
+    private function briefEnabled(): bool
+    {
+        return (bool) (User::query()->whereKey($this->userId())->value('assistant_brief_enabled') ?? true);
+    }
+
+    /**
+     * Sincroniza las banderas publicas del briefing: el chat activo es el
+     * de sistema, la preferencia y si el composer debe quedar bloqueado.
+     */
+    private function syncBriefState(): void
+    {
+        $this->briefEnabled = $this->briefEnabled();
+
+        $kind = $this->activeChatId === null
+            ? null
+            : AssistantChatModel::query()
+                ->whereKey($this->activeChatId)
+                ->where('user_id', $this->userId())
+                ->value('kind');
+
+        $this->briefChat = $kind === AssistantChatModel::KIND_BRIEFING;
+        $this->briefMuted = $this->briefChat && ! $this->briefEnabled;
     }
 
     // ---------------------------------------------------------------
@@ -261,12 +313,10 @@ class AssistantChat extends Component
             return;
         }
 
-        // Una respuesta puede encadenar varias llamadas a Gemini (clasificar,
-        // lookups, redactar, reporte): el max_execution_time por defecto de
-        // PHP (30s) mata el request a mitad de la espera de cURL. El
-        // presupuesto total lo acota GeminiDataAssistant; aqui solo se
-        // amplia la ventana del request por encima de el.
-        set_time_limit(max(90, ((int) config('services.gemini.timeout', 10) * 2) + 60));
+        // Briefing desactivado: el chat es solo lectura.
+        if ($this->briefMuted) {
+            return;
+        }
 
         // Por si el envio llega sin haber abierto el drawer (tests, atajos).
         if (! $this->messagesLoaded) {
@@ -275,11 +325,6 @@ class AssistantChat extends Component
 
         $this->input = '';
         $isFirstMessage = $this->messages === [];
-        // Limpia cancelaciones encoladas de requests anteriores: solo una
-        // cancelacion que llegue MIENTRAS esta respuesta se esta generando
-        // debe descartarla.
-        $this->cancelPendingReply = false;
-
         $this->ensureChat();
         $this->pushMessage('user', $question);
 
@@ -293,7 +338,7 @@ class AssistantChat extends Component
             // tema no debe tumbarlo: la sesion sigue viva y la barra se
             // restaura desde el ultimo mensaje que la traia.
             $wizardAlive = app(\App\Services\Assistant\AssistantFormSession::class)
-                ->form($this->userId()) !== null;
+                ->wizard($this->userId()) !== null;
 
             $this->pushReply(AssistantReply::say(match ($theme) {
                 'dark' => __('assistant.replies.theme_dark'),
@@ -320,7 +365,10 @@ class AssistantChat extends Component
 
         if (($batchSession['form'] ?? null) === 'batch_continue') {
             if (preg_match('/\b(cancela\w*|cancelar|olvida\w*|stop|cancel)\b/iu', $question)) {
-                app(\App\Services\Assistant\AssistantFormSession::class)->clear($this->userId());
+                $forms = app(\App\Services\Assistant\AssistantFormSession::class);
+                $forms->clear($this->userId());
+                $forms->clearCreate($this->userId());
+                $this->pendingForm = null;
                 $this->pushReply(AssistantReply::say(__('assistant.replies.form_cancelled')));
                 $this->dispatch('assistant-scroll');
 
@@ -342,6 +390,59 @@ class AssistantChat extends Component
             }
         }
 
+        $this->claimRequestMark();
+        $this->askAndReply($question);
+
+        if ($isFirstMessage) {
+            $this->titleChat($question);
+        }
+    }
+
+    /**
+     * Pipeline compartido de "preguntar a la IA y pintar la respuesta":
+     * lo usan send() (mensaje nuevo) y regenerateLast() (reintento sobre
+     * la misma pregunta). Maneja la marca de cancelacion, el timeout
+     * de PHP segun profundidad y la recarga de mensajes para no pisar
+     * turnos persistidos por envios concurrentes.
+     */
+    private function askAndReply(string $question): void
+    {
+        // Una respuesta puede encadenar varias llamadas al proveedor
+        // (clasificar, lookups, redactar, reporte): el max_execution_time
+        // por defecto de PHP (30s) mata el request a mitad de la espera
+        // de cURL. La profundidad del analisis la decide la IA al
+        // clasificar — sin regex de por medio — y cuando la enciende,
+        // GeminiDataAssistant amplia este limite con set_time_limit en
+        // el mismo request. Aqui solo va el piso para classify + la
+        // cadena normal.
+        $providerTimeout = \App\Services\Assistant\AssistantProvider::timeoutForDriver(
+            \App\Services\Assistant\AssistantProvider::driverForModel(
+                (string) (User::query()->whereKey($this->userId())->value('assistant_model') ?: ''),
+            ) ?? \App\Services\Assistant\AssistantProvider::driver(),
+        );
+        set_time_limit(max(120, ($providerTimeout * 3) + 60));
+
+        // Marca de cancelacion vigente: si cambia mientras la IA piensa,
+        // la respuesta se descarta. El nonce vive en cache porque cada
+        // request Livewire hidrata una instancia distinta del componente.
+        // Cada send/regenerate reclama su propia marca al entrar: el
+        // request que escribio ultimo en cache es el vigente y cualquier
+        // otro (force-send, cancelar, regenerate concurrente) queda
+        // invalidado sin importar en que punto del pipeline este.
+        if ($this->requestMark === null) {
+            $this->claimRequestMark();
+        }
+
+        $cancelKey = $this->cancelKey();
+        $cancelMark = $this->requestMark;
+
+        // Mensaje del usuario al que pertenece esta respuesta: si la
+        // peticion se cancela, la burbuja de "cancelado" se ancla a el
+        // aunque lleguen turnos nuevos mientras la IA pensaba.
+        $cancelAnchorAt = collect($this->messages)
+            ->reverse()
+            ->first(fn (array $message): bool => ($message['role'] ?? '') === 'user')['at'] ?? null;
+
         try {
             // Todo pasa por la IA: el historial viaja en apiHistory() para
             // que resuelva follow-ups y referencias con contexto real.
@@ -349,6 +450,7 @@ class AssistantChat extends Component
                 $question,
                 $this->apiHistory(),
                 $this->userId(),
+                fn (): bool => Cache::get($cancelKey) !== $cancelMark,
             );
         } catch (\Throwable) {
             // La IA o la base de datos pueden fallar: el chat debe responder
@@ -356,23 +458,100 @@ class AssistantChat extends Component
             $reply = AssistantReply::say(__('assistant.error'));
         }
 
-        // Si el usuario cancelo mientras la IA pensaba, su mensaje queda
-        // pero la respuesta se descarta con un aviso corto.
-        if ($this->cancelPendingReply) {
-            $this->cancelPendingReply = false;
-            $this->pushReply(AssistantReply::say(__('assistant.replies.request_cancelled')));
+        // Si el usuario cancelo (o force-sendeo) mientras la IA pensaba,
+        // su mensaje queda pero la respuesta se descarta con una burbuja
+        // de "cancelado".
+        if (Cache::get($cancelKey) !== $cancelMark) {
+            $this->pushCancelledReply(
+                $cancelAnchorAt !== null ? Carbon::parse($cancelAnchorAt) : null,
+            );
+            $this->loadMessages();
             $this->dispatch('assistant-scroll');
 
             return;
         }
 
         $this->pushReply($reply);
-
-        if ($isFirstMessage) {
-            $this->titleChat($question);
-        }
+        // Recarga desde BD antes de responder: un force-send concurrente
+        // pudo persistir turnos mientras esta respuesta se generaba y el
+        // morph de Livewire siempre debe traer el estado completo.
+        $this->loadMessages();
 
         $this->dispatch('assistant-scroll');
+    }
+
+    /**
+     * Feedback del usuario sobre una respuesta (👍/👎): se guarda en el
+     * payload del mensaje y hacer clic dos veces en el mismo valor lo
+     * quita. Sirve para medir calidad del copiloto sin friccion.
+     */
+    public function setFeedback(int $messageId, string $value): void
+    {
+        if (! in_array($value, ['up', 'down'], true)) {
+            return;
+        }
+
+        $message = AssistantMessage::query()
+            ->whereKey($messageId)
+            ->where('user_id', $this->userId())
+            ->where('chat_id', $this->activeChatId)
+            ->first();
+
+        if ($message === null || ($message->role ?? '') !== 'assistant') {
+            return;
+        }
+
+        $payload = $message->payload ?? [];
+        $payload['feedback'] = ($payload['feedback'] ?? null) === $value ? null : $value;
+        $message->payload = $payload;
+        $message->save();
+
+        $this->loadMessages();
+    }
+
+    /**
+     * "Regenerar respuesta": solo sobre el ultimo turno — si el ultimo
+     * mensaje es del asistente y el anterior del usuario, la respuesta
+     * se borra (BD + estado) y la misma pregunta vuelve a pasar por la
+     * IA. No toca mensajes anteriores ni crea un turno de usuario
+     * duplicado.
+     */
+    public function regenerateLast(): void
+    {
+        if (! $this->messagesLoaded) {
+            $this->loadMessages();
+        }
+
+        $count = count($this->messages);
+
+        if ($count < 2) {
+            return;
+        }
+
+        $last = $this->messages[$count - 1];
+        $prev = $this->messages[$count - 2];
+
+        if (($last['role'] ?? '') !== 'assistant' || ($prev['role'] ?? '') !== 'user') {
+            return;
+        }
+
+        $question = trim((string) ($prev['text'] ?? ''));
+
+        if ($question === '') {
+            return;
+        }
+
+        if (! empty($last['id'])) {
+            AssistantMessage::query()
+                ->whereKey($last['id'])
+                ->where('user_id', $this->userId())
+                ->delete();
+        }
+
+        array_pop($this->messages);
+
+        $this->claimRequestMark();
+        $this->askAndReply($question);
     }
 
     /**
@@ -414,6 +593,23 @@ class AssistantChat extends Component
     }
 
     /**
+     * Boton "anterior" del wizard: vuelve al paso previo restaurando el
+     * snapshot de sesion archivado antes de la respuesta actual.
+     */
+    public function prevFormStep(): void
+    {
+        try {
+            $reply = app(\App\Services\Assistant\AssistantToolInvoker::class)
+                ->previousFormStep($this->userId());
+        } catch (\Throwable) {
+            $reply = AssistantReply::say(__('assistant.error'));
+        }
+
+        $this->pushReply($reply);
+        $this->dispatch('assistant-scroll');
+    }
+
+    /**
      * Chip de pregunta sugerida: llena el input y envia de una vez.
      */
     public function askSuggestion(string $question): void
@@ -434,12 +630,154 @@ class AssistantChat extends Component
     }
 
     /**
-     * Boton "cancelar" del indicador de pensamiento: marca el request para
-     * que su respuesta se descarte cuando termine (ver send()).
+     * Boton "cancelar" del indicador de pensamiento: escribe un nonce en
+     * cache que el send() en vuelo detecta al terminar y descarta su
+     * respuesta. No se puede abortar el request de la IA en PHP, pero el
+     * nonce si cruza requests porque vive fuera del estado del componente.
      */
     public function cancelPending(): void
     {
-        $this->cancelPendingReply = true;
+        $this->pushInFlightCancelledReply();
+        $this->rotateCancelMark();
+    }
+
+    /**
+     * Envio forzoso (Ctrl+Enter o boton de la cola): invalida la respuesta
+     * en vuelo con un nonce nuevo y procesa la pregunta de inmediato por
+     * el pipeline normal. El send() viejo descarta su reply; este toma el
+     * nonce recien escrito como marca base y prosigue.
+     */
+    public function interruptSend(string $question): void
+    {
+        if (trim($question) === '') {
+            return;
+        }
+
+        $this->pushInFlightCancelledReply();
+        $this->rotateCancelMark();
+        $this->input = $question;
+        $this->send();
+    }
+
+    /**
+     * Exporta la conversacion activa a Markdown y la descarga el
+     * navegador via evento browser (el contenido viaja en el detail;
+     * Alpine crea el blob — Livewire no puede devolver ficheros desde
+     * un componente embebido en otra pagina).
+     */
+    public function exportChat(): void
+    {
+        if ($this->activeChatId === null) {
+            return;
+        }
+
+        $this->loadMessages();
+
+        $chat = AssistantChatModel::query()
+            ->whereKey($this->activeChatId)
+            ->where('user_id', $this->userId())
+            ->first();
+
+        $title = $chat?->kind === AssistantChatModel::KIND_BRIEFING
+            ? __('assistant.briefing.title')
+            : ($chat?->title ?: __('assistant.export_default_title'));
+
+        $lines = [
+            '# '.$title,
+            '',
+            '> '.__('assistant.export_footer', ['date' => now()->format('d/m/Y H:i')]),
+            '',
+        ];
+
+        foreach ($this->messages as $message) {
+            $who = ($message['role'] ?? '') === 'user'
+                ? __('assistant.export_you')
+                : __('assistant.export_assistant');
+
+            $lines[] = '## '.$who;
+            $lines[] = '';
+            $lines[] = trim((string) ($message['text'] ?? ''));
+            $lines[] = '';
+
+            // Las tablas no caben en Markdown plano: se deja constancia
+            // de que el turno las tenia para que el export no mienta.
+            if (! empty($message['table_count'])) {
+                $lines[] = '- '.str_replace(
+                    ':count',
+                    (string) $message['table_count'],
+                    __('assistant.export_tables_note'),
+                );
+                $lines[] = '';
+            }
+        }
+
+        $this->dispatch('assistant-export',
+            name: Str::slug($title).'-'.now()->format('Ymd-Hi').'.md',
+            content: implode("\n", $lines),
+        );
+    }
+
+    /**
+     * Reporte semanal: todo el historial de los ultimos 7 dias de TODOS
+     * los chats (incluido el briefing) en un solo Markdown descargable.
+     * Es la via rapida para llevarse el historico completo sin exportar
+     * chat por chat.
+     */
+    public function exportWeeklyReport(): void
+    {
+        $since = now()->subDays(7)->startOfDay();
+
+        $chats = AssistantChatModel::query()
+            ->where('user_id', $this->userId())
+            ->where('updated_at', '>=', $since)
+            ->orderBy('updated_at')
+            ->get();
+
+        $lines = [
+            '# '.__('assistant.weekly_report.title'),
+            '',
+            '> '.__('assistant.weekly_report.subtitle', [
+                'from' => $since->format('d/m/Y'),
+                'to' => now()->format('d/m/Y'),
+            ]),
+            '',
+        ];
+
+        foreach ($chats as $chat) {
+            $messages = AssistantMessage::query()
+                ->where('chat_id', $chat->id)
+                ->where('user_id', $this->userId())
+                ->where('created_at', '>=', $since)
+                ->orderBy('created_at')
+                ->get();
+
+            if ($messages->isEmpty()) {
+                continue;
+            }
+
+            $chatTitle = $chat->kind === AssistantChatModel::KIND_BRIEFING
+                ? __('assistant.briefing.title')
+                : ($chat->title ?: __('assistant.untitled_chat'));
+
+            $lines[] = '## '.$chatTitle;
+            $lines[] = '';
+
+            foreach ($messages as $message) {
+                $who = $message->role === 'user'
+                    ? __('assistant.export_you')
+                    : __('assistant.export_assistant');
+
+                $lines[] = '### '.$who.' — '.$message->created_at?->format('d/m/Y H:i');
+                $lines[] = '';
+                $lines[] = trim((string) $message->text);
+                $lines[] = '';
+            }
+        }
+
+        $this->dispatch('assistant-export',
+            name: 'reporte-semanal-'.now()->format('Ymd').'.md',
+            content: implode("\n", $lines),
+        );
     }
 
     /**
@@ -498,6 +836,7 @@ class AssistantChat extends Component
             'kind' => 'report',
             'title' => (string) ($report['title'] ?? __('assistant.report.fallback_title')),
             'payload' => $report,
+            'message_index' => $messageIndex,
             'action_index' => null,
             'action' => null,
         ];
@@ -566,6 +905,35 @@ class AssistantChat extends Component
     }
 
     /**
+     * Descarga el reporte del mensaje como PDF: el payload saneado que
+     * el chat ya persistio se pinta con la plantilla institucional de
+     * documentos (AssistantReportPdf) y se devuelve en streaming, sin
+     * pasar por el cache de tokens porque se genera en el momento.
+     */
+    public function exportReportPdf(int $messageIndex)
+    {
+        $report = $this->messages[$messageIndex]['data']['report'] ?? null;
+
+        if (! is_array($report) || empty($report['sections'])) {
+            return null;
+        }
+
+        try {
+            $pdf = app(\App\Services\Assistant\AssistantReportPdf::class)->render($report);
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return null;
+        }
+
+        return response()->streamDownload(
+            fn () => print($pdf),
+            'analisis-'.now()->format('Ymd-His').'.pdf',
+            ['Content-Type' => 'application/pdf'],
+        );
+    }
+
+    /**
      * Confirmacion humana de una accion propuesta. Es el unico camino por el
      * que una intencion de la IA escribe en el sistema.
      */
@@ -618,7 +986,10 @@ class AssistantChat extends Component
             return;
         }
 
-        app(\App\Services\Assistant\AssistantFormSession::class)->clear($this->userId());
+        $forms = app(\App\Services\Assistant\AssistantFormSession::class);
+        $forms->clear($this->userId());
+        $forms->clearCreate($this->userId());
+        $forms->clearHistory($this->userId());
         $this->pendingForm = null;
         $this->previewEdits = [];
         $this->pushReply(AssistantReply::say(__('assistant.replies.form_cancelled')));
@@ -1420,7 +1791,9 @@ class AssistantChat extends Component
     {
         return view('livewire.assistant-chat', [
             'contextSuggestions' => $this->contextSuggestions(),
-            'assistantModels' => $this->assistantModelOptions(),
+            'assistantModelGroups' => \App\Services\Assistant\AssistantProvider::modelGroups(),
+            'assistantModelMeta' => fn (string $id, int $index) => $this->assistantModelMeta($id, $index),
+            'showModelPicker' => \App\Services\Assistant\AssistantProvider::hasModelPicker(),
         ]);
     }
 
@@ -1440,15 +1813,15 @@ class AssistantChat extends Component
         $path = request()->path();
 
         $keys = match (true) {
-            str_contains($path, 'invoices') => ['overdue', 'pending', 'record_payment', 'payments'],
-            str_contains($path, 'rentals') => ['adjustments', 'contracts', 'portfolio'],
-            str_contains($path, 'tenants') => ['pending', 'reminder', 'tenants'],
-            str_contains($path, 'properties') => ['portfolio', 'rentals', 'invoices'],
-            str_contains($path, 'delivery-acts') => ['portfolio', 'overdue', 'pending'],
-            str_contains($path, 'rent-adjustments') => ['adjustments', 'contracts', 'analysis'],
-            str_contains($path, 'finances') || str_contains($path, 'finanzas') => ['analysis', 'income', 'pending'],
-            str_contains($path, 'dashboard') => ['portfolio', 'analysis', 'overdue'],
-            default => ['portfolio', 'overdue', 'analysis'],
+            str_contains($path, 'invoices') => ['overdue', 'pending', 'record_payment', 'payments', 'generate_invoices', 'top_debtors'],
+            str_contains($path, 'rentals') => ['adjustments', 'contracts', 'rentals', 'income', 'analysis', 'portfolio'],
+            str_contains($path, 'tenants') => ['pending', 'reminder', 'tenants', 'contracts', 'payments', 'update_tenant'],
+            str_contains($path, 'properties') => ['portfolio', 'rentals', 'properties', 'invoices', 'contracts', 'analysis'],
+            str_contains($path, 'delivery-acts') => ['portfolio', 'overdue', 'pending', 'properties', 'payments', 'generate_invoices'],
+            str_contains($path, 'rent-adjustments') => ['adjustments', 'contracts', 'ipc_status', 'income', 'analysis', 'portfolio'],
+            str_contains($path, 'finances') || str_contains($path, 'finanzas') => ['analysis', 'income', 'collection', 'aging', 'payments_by_method', 'pending'],
+            str_contains($path, 'dashboard') => ['portfolio', 'analysis', 'overdue', 'income', 'payments', 'tenants'],
+            default => ['portfolio', 'overdue', 'analysis', 'pending', 'payments', 'tenants'],
         };
 
         // Se devuelven las CLAVES, no el texto: la vista las traduce y les
@@ -1461,14 +1834,33 @@ class AssistantChat extends Component
     // ---------------------------------------------------------------
 
     /**
-     * Ids de los modelos del selector; la vista los decora con las
-     * traducciones assistant.models.{indice}.
+     * Textos del selector para un modelo: Gemini los tiene traducidos
+     * por indice dentro de su grupo (assistant.models.{i}); los modelos
+     * de un endpoint OpenAI-compatible se buscan por slug en
+     * assistant.ai_models con el id como nombre de respaldo.
      *
-     * @return list<string>
+     * @return array{name: string, tag: string, use: string}
      */
-    public function assistantModelOptions(): array
+    public function assistantModelMeta(string $modelId, int $index): array
     {
-        return self::ASSISTANT_MODELS;
+        if (\App\Services\Assistant\AssistantProvider::driverForModel($modelId) === \App\Services\Assistant\AssistantProvider::OPENAI_COMPATIBLE) {
+            $slug = strtolower((string) preg_replace('/[^a-z0-9]+/i', '_', $modelId));
+            $nameKey = "assistant.ai_models.{$slug}.name";
+
+            return [
+                'name' => \Illuminate\Support\Facades\Lang::has($nameKey) ? __($nameKey) : $modelId,
+                'tag' => 'AI',
+                'use' => \Illuminate\Support\Facades\Lang::has("assistant.ai_models.{$slug}.use")
+                    ? __("assistant.ai_models.{$slug}.use")
+                    : '',
+            ];
+        }
+
+        return [
+            'name' => __("assistant.models.{$index}.name"),
+            'tag' => __("assistant.models.{$index}.tag"),
+            'use' => __("assistant.models.{$index}.use"),
+        ];
     }
 
     /**
@@ -1478,7 +1870,11 @@ class AssistantChat extends Component
      */
     public function setAssistantModel(string $model): void
     {
-        if (! in_array($model, self::ASSISTANT_MODELS, true)) {
+        // Las opciones las define cada proveedor configurado (catalogo
+        // Gemini o AI_MODELS del endpoint OpenAI-compatible); el modelo
+        // elegido determina a que proveedor va la siguiente llamada.
+        if (! \App\Services\Assistant\AssistantProvider::hasModelPicker()
+            || ! in_array($model, \App\Services\Assistant\AssistantProvider::selectableModelIds(), true)) {
             return;
         }
 
@@ -1493,13 +1889,119 @@ class AssistantChat extends Component
     {
         return (string) (
             User::query()->whereKey($this->userId())->value('assistant_model')
-            ?: config('services.gemini.model', 'gemini-3.5-flash-lite')
+            ?: \App\Services\Assistant\AssistantProvider::model()
         );
     }
 
     // ---------------------------------------------------------------
     // Internos
     // ---------------------------------------------------------------
+
+    /**
+     * Nonce de cancelacion por usuario+chat. Vive en cache (no en el
+     * componente) porque cada request Livewire hidrata una instancia
+     * distinta: un flag en propiedad nunca llegaria al send() en vuelo.
+     */
+    private function cancelKey(): string
+    {
+        return 'assistant.cancel.'.$this->userId().'.'.($this->activeChatId ?? 'new');
+    }
+
+    private function rotateCancelMark(): void
+    {
+        Cache::put($this->cancelKey(), (string) Str::uuid(), now()->addMinutes(5));
+    }
+
+    /**
+     * El request que va a hablar con la IA reclama la marca de cancelacion:
+     * escribe su uuid en cache y lo usa como baseline durante todo el
+     * pipeline. Si otro send/cancel llega despues, el cache cambia y este
+     * request se autodetecta como obsoleto en cada checkpoint.
+     */
+    private function claimRequestMark(): void
+    {
+        $this->requestMark = (string) Str::uuid();
+        Cache::put($this->cancelKey(), $this->requestMark, now()->addMinutes(5));
+    }
+
+    /**
+     * Si hay una respuesta de IA en vuelo (ultimo mensaje = usuario sin
+     * respuesta), deja la burbuja de "cancelado" YA: el usuario la ve al
+     * instante sin esperar a que el request viejo termine. El request
+     * cancelado tambien pasa por pushCancelledReply al final y la dedupe
+     * por created_at evita el duplicado.
+     */
+    private function pushInFlightCancelledReply(): void
+    {
+        if (! $this->messagesLoaded) {
+            $this->loadMessages();
+        }
+
+        $last = $this->messages === [] ? null : $this->messages[count($this->messages) - 1];
+
+        if (! is_array($last) || ($last['role'] ?? '') !== 'user') {
+            return;
+        }
+
+        $this->pushCancelledReply(
+            isset($last['at']) && $last['at'] !== null ? Carbon::parse($last['at']) : null,
+            $this->pendingForm !== null,
+        );
+    }
+
+    /**
+     * Burbuja de "respuesta cancelada": el mensaje del usuario queda
+     * intacto; solo se descarta la respuesta de la IA. El created_at se
+     * sitia justo despues del mensaje del usuario para que, aunque la
+     * cancelacion persista despues de turnos mas nuevos (force-send), la
+     * burbuja quede ordenada donde corresponde en el historial.
+     *
+     * @param  Carbon|null  $anchor  created_at del mensaje del usuario cancelado
+     * @param  bool  $operation  true si el turno cancelado era una operacion
+     *         (wizard/formulario activo): cambia el texto de la burbuja
+     */
+    private function pushCancelledReply(?Carbon $anchor = null, bool $operation = false): void
+    {
+        if ($anchor === null) {
+            $anchorRaw = collect($this->messages)
+                ->reverse()
+                ->first(fn (array $message): bool => ($message['role'] ?? '') === 'user')['at'] ?? null;
+            $anchor = $anchorRaw !== null ? Carbon::parse($anchorRaw) : null;
+        }
+
+        $at = $anchor !== null ? $anchor->copy()->addSecond() : null;
+
+        // Dedupe contra BD (no contra $this->messages): el request que
+        // interrumpe y el cancelado tienen instancias distintas y una
+        // puede no ver la burbuja que la otra acaba de persistir.
+        if ($at !== null && $this->activeChatId !== null) {
+            $alreadyCancelled = AssistantMessage::query()
+                ->where('chat_id', $this->activeChatId)
+                ->where('user_id', $this->userId())
+                ->where('role', 'assistant')
+                ->where('created_at', $at)
+                ->get()
+                ->contains(fn (AssistantMessage $message): bool => ($message->payload['notice'] ?? null) === 'cancelled');
+
+            if ($alreadyCancelled) {
+                return;
+            }
+        }
+
+        // La burbuja de cancelado no debe tumbar la tarjeta del wizard:
+        // la sesion de servidor sigue viva y el pendingForm se conserva.
+        $keepForm = $this->pendingForm;
+
+        $this->pushReply(
+            AssistantReply::say(__($operation
+                ? 'assistant.replies.request_cancelled_operation'
+                : 'assistant.replies.request_cancelled')),
+            'cancelled',
+            $at,
+        );
+
+        $this->pendingForm = $keepForm;
+    }
 
     private function userId(): int
     {
@@ -1514,18 +2016,27 @@ class AssistantChat extends Component
     }
 
     /**
-     * @return list<array{id: int, title: string, updated_at: string|null}>
+     * @return list<array{id: int, title: string, kind: string, updated_at: string|null}>
      */
     private function loadChats(): void
     {
+        $briefOn = $this->briefEnabled();
+
         $this->chats = AssistantChatModel::query()
             ->where('user_id', $this->userId())
+            ->orderByRaw("kind = 'briefing' desc")
             ->latest('updated_at')
             ->limit(30)
             ->get()
             ->map(fn (AssistantChatModel $chat): array => [
                 'id' => $chat->id,
-                'title' => $chat->title ?: __('assistant.untitled_chat'),
+                // El briefing es un chat del sistema: su titulo se traduce
+                // al vuelo, no el que quedo guardado al crearse.
+                'title' => $chat->kind === AssistantChatModel::KIND_BRIEFING
+                    ? __('assistant.briefing.title')
+                    : ($chat->title ?: __('assistant.untitled_chat')),
+                'kind' => $chat->kind,
+                'brief_enabled' => $chat->kind === AssistantChatModel::KIND_BRIEFING ? $briefOn : null,
                 'updated_at' => $chat->updated_at?->diffForHumans(),
             ])
             ->all();
@@ -1563,6 +2074,8 @@ class AssistantChat extends Component
                 'pending_form' => $message->payload['pending_form'] ?? null,
                 'badge_colors' => $message->payload['badge_colors'] ?? null,
                 'options' => $message->payload['options'] ?? [],
+                'notice' => $message->payload['notice'] ?? null,
+                'feedback' => $message->payload['feedback'] ?? null,
                 'table_count' => $message->payload['table_count'] ?? $this->countTables($message->payload ?? []),
                 'at' => $message->created_at?->toIso8601String(),
             ])
@@ -1595,6 +2108,7 @@ class AssistantChat extends Component
 
         $this->activeChatId = $chat->id;
         session()->put('assistant.chat_id', $chat->id);
+        $this->syncBriefState();
     }
 
     /**
@@ -1633,7 +2147,13 @@ class AssistantChat extends Component
         ]);
     }
 
-    private function pushReply(AssistantReply $reply): void
+    /**
+     * @param  string|null  $notice  marca visual del mensaje ('cancelled'
+     *         pinta la burbuja de cancelado en vez del contenido normal)
+     * @param  Carbon|null  $at  created_at explicito: la burbuja de
+     *         cancelado se backdatea para ordenarse tras su pregunta
+     */
+    private function pushReply(AssistantReply $reply, ?string $notice = null, ?Carbon $at = null): void
     {
         $action = $reply->action;
 
@@ -1655,7 +2175,8 @@ class AssistantChat extends Component
             'pending_form' => $reply->pendingForm,
             'badge_colors' => $reply->badgeColors,
             'options' => $reply->options,
-        ]);
+            'notice' => $notice,
+        ], $at);
 
         $this->pendingForm = $reply->pendingForm;
 
@@ -1720,9 +2241,11 @@ class AssistantChat extends Component
      * lista en memoria.
      *
      * @param  array<string, mixed>  $payload
+     * @param  Carbon|null  $at  created_at explicito (backdate de la
+     *         burbuja de cancelado); null = ahora
      * @return array<string, mixed>
      */
-    private function persist(string $role, string $text, array $payload): array
+    private function persist(string $role, string $text, array $payload, ?Carbon $at = null): array
     {
         // Las tablas nunca muestran ids internos: el usuario se refiere a
         // las entidades por nombre o numero de factura, no por PK.
@@ -1739,6 +2262,13 @@ class AssistantChat extends Component
             'text' => $text,
             'payload' => $payload,
         ]);
+
+        if ($at !== null) {
+            // created_at no es fillable: se ajusta despues del insert para
+            // que la burbuja de cancelado ordene junto a su pregunta.
+            $stored->created_at = $at;
+            $stored->save();
+        }
 
         AssistantChatModel::query()->whereKey($this->activeChatId)->update(['updated_at' => now()]);
 
@@ -1758,6 +2288,8 @@ class AssistantChat extends Component
             'pending_form' => $payload['pending_form'] ?? null,
             'badge_colors' => $payload['badge_colors'] ?? null,
             'options' => $payload['options'] ?? [],
+            'notice' => $payload['notice'] ?? null,
+            'feedback' => $payload['feedback'] ?? null,
             'table_count' => $this->countTables($payload),
             'at' => $stored->created_at?->toIso8601String(),
         ];

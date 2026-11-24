@@ -24,7 +24,7 @@ return [
     'greeting' => 'Hi! I am your rental copilot. Ask me about balances, overdue invoices, income, tenants or ask me to draft messages. How can I help?',
 
     'quick_prompts' => 'Quick prompts',
-    'input_hint' => 'Enter to send · Shift + Enter for a new line',
+    'input_hint' => 'Enter to send · Shift + Enter for a new line · Ctrl + Enter sends now',
     'resize' => 'Drag to resize',
     'resize_messages' => 'Drag to resize the chat height · double-click to reset',
     'resize_wizard' => 'Drag to resize the guided form height',
@@ -41,6 +41,15 @@ return [
     'empty_state' => 'Ask me anything about your portfolio: balances, overdue invoices, income, adjustments or ask me to draft a message.',
     'disclaimer' => 'The AI interprets your question; all figures are computed by the system from your real data.',
 
+    'shortcuts' => [
+        'title' => 'Chat shortcuts',
+        'enter' => 'Send the message',
+        'shift_enter' => 'New line',
+        'ctrl_enter' => 'Send now: cancels the running reply and skips the queue',
+        'queued' => 'While the AI is replying',
+        'queued_hint' => 'messages queue up and go out in order',
+    ],
+
     'confirm' => 'Confirm',
     'cancel' => 'Cancel',
     'action_proposed' => 'Proposed action',
@@ -48,6 +57,13 @@ return [
     'action_done' => 'Action completed',
     'action_cancelled' => 'Action cancelled. Nothing was changed.',
     'action_cancelled_title' => 'Action cancelled',
+    'cancelled_title' => 'Response cancelled',
+    'queue' => [
+        'title' => 'Queued messages',
+        'full' => 'Queue full (max 11)',
+        'send_now' => 'Send now (cancels the running response)',
+        'remove' => 'Remove from queue',
+    ],
     'go_to' => 'Go to section',
 
     'unavailable' => 'The AI assistant is not configured. Add GEMINI_API_KEY to your .env file to enable it (free key at Google AI Studio).',
@@ -260,9 +276,9 @@ return [
     ],
 
     'help' => [
-        'toggle' => 'Help center',
-        'title' => 'What can I do for you?',
-        'subtitle' => 'Tap an option and I\'ll answer right away',
+        'toggle' => 'Quick prompts',
+        'title' => 'Prompt library',
+        'subtitle' => 'Tap an option and I\'ll send it to the chat',
         'categories' => [
             'collections' => [
                 'title' => 'Collections & portfolio',
@@ -395,6 +411,7 @@ return [
         'next_adjustment' => 'Next adjustment',
         'rental_type' => 'Type',
         'is_active' => 'Active',
+        'severity' => 'Severity',
         'effective_from' => 'Effective',
         'new' => 'New rent',
         'previous_rent' => 'Previous rent',
@@ -461,6 +478,7 @@ return [
         'theme_light' => 'Done, switched the panel to light mode.',
         'theme_system' => 'Done, switched back to the system theme.',
         'request_cancelled' => 'I stopped processing your request. You can rephrase it or try again.',
+        'request_cancelled_operation' => 'Operation cancelled: no changes were applied. You can try again.',
         'navigate_filtered' => 'Taking you to :section filtered by :filter.',
         'navigate_no_filter' => "I can't open :section pre-filtered by :filter from here, but here is the data:",
         'navigate_no_data' => "I can't open :section with that filter and I have no data to show you here either.",
@@ -483,7 +501,7 @@ return [
         'no_tenants' => 'You have no tenants registered yet.',
         'need_tenant_name' => 'What is the tenant\'s name? I will also need their document and phone number.',
         'need_tenant_details' => 'To register the tenant I am missing: :missing. For example "add tenant John Smith, ID 1234567890, phone 3001234567".',
-        'tenant_exists' => 'You already have a tenant matching ":name". If it is someone else, give me a different or fuller name.',
+        'tenant_exists' => 'You already have a tenant registered with that document, phone or email. If it is someone else, check the details.',
         'need_property_name' => 'Tell me the property or unit name (for example "Apartment 301" or "Downtown Office").',
         'need_property_details' => 'To register the property I am missing: :missing. For example "add property Downtown Office, address 5th Street #10-20".',
         'property_exists' => 'You already have a property matching ":name". If it is a different one, give me another name.',
@@ -709,6 +727,8 @@ return [
         'step_of' => 'Step :step of :total',
         'cancel' => 'Cancel',
         'send' => 'Send',
+        'next' => 'Next',
+        'previous' => 'Previous',
         'yes' => 'Yes',
         'no' => 'No',
         'collapse' => 'Collapse',
@@ -721,6 +741,9 @@ return [
         'sections_label' => 'sections',
         'blocks_label' => 'blocks',
         'chart_total' => 'Total',
+        'pdf_download' => 'Download analysis as PDF',
+        'pdf_badge' => 'AI Analysis',
+        'pdf_footer' => 'Document generated by the AI assistant from real business data.',
     ],
 
     'act_wizard' => [
@@ -790,6 +813,23 @@ return [
             'name' => 'Gemma 4 31B',
             'tag' => 'Open',
             'use' => "Google's open model; a general-purpose alternative for chat and writing.",
+        ],
+    ],
+
+    // Models from OpenAI-compatible endpoints (Groq, OpenAI, etc.). The
+    // key is the model id stripped of special characters.
+    'ai_models' => [
+        'openai_gpt_oss_120b' => [
+            'name' => 'GPT-OSS 120B',
+            'use' => 'Groq\'s most capable: deep analysis and complex reasoning.',
+        ],
+        'openai_gpt_oss_20b' => [
+            'name' => 'GPT-OSS 20B',
+            'use' => 'Fast and cheap: simple queries and instant answers.',
+        ],
+        'qwen_qwen3_8_27b' => [
+            'name' => 'Qwen3 27B',
+            'use' => "Alibaba's open alternative; good for chat and writing.",
         ],
     ],
 
@@ -1063,5 +1103,66 @@ return [
         'disclaimer' => 'This is an analysis based on the data you have today, not an exact prediction. It helps decide where to look first.',
         'view_full' => 'View full analysis',
         'draft_instruction' => 'Write a brief analysis (3-6 sentences, friendly advisor tone) of the landlord portfolio using ONLY the JSON context provided. PRIORITIZE the user question (user_question) and its focus (focus): if they ask about risks, emphasize risks; improvements, emphasize recommendations; a named tenant, talk only about them. Structure: first what matters most for their question, then the supporting data citing concrete figures from the context (arrears, rent, tenure, act damage), and close with the most useful recommendation. You MUST clearly distinguish real data ("owes X") from projection ("if this continues..."). Never invent figures not in the context. End by inviting the user to review the analysis card shown below.',
+    ],
+
+    'regenerate' => 'Regenerate answer',
+    'feedback_up' => 'Helpful answer',
+    'feedback_down' => 'Not helpful',
+    'deep_chip' => 'Go deeper',
+    'deep_prompt' => 'Produce a much more exhaustive analysis than the previous one: up to 20 sections, more tables with all relevant rows, one chart per comparison or distribution, cross-reference all portfolio data (invoices, payments, rentals, tenants, properties, delivery acts) and end with a clear decision conclusion.',
+    'export_chat' => 'Export conversation',
+    'badge_draft' => 'Draft',
+    'badge_queue' => 'queued',
+    'row_detail' => 'View details',
+    'row_detail_prompt' => 'Tell me about :type :name',
+    'row_detail_types' => [
+        'rental' => 'rental',
+        'tenant' => 'tenant',
+        'property' => 'property',
+        'invoice' => 'invoice',
+    ],
+
+    'briefing' => [
+        'title' => 'Daily briefing',
+        'badge' => 'Briefing',
+        'greeting' => 'Good morning. Here is your briefing for :date.',
+        'line_overdue' => 'You have :count overdue invoice(s) totaling :amount.',
+        'line_due_soon' => ':count invoice(s) are due within the next 7 days.',
+        'line_payments' => "Today's collections: :amount.",
+        'line_expiring' => ':count contract(s) end within the next 60 days.',
+        'line_adjustments' => ':count rent adjustment(s) are due or coming due.',
+        'line_acts' => ':count delivery act(s) are still unsigned.',
+        'all_clear' => 'All clear: no overdue invoices, upcoming due dates or urgent pending items.',
+        'footer' => 'Check the tables for details. You have :alerts active alert(s).',
+        'table_alerts' => "Today's alerts",
+        'table_overdue' => 'Overdue invoices',
+        'table_due_soon' => 'Due soon (7 days)',
+        'table_payments' => "Today's collections",
+        'table_expiring' => 'Expiring contracts',
+        'table_adjustments' => 'Upcoming adjustments',
+        'table_acts' => 'Unsigned acts',
+        'severity_high' => 'High',
+        'severity_medium' => 'Medium',
+        'severity_low' => 'Low',
+        'alert_due_soon' => 'Invoice :invoice for :tenant is due on :date.',
+        'alert_adjustment' => 'The adjustment for :rental is due on :date.',
+        'alert_unsigned_act' => 'The act for :rental dated :date is still unsigned.',
+        'alert_old_debt' => ':tenant has invoices over 45 days late totaling :amount.',
+        'suggest_overdue' => 'Which overdue invoices do I have and from whom?',
+        'suggest_expiring' => 'Which contracts are ending soon?',
+        'suggest_analysis' => 'Give me an analysis of my portfolio health',
+        'suggest_today' => "How is my business doing today? Give me today's analysis",
+        'disabled_badge' => 'Off',
+        'toggle_on' => 'Enable daily briefing',
+        'toggle_off' => 'Disable daily briefing',
+        'muted_notice' => 'Daily briefing disabled: this chat is read-only.',
+        'disabled_title' => 'Briefing disabled',
+        'disabled_text' => 'The daily summary is turned off for your account: the assistant will not post updates here. Turn it back on whenever you want it again.',
+    ],
+
+    'weekly_report' => [
+        'title' => 'Assistant weekly report',
+        'subtitle' => 'History from :from to :to',
+        'button' => 'Download weekly report (Markdown)',
     ],
 ];

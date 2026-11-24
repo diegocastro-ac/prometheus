@@ -21,8 +21,12 @@ interface DataAssistantInterface
      *
      * @param  list<array{role: string, text: string}>  $history  turnos previos
      *                                                            (role: 'user'|'assistant'), del mas antiguo al mas reciente.
+     * @param  (callable(): bool)|null  $abortCheck  si devuelve true, el pipeline se
+     *                                                 detiene antes de cualquier efecto
+     *                                                 lateral (sesiones de formulario,
+     *                                                 propuestas) y responde cancelado.
      */
-    public function ask(string $question, array $history, int $userId): AssistantReply;
+    public function ask(string $question, array $history, int $userId, ?callable $abortCheck = null): AssistantReply;
 
     /**
      * Genera un titulo corto para una conversacion a partir de su primer

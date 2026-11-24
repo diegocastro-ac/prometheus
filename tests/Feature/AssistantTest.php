@@ -1023,12 +1023,13 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
-    public function el_centro_de_ayuda_se_renderiza_con_sus_categorias(): void
+    public function el_repertorio_de_prompts_se_renderiza_con_sus_categorias(): void
     {
         $this->actingAs($this->user);
 
         Livewire::test(AssistantChat::class)
-            ->assertSee('Centro de ayuda')
+            ->assertSee('Prompts rápidos')
+            ->assertSee('Biblioteca de prompts')
             ->assertSee('Cobros y cartera')
             ->assertSee('Navegación');
     }
@@ -1476,7 +1477,9 @@ class AssistantTest extends TestCase
     {
         config()->set('services.gemini.key', 'test-key');
         config()->set('services.gemini.model', 'gemini-config');
-        $this->user->update(['assistant_model' => 'gemini-elegido']);
+        // Solo ids del catalogo son elegibles: el modelo elegido define
+        // el proveedor de la llamada y el fallback nunca lo cruza.
+        $this->user->update(['assistant_model' => 'gemini-3.6-flash']);
 
         Http::fake([
             'generativelanguage.googleapis.com/*' => Http::response([
@@ -1492,7 +1495,7 @@ class AssistantTest extends TestCase
 
         $this->assistant()->ask('¿cómo va mi portafolio?', [], $this->user->id);
 
-        Http::assertSent(fn ($request) => str_contains($request->url(), 'gemini-elegido'));
+        Http::assertSent(fn ($request) => str_contains($request->url(), 'gemini-3.6-flash'));
     }
 
     #[Test]
@@ -2545,19 +2548,114 @@ class AssistantTest extends TestCase
     public function cancelar_el_pensamiento_descarta_la_respuesta(): void
     {
         $this->actingAs($this->user);
-        config()->set('services.gemini.key', null);
-        Http::fake();
+        config()->set('services.gemini.key', 'test-key');
+        config()->set('services.gemini.model', 'gemini-test');
 
-        Livewire::test(AssistantChat::class)
+        // El nonce se escribe MIENTRAS la IA "piensa" — dentro del fake
+        // HTTP, simulando un cancelPending llegando en un request
+        // concurrente (cada request Livewire es una instancia distinta,
+        // por eso la marca vive en cache y no en una propiedad).
+        Http::fake(function () {
+            // send() ya creo el chat antes de llamar a la IA, asi que la
+            // clave de cancelacion usa el id real (no 'new').
+            $chatId = \App\Models\AssistantChat::query()
+                ->where('user_id', $this->user->id)
+                ->latest('id')
+                ->value('id') ?? 'new';
+
+            \Illuminate\Support\Facades\Cache::put(
+                'assistant.cancel.'.$this->user->id.'.'.$chatId,
+                'mark-1',
+            );
+
+            return Http::response([
+                'candidates' => [
+                    ['content' => ['parts' => [['text' => json_encode([
+                        'domain' => 'app',
+                        'intent' => 'unknown',
+                        'params' => [],
+                        'confidence' => 0.9,
+                    ])]]]],
+                ],
+            ]);
+        });
+
+        $chat = Livewire::test(AssistantChat::class)
             ->set('input', 'cuanto me deben')
-            ->call('send')
-            ->call('cancelPending')
-            ->assertSet('cancelPendingReply', true)
-            // Una cancelacion encolada tarde no debe descartar la
-            // siguiente respuesta: send() la resetea al empezar.
-            ->set('input', 'quienes son mis inquilinos')
-            ->call('send')
-            ->assertSet('cancelPendingReply', false);
+            ->call('send');
+
+        $messages = $chat->get('messages');
+        $last = end($messages);
+        $beforeLast = $messages[count($messages) - 2];
+
+        // El mensaje del usuario queda persistido; la respuesta de la IA
+        // se descarta y en su lugar va la burbuja de cancelado.
+        $this->assertSame('user', $beforeLast['role']);
+        $this->assertSame('assistant', $last['role']);
+        $this->assertSame('cancelled', $last['notice']);
+        $this->assertSame(__('assistant.replies.request_cancelled'), $last['text']);
+    }
+
+    #[Test]
+    public function interrupt_send_cancela_la_respuesta_en_vuelo_y_envia_ya(): void
+    {
+        $this->actingAs($this->user);
+        config()->set('services.gemini.key', 'test-key');
+        config()->set('services.gemini.model', 'gemini-test');
+
+        // Primera respuesta: el nonce cambia a mitad del ask (como si un
+        // interruptSend hubiera llegado), asi que se descarta.
+        Http::fake(function () {
+            $chatId = \App\Models\AssistantChat::query()
+                ->where('user_id', $this->user->id)
+                ->latest('id')
+                ->value('id') ?? 'new';
+
+            \Illuminate\Support\Facades\Cache::put(
+                'assistant.cancel.'.$this->user->id.'.'.$chatId,
+                'interrupt-mark',
+            );
+
+            return Http::response([
+                'candidates' => [
+                    ['content' => ['parts' => [['text' => json_encode([
+                        'domain' => 'app',
+                        'intent' => 'unknown',
+                        'params' => [],
+                        'confidence' => 0.9,
+                    ])]]]],
+                ],
+            ]);
+        });
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('input', 'primera pregunta')
+            ->call('send');
+
+        // interruptSend escribe un nonce nuevo y procesa la pregunta por
+        // el pipeline normal: su propio send() toma ese nonce como base
+        // y no se descarta a si mismo.
+        Http::fake(function () {
+            return Http::response([
+                'candidates' => [
+                    ['content' => ['parts' => [['text' => json_encode([
+                        'domain' => 'app',
+                        'intent' => 'unknown',
+                        'params' => [],
+                        'confidence' => 0.9,
+                    ])]]]],
+                ],
+            ]);
+        });
+
+        $chat->call('interruptSend', 'segunda pregunta forzada');
+
+        $messages = $chat->get('messages');
+        $texts = array_column($messages, 'text');
+
+        $this->assertContains('primera pregunta', $texts);
+        $this->assertContains('segunda pregunta forzada', $texts);
+        $this->assertContains(__('assistant.replies.request_cancelled'), $texts);
     }
 
     #[Test]
@@ -3084,6 +3182,106 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
+    public function cancel_form_limpia_tambien_la_sesion_de_creacion(): void
+    {
+        $this->actingAs($this->user);
+
+        $chat = \App\Models\AssistantChat::query()->create([
+            'user_id' => $this->user->id,
+            'title' => null,
+        ]);
+
+        // Batch de creacion en curso: el boton Cancelar del wizard debe
+        // tirar la cola igual que la cancelacion por texto ("cancela").
+        session()->put('assistant.createform.'.$this->user->id, [
+            'entity' => 'tenant',
+            'values' => ['name' => 'Parcial'],
+            'queue' => [['entity' => 'tenant', 'params' => ['name' => 'Pendiente']]],
+            'collected' => [],
+            'step' => 1,
+            'total' => 2,
+        ]);
+        session()->put('assistant.form.'.$this->user->id, ['form' => 'delivery_act', 'data' => []]);
+
+        Livewire::test(AssistantChat::class)
+            ->set('activeChatId', $chat->id)
+            ->set('pendingForm', ['form' => 'create_tenant', 'step' => 1, 'total_steps' => 2, 'prompt' => 'x', 'fields' => []])
+            ->call('cancelForm');
+
+        $this->assertNull(session('assistant.createform.'.$this->user->id));
+        $this->assertNull(session('assistant.form.'.$this->user->id));
+    }
+
+    #[Test]
+    public function create_suelto_no_hereda_la_cola_de_un_batch_abandonado(): void
+    {
+        // Batch de 2 inquilinos abandonado a mitad de camino (sin
+        // cancelar): una peticion nueva de creacion no debe resucitar
+        // la cola — solo conserva los valores del mismo formulario.
+        session()->put('assistant.createform.'.$this->user->id, [
+            'entity' => 'tenant',
+            'values' => ['name' => 'Parcial'],
+            'queue' => [['entity' => 'tenant', 'params' => ['name' => 'Pendiente']]],
+            'collected' => [],
+            'step' => 1,
+            'total' => 2,
+        ]);
+
+        $reply = app(\App\Services\Assistant\AssistantToolInvoker::class)
+            ->invoke('create_tenant', ['name' => 'Nuevo Inquilino'], $this->user->id);
+
+        $this->assertSame(1, $reply->pendingForm['step'] ?? null);
+        $this->assertSame(1, $reply->pendingForm['total_steps'] ?? null);
+
+        $session = app(\App\Services\Assistant\AssistantFormSession::class)
+            ->getCreate($this->user->id);
+
+        $this->assertSame([], $session['queue']);
+        $this->assertSame([], $session['collected']);
+        $this->assertSame('Nuevo Inquilino', $session['values']['name'] ?? null);
+    }
+
+    #[Test]
+    public function el_wizard_permite_volver_al_paso_anterior(): void
+    {
+        $invoker = app(\App\Services\Assistant\AssistantToolInvoker::class);
+
+        $reply = $invoker->invokeBatch([
+            ['intent' => 'create_tenant', 'params' => ['name' => 'Uno']],
+            ['intent' => 'create_tenant', 'params' => ['name' => 'Dos']],
+        ], $this->user->id);
+
+        $this->assertSame(1, $reply->pendingForm['step'] ?? null);
+        $this->assertSame(2, $reply->pendingForm['total_steps'] ?? null);
+
+        // Diligencia el primero completo: avanza al segundo.
+        $reply = $invoker->submitForm([
+            '__form' => 'create_tenant',
+            'name' => 'Uno',
+            'document' => '111',
+            'phone_number' => '3001112233',
+        ], $this->user->id);
+
+        $this->assertSame(2, $reply->pendingForm['step'] ?? null);
+
+        // "Anterior": vuelve al primero con lo enviado y la cola intacta.
+        $back = $invoker->previousFormStep($this->user->id);
+
+        $this->assertSame(1, $back->pendingForm['step'] ?? null);
+        $this->assertSame(2, $back->pendingForm['total_steps'] ?? null);
+
+        $session = app(\App\Services\Assistant\AssistantFormSession::class)
+            ->getCreate($this->user->id);
+
+        $this->assertSame('Uno', $session['values']['name'] ?? null);
+        $this->assertSame('111', $session['values']['document'] ?? null);
+        $this->assertCount(1, $session['queue']);
+        // La accion del item en curso no queda recolectada: se vuelve a
+        // generar al reenviar el formulario.
+        $this->assertCount(0, $session['collected']);
+    }
+
+    #[Test]
     public function create_rental_form_tiene_los_campos_con_sus_tipos_reales(): void
     {
         $this->fakeGemini([
@@ -3341,5 +3539,333 @@ class AssistantTest extends TestCase
 
         $this->assertNotNull($result->data['file']['token'] ?? null);
         $this->assertStringEndsWith('.txt', $result->data['file']['filename']);
+    }
+
+    // ---------------------------------------------------------------
+    // Megaplan: relaciones, regenerar, feedback, briefing
+    // ---------------------------------------------------------------
+
+    #[Test]
+    public function entity_relations_anida_propiedad_con_su_inquilino(): void
+    {
+        $this->rental->tenant->update(['name' => 'Ana Prueba']);
+        $this->rental->property->update(['name' => 'Casa Naciente']);
+
+        $reply = app(AssistantToolInvoker::class)->invoke('entity_relations', [
+            'entity_type' => 'property',
+            'name' => 'Casa Naciente',
+            'relations' => ['tenant'],
+        ], $this->user->id);
+
+        $rows = $reply->data['results'] ?? [];
+
+        $this->assertNotEmpty($rows);
+        $this->assertSame('Casa Naciente', $rows[0]['name'] ?? $rows[0]['property'] ?? null);
+        $this->assertNotEmpty($rows[0]['tenant'] ?? []);
+    }
+
+    #[Test]
+    public function entity_relations_anida_arriendo_con_sus_facturas(): void
+    {
+        Invoice::factory()->create([
+            'user_id' => $this->user->id,
+            'rental_id' => $this->rental->id,
+            'number' => 'F-TEST-1',
+            'status' => InvoiceStatus::EMITIDA,
+        ]);
+
+        $reply = app(AssistantToolInvoker::class)->invoke('entity_relations', [
+            'entity_type' => 'rental',
+            'name' => 'Local norte',
+            'relations' => ['invoices'],
+        ], $this->user->id);
+
+        $rows = $reply->data['results'] ?? [];
+
+        $this->assertNotEmpty($rows);
+        $invoices = $rows[0]['invoices'] ?? [];
+        $this->assertNotEmpty($invoices);
+        $this->assertSame('F-TEST-1', $invoices[0]['number'] ?? null);
+    }
+
+    #[Test]
+    public function entity_relations_sin_params_responde_uso(): void
+    {
+        $reply = app(AssistantToolInvoker::class)->invoke('entity_relations', [], $this->user->id);
+
+        $this->assertNotEmpty($reply->text);
+        $this->assertNull($reply->data['results'] ?? null);
+    }
+
+    #[Test]
+    public function regenerar_rehace_la_ultima_respuesta_sin_duplicar(): void
+    {
+        $this->actingAs($this->user);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'unknown',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('input', 'hola')
+            ->call('send');
+
+        $before = count($chat->get('messages'));
+
+        // Segunda pregunta para tener dos turnos y regenerar el ultimo.
+        $chat->set('input', 'otra pregunta')->call('send');
+        $afterSend = count($chat->get('messages'));
+
+        $chat->call('regenerateLast');
+
+        $messages = $chat->get('messages');
+        $last = end($messages);
+        $prev = $messages[count($messages) - 2];
+
+        // Mismo numero de mensajes: la respuesta vieja se reemplazo.
+        $this->assertCount($afterSend, $messages);
+        $this->assertSame('otra pregunta', $prev['text']);
+        $this->assertSame('assistant', $last['role']);
+    }
+
+    #[Test]
+    public function feedback_se_guarda_y_se_alterna(): void
+    {
+        $this->actingAs($this->user);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'unknown',
+            'params' => [],
+            'confidence' => 0.9,
+        ]);
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('input', 'hola')
+            ->call('send');
+
+        $messages = $chat->get('messages');
+        $last = end($messages);
+        $messageId = $last['id'];
+
+        $chat->call('setFeedback', $messageId, 'up');
+        $this->assertSame('up', AssistantMessage::findOrFail($messageId)->payload['feedback'] ?? null);
+
+        // Segundo clic en el mismo valor lo quita.
+        $chat->call('setFeedback', $messageId, 'up');
+        $this->assertNull(AssistantMessage::findOrFail($messageId)->payload['feedback'] ?? null);
+
+        $chat->call('setFeedback', $messageId, 'down');
+        $this->assertSame('down', AssistantMessage::findOrFail($messageId)->payload['feedback'] ?? null);
+    }
+
+    #[Test]
+    public function delete_chat_no_borra_el_briefing(): void
+    {
+        $this->actingAs($this->user);
+
+        $briefing = \App\Models\AssistantChat::query()->create([
+            'user_id' => $this->user->id,
+            'title' => 'Briefing diario',
+            'kind' => \App\Models\AssistantChat::KIND_BRIEFING,
+        ]);
+
+        Livewire::test(AssistantChat::class)->call('deleteChat', $briefing->id);
+
+        $this->assertDatabaseHas('assistant_chats', ['id' => $briefing->id]);
+    }
+
+    #[Test]
+    public function assistant_brief_crea_chat_protegido_y_es_idempotente(): void
+    {
+        $this->artisan('assistant:brief')->assertSuccessful();
+
+        $chat = \App\Models\AssistantChat::query()
+            ->where('user_id', $this->user->id)
+            ->where('kind', \App\Models\AssistantChat::KIND_BRIEFING)
+            ->first();
+
+        $this->assertNotNull($chat);
+        $this->assertSame('Briefing diario', $chat->title);
+        $this->assertSame(1, AssistantMessage::query()->where('chat_id', $chat->id)->count());
+
+        // Segunda corrida el mismo dia no duplica el mensaje.
+        $this->artisan('assistant:brief')->assertSuccessful();
+        $this->assertSame(1, AssistantMessage::query()->where('chat_id', $chat->id)->count());
+    }
+
+    #[Test]
+    public function reporte_se_renderiza_a_pdf(): void
+    {
+        $pdf = app(\App\Services\Assistant\AssistantReportPdf::class)->render([
+            'title' => 'Analisis de prueba',
+            'intro' => 'Resumen.',
+            'sections' => [[
+                'title' => 'Datos',
+                'blocks' => [
+                    ['type' => 'metrics', 'items' => [
+                        ['label' => 'Vencido', 'value' => '1M', 'tone' => 'danger'],
+                    ]],
+                    ['type' => 'chart', 'chart' => 'bar', 'labels' => ['Ene', 'Feb'], 'values' => [10, 20]],
+                    ['type' => 'chart', 'chart' => 'donut', 'labels' => ['A', 'B'], 'values' => [30, 70]],
+                    ['type' => 'table', 'columns' => ['A', 'B'], 'rows' => [['x', 'y']]],
+                    ['type' => 'callouts', 'items' => [['title' => 'Ojo', 'text' => 'Riesgo', 'tone' => 'warning']]],
+                ],
+            ]],
+        ]);
+
+        $this->assertStringStartsWith('%PDF', $pdf);
+        $this->assertGreaterThan(2000, strlen($pdf));
+    }
+
+    #[Test]
+    public function navigator_resuelve_entidad_a_url_filtrada(): void
+    {
+        $tenant = $this->rental->tenant;
+        $tenant->update(['name' => 'Bruno Navigator']);
+
+        // Un inquilino con arriendos resuelve a la ficha del arriendo
+        // (resume inquilino + facturas); uno sin arriendos cae a la
+        // lista de inquilinos filtrada por nombre.
+        $single = app(\App\Services\Assistant\AssistantNavigator::class)
+            ->urlFor('tenants', 'Bruno Navigator', null, null, $this->user->id);
+        $this->assertStringContainsString('/rentals/', $single['url']);
+
+        Tenant::factory()->create([
+            'user_id' => $this->user->id,
+            'name' => 'Sin Arriendo',
+        ]);
+
+        $resolved = app(\App\Services\Assistant\AssistantNavigator::class)
+            ->urlFor('tenants', 'Sin Arriendo', null, null, $this->user->id);
+
+        $this->assertNotNull($resolved['url'] ?? null);
+        $this->assertStringContainsString('tableSearch', $resolved['url']);
+    }
+
+    // ---------------------------------------------------------------
+    // Modo exhaustivo y proveedor OpenAI-compatible
+    // ---------------------------------------------------------------
+
+    #[Test]
+    public function el_flag_de_epoca_de_la_ia_expande_el_reporte(): void
+    {
+        // La IA decide la profundidad: con "deep"=true el sanitizer
+        // acepta hasta 20 secciones; sin el flag el tope normal es 6.
+        $sections = array_map(
+            fn (int $i): array => ['title' => "Sección {$i}", 'blocks' => [['type' => 'text', 'text' => 'Texto']]],
+            range(1, 10),
+        );
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'business_insights',
+            'params' => [],
+            'confidence' => 0.9,
+            'deep' => true,
+            'report' => ['title' => 'Análisis', 'intro' => 'Intro', 'sections' => $sections],
+        ]);
+
+        $reply = $this->assistant()->ask('dame un análisis exhaustivo del portafolio', [], $this->user->id);
+
+        $this->assertCount(10, $reply->data['report']['sections'] ?? []);
+    }
+
+    #[Test]
+    public function sin_flag_de_epoca_el_reporte_queda_en_el_tope_normal(): void
+    {
+        $sections = array_map(
+            fn (int $i): array => ['title' => "Sección {$i}", 'blocks' => [['type' => 'text', 'text' => 'Texto']]],
+            range(1, 10),
+        );
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'business_insights',
+            'params' => [],
+            'confidence' => 0.9,
+            'report' => ['title' => 'Análisis', 'intro' => 'Intro', 'sections' => $sections],
+        ]);
+
+        $reply = $this->assistant()->ask('analiza mi recaudo', [], $this->user->id);
+
+        $this->assertCount(6, $reply->data['report']['sections'] ?? []);
+    }
+
+    #[Test]
+    public function driver_openai_compatible_usa_chat_completions(): void
+    {
+        config()->set('services.ai.driver', 'openai_compatible');
+        config()->set('services.ai.base_url', 'https://api.groq.com/openai/v1');
+        config()->set('services.ai.key', 'gsk_test');
+        config()->set('services.ai.model', 'openai/gpt-oss-120b');
+        // Sin clave de Gemini: el driver openai debe bastar por si solo.
+        config()->set('services.gemini.key', '');
+
+        $sent = null;
+
+        Http::fake(function ($request) use (&$sent) {
+            $sent = $request;
+
+            return Http::response([
+                'choices' => [[
+                    'message' => ['content' => json_encode([
+                        'domain' => 'app',
+                        'intent' => 'list_tenants',
+                        'params' => [],
+                        'confidence' => 0.95,
+                    ])],
+                ]],
+            ]);
+        });
+
+        $reply = $this->assistant()->ask('lista los inquilinos', [], $this->user->id);
+
+        $this->assertNotNull($reply);
+        $this->assertNotSame('', $reply->text);
+
+        $this->assertNotNull($sent);
+        $this->assertStringContainsString('/chat/completions', $sent->url());
+        $this->assertSame('Bearer gsk_test', $sent->headers()['Authorization'][0] ?? null);
+
+        $payload = json_decode((string) $sent->body(), true);
+        $this->assertSame('openai/gpt-oss-120b', $payload['model']);
+        $this->assertArrayHasKey('messages', $payload);
+        $this->assertSame('system', $payload['messages'][0]['role']);
+    }
+
+    #[Test]
+    public function driver_openai_compatible_traduce_modo_json(): void
+    {
+        config()->set('services.ai.driver', 'openai_compatible');
+        config()->set('services.ai.base_url', 'https://api.groq.com/openai/v1');
+        config()->set('services.ai.key', 'gsk_test');
+        config()->set('services.ai.model', 'openai/gpt-oss-120b');
+        config()->set('services.gemini.key', '');
+
+        $sent = null;
+
+        Http::fake(function ($request) use (&$sent) {
+            $sent = $request;
+
+            return Http::response([
+                'choices' => [[
+                    'message' => ['content' => json_encode([
+                        'domain' => 'app',
+                        'intent' => 'list_tenants',
+                        'params' => [],
+                        'confidence' => 0.95,
+                    ])],
+                ]],
+            ]);
+        });
+
+        $this->assistant()->ask('lista los inquilinos', [], $this->user->id);
+
+        $payload = json_decode((string) $sent->body(), true);
+
+        // La clasificacion pide JSON: debe llegar como response_format.
+        $this->assertSame('json_object', $payload['response_format']['type'] ?? null);
     }
 }

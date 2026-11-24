@@ -26,6 +26,11 @@ namespace App\Dto;
  * - options: respuestas candidatas cuando la IA necesita que el
  *   usuario elija entre interpretaciones concretas (max 4). Se pintan
  *   como opciones A-D; el texto libre sigue disponible en el input.
+ * - questions: ronda de preguntas aclaratorias ({q, options}) cuando la
+ *   IA, tras razonar, no logra resolver la peticion con seguridad
+ *   (entidad, herramienta, periodo o composicion del batch ambiguos).
+ *   Cada pregunta ofrece hasta 4 respuestas candidatas mas texto libre;
+ *   el usuario responde y el ciclo vuelve a clasificar con ese contexto.
  */
 final class AssistantReply
 {
@@ -35,6 +40,7 @@ final class AssistantReply
      * @param  array{instruction: string, context: array<string, mixed>}|null  $draft
      * @param  list<string>  $suggestions
      * @param  list<string>  $options
+     * @param  list<array{q: string, options: list<string>}>  $questions
      * @param  list<array{text: string, data: array<string, mixed>|null}>|null  $sections
      * @param  array{form: string, step: int, total_steps: int, field: string, prompt: string, quick_replies?: list<string>}|null  $pendingForm
      * @param  array<string, array<string, string>>|null  $badgeColors
@@ -55,6 +61,7 @@ final class AssistantReply
         public readonly ?array $pendingForm = null,
         public readonly ?array $badgeColors = null,
         public readonly array $options = [],
+        public readonly array $questions = [],
         public readonly bool $ok = true,
     ) {}
 
@@ -72,6 +79,7 @@ final class AssistantReply
             $this->pendingForm,
             $this->badgeColors,
             $this->options,
+            $this->questions,
             $this->ok,
         );
     }
@@ -96,6 +104,7 @@ final class AssistantReply
             $this->pendingForm,
             $this->badgeColors,
             $this->options,
+            $this->questions,
             $this->ok,
         );
     }
@@ -121,6 +130,33 @@ final class AssistantReply
             $this->pendingForm,
             $this->badgeColors,
             $options,
+            $this->questions,
+            $this->ok,
+        );
+    }
+
+    /**
+     * Ronda de preguntas aclaratorias: cada una con su texto y hasta 4
+     * respuestas candidatas. El chat las pinta como Q:/A: y la respuesta
+     * del usuario vuelve a entrar por el pipeline normal.
+     *
+     * @param  list<array{q: string, options: list<string>}>  $questions
+     */
+    public function withQuestions(array $questions): self
+    {
+        return new self(
+            $this->text,
+            $this->data,
+            $this->action,
+            $this->redirect,
+            $this->suggestions,
+            $this->draft,
+            $this->intent,
+            $this->sections,
+            $this->pendingForm,
+            $this->badgeColors,
+            $this->options,
+            $questions,
             $this->ok,
         );
     }
@@ -142,6 +178,7 @@ final class AssistantReply
             $this->pendingForm,
             $badgeColors,
             $this->options,
+            $this->questions,
             $this->ok,
         );
     }

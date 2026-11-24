@@ -71,6 +71,7 @@ class AssistantToolInvoker
         'show_settings',
         'ipc_status',
         'entity_detail',
+        'entity_relations',
         'query_data',
         'general_answer',
         'app_guide',
@@ -147,6 +148,7 @@ class AssistantToolInvoker
         private readonly AppGuide $guide,
         private readonly PortfolioInsightsService $insights,
         private readonly DatabaseSchemaDigest $schema,
+        private readonly AssistantNavigator $navigator,
     ) {}
 
     /**
@@ -632,6 +634,7 @@ class AssistantToolInvoker
             'show_settings' => $this->showSettings($userId),
             'ipc_status' => $this->ipcStatus($userId),
             'entity_detail' => $this->entityDetail($params, $userId),
+            'entity_relations' => $this->entityRelations($params, $userId),
             'query_data' => $this->freeQuery($params, $userId),
             'general_answer' => $this->generalAnswer($params),
             'app_guide' => $this->appGuide($params),
@@ -1478,6 +1481,13 @@ class AssistantToolInvoker
      */
     private function propose(string $intent, array $params, int $userId): AssistantReply
     {
+        // Un create_* suelto es una intencion nueva: si quedo una cola de
+        // batch abandonada (sin cancelar) no debe resucitar — se conserva
+        // solo `values` para reabrir el mismo formulario con lo diligenciado.
+        if (isset(self::CREATE_ENTITY_MAP[$intent])) {
+            $this->dropStaleCreateQueue($userId);
+        }
+
         return match ($intent) {
             'propose_generate_invoices' => $this->proposeGenerateInvoices($params, $userId),
             'propose_record_payment' => $this->proposeRecordPayment($params, $userId),
@@ -1502,6 +1512,23 @@ class AssistantToolInvoker
             'export_csv' => $this->proposeExportCsv($params, $userId),
             default => AssistantReply::say(__('assistant.unknown')),
         };
+    }
+
+    /**
+     * Quita queue/collected/step/total de la sesion de creacion sin tocar
+     * los valores diligenciados. La cola solo se reabre via queueContext
+     * explicito (avance de batch o submit del form), nunca por herencia.
+     */
+    private function dropStaleCreateQueue(int $userId): void
+    {
+        $session = $this->forms->getCreate($userId);
+
+        if ($session === null || ($session['queue'] ?? []) === []) {
+            return;
+        }
+
+        $this->forms->putCreate($userId, $session['entity'], $session['values']);
+        $this->forms->clearHistory($userId);
     }
 
     /**
@@ -1672,6 +1699,7 @@ class AssistantToolInvoker
         $name = $this->param($params, ['name', 'tenant_name']);
         $document = $this->param($params, ['document', 'tenant_document', 'cedula']);
         $phone = $this->param($params, ['phone', 'phone_number', 'tenant_phone', 'telefono', 'celular']);
+        $email = $this->param($params, ['email', 'correo']);
 
         $missing = [];
 
@@ -1685,9 +1713,23 @@ class AssistantToolInvoker
             return $this->startCreateForm('tenant', $params, $userId);
         }
 
+        // Los nombres se repiten: el duplicado real es el mismo
+        // documento, telefono o correo ya registrado.
         $exists = Tenant::query()
             ->where('user_id', $userId)
-            ->where('name', 'like', '%'.$name.'%')
+            ->where(function ($query) use ($document, $phone, $email): void {
+                if ($document !== null) {
+                    $query->orWhere('document', $document);
+                }
+
+                if ($phone !== null) {
+                    $query->orWhere('phone_number', $phone);
+                }
+
+                if ($email !== null) {
+                    $query->orWhere('email', $email);
+                }
+            })
             ->exists();
 
         if ($exists) {
@@ -1989,20 +2031,9 @@ class AssistantToolInvoker
         $target = (string) ($params['target'] ?? '');
         $filter = strtoupper(trim((string) ($params['filter'] ?? '')));
         $search = trim((string) ($params['search'] ?? $params['query'] ?? ''));
+        $entity = trim((string) ($params['entity'] ?? ''));
 
-        $urls = [
-            'invoices' => InvoiceResource::getUrl('index'),
-            'rentals' => RentalResource::getUrl('index'),
-            'tenants' => TenantResource::getUrl('index'),
-            'properties' => PropertyResource::getUrl('index'),
-            'delivery_acts' => DeliveryActResource::getUrl('index'),
-            'adjustments' => RentAdjustmentResource::getUrl('index'),
-            'finances' => FinanzasPage::getUrl(),
-            'documents' => DocumentsPage::getUrl(),
-            'profile' => EditProfile::getUrl(),
-        ];
-
-        if (! isset($urls[$target])) {
+        if (! $this->navigator->supports($target)) {
             return AssistantReply::say(__('assistant.replies.navigate_unknown'), [
                 __('assistant.suggestions.portfolio'),
             ]);
@@ -2011,35 +2042,12 @@ class AssistantToolInvoker
         // Filtro soportado: la tabla de facturas acepta ?af[status]=X y lo
         // aplica al montar (ver ListInvoices::mount).
         $invoiceStatuses = ['EMITIDA', 'VENCIDA', 'PAGADA', 'ANULADA'];
+        $hasInvoiceFilter = $target === 'invoices' && in_array($filter, $invoiceStatuses, true);
 
-        if ($target === 'invoices' && in_array($filter, $invoiceStatuses, true)) {
-            return new AssistantReply(
-                text: __('assistant.replies.navigate_filtered', [
-                    'section' => __('assistant.sections.'.$target),
-                    'filter' => $this->filterLabel($filter),
-                ]),
-                redirect: $urls[$target].'?'.http_build_query(array_filter([
-                    'af' => ['status' => Str::lower($filter)],
-                    'tableSearch' => $search !== '' ? $search : null,
-                ])),
-            );
-        }
-
-        // Busqueda sobre una seccion con tabla: todas las list pages
-        // exponen ?tableSearch= via el trait AssistantTableSearch.
-        if ($search !== '' && $this->targetHasTableSearch($target)) {
-            return new AssistantReply(
-                text: __('assistant.replies.navigate_search', [
-                    'section' => __('assistant.sections.'.$target),
-                    'term' => $search,
-                ]),
-                redirect: $urls[$target].'?'.http_build_query(['tableSearch' => $search]),
-            );
-        }
-
-        // Busqueda pedida pero la seccion no tiene tabla (finanzas,
-        // documentos, perfil): se ejecuta la consulta filtrada en el chat.
-        if ($search !== '') {
+        // Busqueda pedida sobre una seccion sin tabla (finanzas,
+        // documentos, perfil): se ejecuta la consulta filtrada en el
+        // chat y la respuesta enlaza la seccion igual.
+        if ($search !== '' && ! $this->navigator->hasTableSearch($target)) {
             $listIntent = match ($target) {
                 'invoices' => 'list_invoices',
                 'rentals' => 'list_rentals',
@@ -2059,15 +2067,16 @@ class AssistantToolInvoker
                         'term' => $search,
                     ])."\n\n".$dataReply->text,
                     data: $dataReply->data,
-                    redirect: $urls[$target],
+                    redirect: $this->navigator->urlFor($target, null, null, null, $userId)['url'] ?? null,
                     suggestions: $dataReply->suggestions,
                 );
             }
         }
 
-        // Filtro pedido pero no aplicable en esa seccion: se explica y se
-        // muestran los datos filtrados aqui en el chat.
-        if ($filter !== '') {
+        // Filtro pedido pero no aplicable en esa seccion (ni siquiera
+        // es un estado de factura valido): se muestran los datos aqui
+        // en el chat y se explica que la seccion no filtra asi.
+        if ($filter !== '' && ! $hasInvoiceFilter && $search === '') {
             $listIntent = match ($target) {
                 'invoices' => $filter === 'VENCIDA' ? 'overdue_invoices' : 'list_invoices',
                 'rentals' => 'list_rentals',
@@ -2092,15 +2101,38 @@ class AssistantToolInvoker
                     'filter' => $this->filterLabel($filter),
                 ])."\n\n".$dataReply->text,
                 data: $dataReply->data,
-                redirect: $urls[$target],
+                redirect: $this->navigator->urlFor($target, null, null, null, $userId)['url'] ?? null,
                 suggestions: $dataReply->suggestions,
             );
         }
 
-        return new AssistantReply(
-            text: __('assistant.replies.navigate', ['section' => __('assistant.sections.'.$target)]),
-            redirect: $urls[$target],
-        );
+        // Destino inteligente: la entidad se resuelve a su mejor
+        // pantalla (ficha del arriendo, lista filtrada, seccion plana)
+        // via AssistantNavigator.
+        $resolved = $this->navigator->urlFor($target, $entity !== '' ? $entity : null, $filter, $search !== '' ? $search : null, $userId);
+
+        if ($resolved === null) {
+            return AssistantReply::say(__('assistant.replies.navigate_unknown'), [
+                __('assistant.suggestions.portfolio'),
+            ]);
+        }
+
+        $section = __('assistant.sections.'.$target);
+
+        $text = match ($resolved['mode']) {
+            'entity' => __('assistant.replies.navigate_entity', ['term' => $resolved['term'] ?? $section]),
+            'filtered' => __('assistant.replies.navigate_filtered', [
+                'section' => $section,
+                'filter' => $this->filterLabel($filter),
+            ]),
+            'search' => __('assistant.replies.navigate_search', [
+                'section' => $section,
+                'term' => $resolved['term'] ?? $search,
+            ]),
+            default => __('assistant.replies.navigate', ['section' => $section]),
+        };
+
+        return new AssistantReply(text: $text, redirect: $resolved['url']);
     }
 
     // ---------------------------------------------------------------
@@ -2779,6 +2811,9 @@ class AssistantToolInvoker
      */
     public function handleFormField(string $question, int $userId): AssistantReply
     {
+        // Snapshot previo al paso: habilita el "anterior" del wizard.
+        $this->forms->archive($userId);
+
         $session = $this->forms->get($userId);
 
         if ($session === null) {
@@ -2822,6 +2857,8 @@ class AssistantToolInvoker
         }
 
         if ($session['form'] === 'delivery_act') {
+            $this->forms->archive($userId);
+
             return $this->deliveryActStep(null, $session['data'], $userId, $params);
         }
 
@@ -2832,6 +2869,7 @@ class AssistantToolInvoker
     {
         $this->forms->clear($userId);
         $this->forms->clearCreate($userId);
+        $this->forms->clearHistory($userId);
 
         return AssistantReply::say(__('assistant.replies.form_cancelled'), [
             __('assistant.suggestions.portfolio'),
@@ -2872,6 +2910,7 @@ class AssistantToolInvoker
         }
 
         $this->forms->put($userId, 'delivery_act', $data);
+        $this->forms->clearHistory($userId);
 
         return $this->deliveryActStep(null, $data, $userId);
     }
@@ -2890,6 +2929,11 @@ class AssistantToolInvoker
      */
     private function deliveryActStep(?string $question, array $data, int $userId, ?array $extracted = null): AssistantReply
     {
+        // Snapshot para el "anterior": tambien cubre la reentrada directa
+        // desde proposeCreateDeliveryAct (el dedupe evita doble archivo
+        // cuando la llamada viene de handleFormField).
+        $this->forms->archive($userId);
+
         $question = $question === null ? '' : trim($question);
 
         if ($this->isCancelCommand($question)) {
@@ -4151,6 +4195,12 @@ class AssistantToolInvoker
      */
     private function startUpdateClarify(string $entity, object $record, int $userId, ?array $queueContext = null): AssistantReply
     {
+        // Wizard de updates nuevo (sin cola): el historial de navegacion
+        // empieza de cero; con queueContext es avance de batch y sigue.
+        if ($queueContext === null) {
+            $this->forms->clearHistory($userId);
+        }
+
         $idKey = $this->updateIdKey($entity);
 
         if ($idKey === null) {
@@ -4291,6 +4341,10 @@ class AssistantToolInvoker
         if ($session === null || $session['form'] !== 'update_clarify') {
             return AssistantReply::say(__('assistant.replies.form_none'));
         }
+
+        // Snapshot previo al envio: el "anterior" reabre esta misma
+        // clarificacion de la entidad.
+        $this->forms->archive($userId);
 
         $data = $session['data'];
         $entity = (string) ($data['entity_type'] ?? '');
@@ -4723,6 +4777,13 @@ class AssistantToolInvoker
         // son datos de otra entidad, no del mismo formulario.
         $previous = $this->forms->getCreate($userId);
         $fresh = (bool) ($queueContext['fresh'] ?? false);
+
+        // Wizard de creacion nuevo (sin sesion previa, o de otra entidad
+        // y sin ser avance de cola): el historial de navegacion se reinicia.
+        if (! $fresh && ($previous === null || $previous['entity'] !== $entity)) {
+            $this->forms->clearHistory($userId);
+        }
+
         $known = array_merge(
             $previous !== null && $previous['entity'] === $entity && ! $fresh ? $previous['values'] : [],
             $this->normalizeCreateValues($entity, $params),
@@ -4961,6 +5022,10 @@ class AssistantToolInvoker
             $session['step'], $session['total'],
         );
 
+        // Snapshot con los valores ya fusionados: el "anterior" vuelve a
+        // este formulario mostrandolo como el usuario lo envio.
+        $this->forms->archive($userId);
+
         $reply = match ($entity) {
             'tenant' => $this->proposeCreateTenant($merged, $userId),
             'property' => $this->proposeCreateProperty($merged, $userId),
@@ -5101,6 +5166,145 @@ class AssistantToolInvoker
                     'summary' => $this->batchSummary($collected),
                 ],
             suggestions: [],
+        );
+    }
+
+    /**
+     * Boton "anterior" del wizard: restaura el snapshot archivado antes
+     * del paso actual (ambas sesiones) y reconstruye el pendingForm del
+     * paso al que se vuelve. Si no hay historial o el snapshot no tiene
+     * wizard, avisa que no hay paso anterior.
+     */
+    public function previousFormStep(int $userId): AssistantReply
+    {
+        $snapshot = $this->forms->popHistory($userId);
+
+        if ($snapshot === null) {
+            return AssistantReply::say(__('assistant.replies.form_none'));
+        }
+
+        $formSession = is_array($snapshot['form'] ?? null) ? $snapshot['form'] : null;
+        $createSession = is_array($snapshot['create'] ?? null) ? $snapshot['create'] : null;
+
+        if ($formSession === null && $createSession === null) {
+            return AssistantReply::say(__('assistant.replies.form_none'));
+        }
+
+        if ($formSession !== null) {
+            $this->forms->put($userId, (string) $formSession['form'], is_array($formSession['data'] ?? null) ? $formSession['data'] : []);
+        }
+
+        if ($createSession !== null) {
+            $c = $createSession;
+            $this->forms->putCreate(
+                $userId,
+                (string) $c['entity'],
+                is_array($c['values'] ?? null) ? $c['values'] : [],
+                ($c['queue'] ?? []) === [] ? null : $c['queue'],
+                ($c['collected'] ?? []) === [] ? null : $c['collected'],
+                isset($c['step']) ? (int) $c['step'] : null,
+                isset($c['total']) ? (int) $c['total'] : null,
+            );
+        }
+
+        // Con batch mixto pueden coexistir ambas sesiones: el wizard
+        // conversacional (PREFIX) es el que estaba en pantalla.
+        if ($formSession !== null) {
+            $reply = $this->restoreWizardPendingForm($formSession, $userId);
+
+            if ($reply !== null) {
+                return $reply;
+            }
+        }
+
+        return $this->restoreCreatePendingForm($createSession, $userId)
+            ?? AssistantReply::say(__('assistant.replies.form_none'));
+    }
+
+    /**
+     * Reconstruye la respuesta del wizard PREFIX restaurado. Devuelve
+     * null si el tipo de sesion no tiene paso anterior navegable.
+     *
+     * @param  array{form: string, data: array<string, mixed>}  $session
+     */
+    private function restoreWizardPendingForm(array $session, int $userId): ?AssistantReply
+    {
+        $data = is_array($session['data'] ?? null) ? $session['data'] : [];
+
+        return match ($session['form'] ?? '') {
+            'update_clarify' => $this->restoreUpdateClarify($data, $userId),
+            'update_value' => $this->restoreUpdateValue($data, $userId),
+            'delivery_act' => $this->restoreDeliveryAct($data, $userId),
+            default => null,
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function restoreUpdateClarify(array $data, int $userId): ?AssistantReply
+    {
+        $entity = (string) ($data['entity_type'] ?? '');
+        $record = $this->loadUpdateRecord($entity, (int) ($data['entity_id'] ?? 0), $userId);
+
+        if ($record === null) {
+            return AssistantReply::say(__('assistant.actions.entity_missing'));
+        }
+
+        return $this->startUpdateClarify($entity, $record, $userId, [
+            'queue' => is_array($data['entity_queue'] ?? null) ? $data['entity_queue'] : [],
+            'collected' => is_array($data['collected'] ?? null) ? $data['collected'] : [],
+            'step' => $data['step'] ?? null,
+            'total' => $data['total'] ?? null,
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function restoreUpdateValue(array $data, int $userId): ?AssistantReply
+    {
+        return $this->updateNextValueStep(
+            $data,
+            (string) ($data['entity_name'] ?? ''),
+            (string) ($data['entity_type'] ?? ''),
+            $userId,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function restoreDeliveryAct(array $data, int $userId): ?AssistantReply
+    {
+        $pending = $this->actPendingForm($data, $this->wizardCurrentStep($data), $userId);
+
+        return new AssistantReply(
+            text: (string) ($pending['prompt'] ?? ''),
+            suggestions: [],
+            pendingForm: $pending,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $session
+     */
+    private function restoreCreatePendingForm(?array $session, int $userId): ?AssistantReply
+    {
+        if ($session === null) {
+            return null;
+        }
+
+        return $this->startCreateForm(
+            (string) $session['entity'],
+            is_array($session['values'] ?? null) ? $session['values'] : [],
+            $userId,
+            [
+                'queue' => is_array($session['queue'] ?? null) ? $session['queue'] : [],
+                'collected' => is_array($session['collected'] ?? null) ? $session['collected'] : [],
+                'step' => $session['step'] ?? null,
+                'total' => $session['total'] ?? null,
+            ],
         );
     }
 
@@ -6468,16 +6672,6 @@ class AssistantToolInvoker
     }
 
     /**
-     * Targets de navigate que tienen tabla con buscador.
-     */
-    private function targetHasTableSearch(string $target): bool
-    {
-        return in_array($target, [
-            'invoices', 'rentals', 'tenants', 'properties', 'delivery_acts', 'adjustments',
-        ], true);
-    }
-
-    /**
      * Fila de diff before/after para el preview de acciones.
      *
      * @return array{field: string, label: string, before: ?string, after: ?string, kind: string}
@@ -7142,7 +7336,7 @@ class AssistantToolInvoker
                     'is_active' => $rental->is_active ? __('assistant.yes') : __('assistant.no'),
                 ]],
             ],
-            redirect: RentalResource::getUrl('index'),
+            redirect: RentalResource::getUrl('view', ['record' => $rental]),
             suggestions: [__('assistant.suggestions.update_rental'), __('assistant.suggestions.adjustments')],
         );
     }
@@ -7196,7 +7390,7 @@ class AssistantToolInvoker
                     'end_date' => $rental->end_date?->toDateString() ?? '—',
                 ])->all(),
             ],
-            redirect: TenantResource::getUrl('index'),
+            redirect: $this->navigator->urlForModel('tenants', $tenant, $userId)['url'] ?? TenantResource::getUrl('index'),
             suggestions: [__('assistant.suggestions.update_tenant'), __('assistant.suggestions.pending')],
         );
     }
@@ -7240,7 +7434,7 @@ class AssistantToolInvoker
                     'end_date' => $rental->end_date?->toDateString() ?? '—',
                 ])->all(),
             ],
-            redirect: PropertyResource::getUrl('index'),
+            redirect: $this->navigator->urlForModel('properties', $property, $userId)['url'] ?? PropertyResource::getUrl('index'),
             suggestions: [__('assistant.suggestions.update_property'), __('assistant.suggestions.portfolio')],
         );
     }
@@ -7287,7 +7481,7 @@ class AssistantToolInvoker
                     'paid_at' => $invoice->paid_at?->toDateString() ?? '—',
                 ]],
             ],
-            redirect: InvoiceResource::getUrl('index'),
+            redirect: $this->navigator->urlForModel('invoices', $invoice, $userId)['url'] ?? InvoiceResource::getUrl('index'),
             suggestions: [__('assistant.suggestions.record_payment'), __('assistant.suggestions.documents')],
         );
     }
@@ -7301,5 +7495,461 @@ class AssistantToolInvoker
         }
 
         return $this->adjustmentDetail(['rental_name' => $name], $userId);
+    }
+
+    // ---------------------------------------------------------------
+    // entity_relations: matriz determinista entidad -> relaciones
+    // ---------------------------------------------------------------
+
+    /**
+     * Relaciones hijas validas por tipo de entidad padre. La malla es
+     * generica: cualquier combinacion padre->hijo de esta tabla se
+     * resuelve con Eloquent, sin SQL ni interpretacion de la IA.
+     */
+    private const RELATION_MATRIX = [
+        'rental' => ['tenant', 'property', 'invoices', 'payments', 'delivery_acts', 'adjustments'],
+        'tenant' => ['rentals', 'invoices', 'payments'],
+        'property' => ['rentals', 'invoices', 'payments', 'tenant'],
+        'invoice' => ['rental', 'tenant', 'payments'],
+        'payment' => ['invoice', 'rental', 'tenant'],
+        'delivery_act' => ['rental', 'tenant'],
+        'adjustment' => ['rental', 'tenant'],
+    ];
+
+    /**
+     * Alias en espanol/ingles -> claves canonicas candidatas. El valor
+     * es una lista porque singular/plural dependen del padre: "la
+     * factura del pago" es 'invoice' pero "las facturas del arriendo"
+     * es 'invoices'; se elige la que la matriz del padre acepta.
+     */
+    private const RELATION_ALIASES = [
+        'tenant' => ['tenant'], 'inquilino' => ['tenant'], 'arrendatario' => ['tenant'],
+        'property' => ['property'], 'propiedad' => ['property'], 'inmueble' => ['property'],
+        'rental' => ['rental', 'rentals'], 'arriendo' => ['rental', 'rentals'], 'alquiler' => ['rental', 'rentals'], 'contrato' => ['rental', 'rentals'],
+        'invoice' => ['invoice', 'invoices'], 'invoices' => ['invoices', 'invoice'],
+        'factura' => ['invoice', 'invoices'], 'facturas' => ['invoices', 'invoice'],
+        'payment' => ['payment', 'payments'], 'payments' => ['payments', 'payment'],
+        'pago' => ['payment', 'payments'], 'pagos' => ['payments', 'payment'],
+        'rentals' => ['rentals', 'rental'], 'arriendos' => ['rentals', 'rental'], 'alquileres' => ['rentals', 'rental'],
+        'delivery_act' => ['delivery_act', 'delivery_acts'], 'delivery_acts' => ['delivery_acts', 'delivery_act'],
+        'acta' => ['delivery_act', 'delivery_acts'], 'actas' => ['delivery_acts', 'delivery_act'], 'acta_entrega' => ['delivery_act', 'delivery_acts'],
+        'adjustment' => ['adjustment', 'adjustments'], 'adjustments' => ['adjustments', 'adjustment'],
+        'reajuste' => ['adjustment', 'adjustments'], 'reajustes' => ['adjustments', 'adjustment'], 'ajuste' => ['adjustment', 'adjustments'], 'ajustes' => ['adjustments', 'adjustment'],
+    ];
+
+    /**
+     * "Lista cada propiedad con su inquilino", "facturas del arriendo X",
+     * "pagos de Camila": relaciones reales del modelo sin depender del
+     * SQL que la IA haya escrito. El resultado usa el formato anidado
+     * del chat (padre + tablas hijas expandibles), igual que
+     * query_data con params.nest pero multi-salto y determinista.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function entityRelations(array $params, int $userId): AssistantReply
+    {
+        $type = $this->normalizeEntityType((string) ($params['entity_type'] ?? $params['type'] ?? ''));
+        $name = trim((string) ($params['name'] ?? $params['entity'] ?? $params['rental_name'] ?? ''));
+        $relations = $this->normalizeRelationKeys($params['relations'] ?? $params['with'] ?? null, $type);
+
+        if ($type === null || $relations === []) {
+            return AssistantReply::say(__('assistant.replies.entity_relations_usage'), [
+                __('assistant.suggestions.portfolio'),
+                __('assistant.suggestions.analysis'),
+            ]);
+        }
+
+        $resolved = $this->relationParents($type, $name, $userId);
+
+        if ($resolved['reply'] !== null) {
+            return $resolved['reply'];
+        }
+
+        $parents = $resolved['entities'];
+        $rows = [];
+
+        foreach ($parents as $parent) {
+            $row = $this->relationParentRow($type, $parent);
+
+            foreach ($relations as $relation) {
+                $row[$relation] = $this->relationRows($type, $relation, $parent);
+            }
+
+            $rows[] = $row;
+        }
+
+        $rows = array_slice($rows, 0, 50);
+
+        if ($rows === []) {
+            return AssistantReply::say(__('assistant.replies.entity_not_found', ['name' => $name !== '' ? $name : $type]));
+        }
+
+        return new AssistantReply(
+            text: __('assistant.replies.query_results', ['count' => count($rows)]),
+            data: ['results' => $rows],
+            suggestions: $this->defaultSuggestions(),
+            draft: [
+                'instruction' => 'Resume en 2-4 frases, en el idioma del usuario, lo que muestran estos resultados de entidades relacionadas de la base de datos del negocio. Menciona los datos clave (nombres, montos, estados) tal cual vienen; no inventes cifras ni conclusiones que los datos no soporten.',
+                'context' => ['resultados' => array_slice($rows, 0, 30)],
+            ],
+        );
+    }
+
+    /**
+     * Tipo de entidad padre canonico o null si no se reconoce.
+     */
+    private function normalizeEntityType(string $raw): ?string
+    {
+        $key = Str::lower(trim($raw));
+
+        return match ($key) {
+            'rental', 'arriendo', 'alquiler', 'contrato' => 'rental',
+            'tenant', 'inquilino', 'arrendatario' => 'tenant',
+            'property', 'propiedad', 'inmueble' => 'property',
+            'invoice', 'factura' => 'invoice',
+            'payment', 'pago' => 'payment',
+            'delivery_act', 'delivery_acts', 'acta', 'actas', 'acta_entrega' => 'delivery_act',
+            'adjustment', 'adjustments', 'reajuste', 'reajustes', 'ajuste', 'ajustes' => 'adjustment',
+            default => null,
+        };
+    }
+
+    /**
+     * Relaciones hijas pedidas, normalizadas a claves canonicas y
+     * filtradas por la matriz del padre. En padres "contenedores"
+     * (tenant/property) el singular 'rental' se interpreta como la
+     * lista 'rentals'. Sin relaciones explicitas se devuelven todas
+     * las del padre.
+     *
+     * @return list<string>
+     */
+    private function normalizeRelationKeys(mixed $raw, ?string $type): array
+    {
+        if ($type === null) {
+            return [];
+        }
+
+        $valid = self::RELATION_MATRIX[$type] ?? [];
+
+        if (! is_array($raw) || $raw === []) {
+            return $valid;
+        }
+
+        $keys = [];
+
+        foreach ($raw as $item) {
+            if (! is_string($item)) {
+                continue;
+            }
+
+            $alias = Str::lower(trim($item));
+            $candidates = self::RELATION_ALIASES[$alias] ?? [];
+
+            // En tenant/property el hijo "rental" es la lista de
+            // arriendos (el padre ES la entidad, no un arriendo).
+            if (in_array($type, ['tenant', 'property'], true)) {
+                $candidates = array_map(
+                    fn (string $key): string => $key === 'rental' ? 'rentals' : $key,
+                    $candidates,
+                );
+            }
+
+            foreach ($candidates as $key) {
+                if (in_array($key, $valid, true) && ! in_array($key, $keys, true)) {
+                    $keys[] = $key;
+                    break;
+                }
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
+     * Entidades padre a expandir: una sola si viene nombre y resuelve,
+     * o la coleccion completa del usuario si no.
+     *
+     * @return array{entities: \Illuminate\Support\Collection, reply: ?AssistantReply}
+     */
+    private function relationParents(string $type, string $name, int $userId): array
+    {
+        $query = match ($type) {
+            'rental' => Rental::query()->where('user_id', $userId)
+                ->with(['tenant:id,name,document,phone_number', 'property:id,name,address', 'invoices.payments', 'payments', 'deliveryActs', 'rentAdjustments']),
+            'tenant' => Tenant::query()->where('user_id', $userId)
+                ->with(['rentals' => fn ($q) => $q->with(['property:id,name', 'tenant:id,name', 'invoices.payments', 'payments'])]),
+            'property' => Property::query()->where('user_id', $userId)
+                ->with(['rentals' => fn ($q) => $q->with(['tenant:id,name,document,phone_number', 'invoices.payments', 'payments']), 'geography:id,name']),
+            'invoice' => Invoice::query()->where('user_id', $userId)
+                ->with('rental:id,name,tenant_id', 'rental.tenant:id,name,document,phone_number', 'payments'),
+            'payment' => Payment::query()->where('user_id', $userId)
+                ->with('invoice:id,number,amount,status', 'rental:id,name,tenant_id', 'rental.tenant:id,name,document,phone_number'),
+            'delivery_act' => DeliveryAct::query()->where('user_id', $userId)
+                ->with('rental:id,name,tenant_id', 'rental.tenant:id,name,document,phone_number', 'items'),
+            'adjustment' => RentAdjustment::query()->where('user_id', $userId)
+                ->with('rental:id,name,tenant_id', 'rental.tenant:id,name,document,phone_number'),
+            default => null,
+        };
+
+        if ($query === null) {
+            return ['entities' => collect(), 'reply' => AssistantReply::say(__('assistant.unknown'))];
+        }
+
+        if ($name !== '') {
+            $entity = $this->resolveRelationParent($type, $name, $userId);
+
+            if ($entity === null) {
+                return [
+                    'entities' => collect(),
+                    'reply' => AssistantReply::say(__('assistant.replies.entity_not_found', ['name' => $name])),
+                ];
+            }
+
+            return ['entities' => collect([$entity]), 'reply' => null];
+        }
+
+        return ['entities' => $query->limit(50)->get(), 'reply' => null];
+    }
+
+    /**
+     * Resolucion de UNA entidad padre por nombre, reutilizando los
+     * mismos resolvedores difusos que el resto del chat.
+     */
+    private function resolveRelationParent(string $type, string $name, int $userId): ?\Illuminate\Database\Eloquent\Model
+    {
+        return match ($type) {
+            'rental' => $this->resolveRentalCandidates($name, $userId)['entity'],
+            'tenant' => $this->resolveEntity(Tenant::class, $userId, $name, ['name', 'document', 'phone_number', 'email'])['entity'],
+            'property' => $this->resolveEntity(Property::class, $userId, $name, ['name', 'address'])['entity'],
+            'invoice' => $this->findInvoice(['number' => $name], $userId),
+            'payment' => $this->resolveEntity(Payment::class, $userId, $name, ['reference', 'method'])['entity'],
+            'delivery_act' => $this->resolveEntity(DeliveryAct::class, $userId, $name, ['tenant_name', 'landlord_name'])['entity'],
+            'adjustment' => $this->findRentalAdjustment($name, $userId),
+            default => null,
+        };
+    }
+
+    /**
+     * Busca un reajuste por nombre del arriendo al que pertenece o por
+     * id; los reajustes no tienen nombre propio.
+     */
+    private function findRentalAdjustment(string $name, int $userId): ?RentAdjustment
+    {
+        $needle = Str::lower($name);
+
+        return RentAdjustment::query()
+            ->where('user_id', $userId)
+            ->whereHas('rental', function ($query) use ($needle, $userId): void {
+                $query->where('user_id', $userId)
+                    ->where(function ($inner) use ($needle): void {
+                        $inner->whereRaw('LOWER(name) LIKE ?', ['%'.$needle.'%'])
+                            ->orWhereHas('tenant', fn ($t) => $t->whereRaw('LOWER(name) LIKE ?', ['%'.$needle.'%']))
+                            ->orWhereHas('property', fn ($p) => $p->whereRaw('LOWER(name) LIKE ?', ['%'.$needle.'%']));
+                    });
+            })
+            ->with('rental:id,name,tenant_id', 'rental.tenant:id,name')
+            ->latest()
+            ->first();
+    }
+
+    /**
+     * Fila del padre en la tabla anidada: columnas propias de la
+     * entidad, nunca datos del hijo.
+     *
+     * @return array<string, mixed>
+     */
+    private function relationParentRow(string $type, \Illuminate\Database\Eloquent\Model $parent): array
+    {
+        return match ($type) {
+            'rental' => [
+                'name' => $parent->name,
+                'tenant' => $parent->tenant?->name ?? '—',
+                'property' => $parent->property?->name ?? '—',
+                'rent' => $this->money((float) $parent->monthly_amount),
+                'end_date' => $parent->end_date?->toDateString() ?? '—',
+            ],
+            'tenant' => [
+                'name' => $parent->name,
+                'document' => $parent->document ?? '—',
+                'phone' => $parent->phone_number ?? '—',
+            ],
+            'property' => [
+                'name' => $parent->name,
+                'address' => $parent->address ?? '—',
+                'city' => $parent->geography?->name ?? '—',
+            ],
+            'invoice' => [
+                'number' => $parent->number,
+                'concept' => $parent->conceptLabel(),
+                'amount' => $this->money((float) $parent->amount),
+                'balance' => $this->money($parent->balance()),
+                'status' => $parent->status->label(),
+                'due_at' => $parent->due_at->toDateString(),
+            ],
+            'payment' => [
+                'date' => $parent->date?->toDateString() ?? '—',
+                'amount' => $this->money((float) $parent->amount),
+                'method' => $parent->methodLabel(),
+                'reference' => $parent->reference ?? '—',
+            ],
+            'delivery_act' => [
+                'type' => (string) $parent->type,
+                'occurred_at' => $parent->occurred_at?->toDateString() ?? '—',
+                'signed' => $parent->signed_at !== null ? __('assistant.yes') : __('assistant.no'),
+            ],
+            'adjustment' => [
+                'rental' => $parent->rental?->name ?? '—',
+                'tenant' => $parent->rental?->tenant?->name ?? '—',
+                'ipc_year' => (string) ($parent->ipc_year ?? '—'),
+                'applied_pct' => isset($parent->applied_pct) ? $parent->applied_pct.'%' : '—',
+                'new_rent' => isset($parent->new_rent) ? $this->money((float) $parent->new_rent) : '—',
+            ],
+            default => [],
+        };
+    }
+
+    /**
+     * Filas hijas de una relacion: colecciones devuelven N filas, las
+     * relaciones 1:1 devuelven una sola fila (o vacia si no existe).
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function relationRows(string $type, string $relation, \Illuminate\Database\Eloquent\Model $parent): array
+    {
+        $rental = fn (): ?Rental => $parent instanceof Rental ? $parent : $parent->rental;
+        $tenantOf = fn (?Rental $r): ?Tenant => $r?->tenant;
+        $tenant = fn (): ?Tenant => $parent instanceof Tenant ? $parent : $tenantOf($rental());
+        $property = fn (): ?Property => $parent instanceof Property ? $parent : $rental()?->property;
+
+        return match ($type.'.'.$relation) {
+            'rental.tenant' => $this->singleRelationRow($tenant(), ['name', 'document', 'phone']),
+            'rental.property' => $this->singleRelationRow($property(), ['name', 'address']),
+            'rental.invoices' => $parent->invoices
+                ->sortBy('due_at')
+                ->map(fn (Invoice $i): array => [
+                    'number' => $i->number,
+                    'concept' => $i->conceptLabel(),
+                    'amount' => $this->money((float) $i->amount),
+                    'balance' => $this->money($i->balance()),
+                    'status' => $i->status->label(),
+                    'due_at' => $i->due_at->toDateString(),
+                ])->values()->all(),
+            'rental.payments' => $parent->payments
+                ->sortByDesc('date')
+                ->map(fn (Payment $p): array => [
+                    'date' => $p->date?->toDateString() ?? '—',
+                    'amount' => $this->money((float) $p->amount),
+                    'method' => $p->methodLabel(),
+                    'reference' => $p->reference ?? '—',
+                ])->values()->all(),
+            'rental.delivery_acts' => $parent->deliveryActs
+                ->sortByDesc('occurred_at')
+                ->map(fn (DeliveryAct $a): array => [
+                    'type' => (string) $a->type,
+                    'occurred_at' => $a->occurred_at?->toDateString() ?? '—',
+                    'signed' => $a->signed_at !== null ? __('assistant.yes') : __('assistant.no'),
+                ])->values()->all(),
+            'rental.adjustments' => $parent->rentAdjustments
+                ->sortByDesc('ipc_year')
+                ->map(fn (RentAdjustment $a): array => [
+                    'ipc_year' => (string) ($a->ipc_year ?? '—'),
+                    'applied_pct' => isset($a->applied_pct) ? $a->applied_pct.'%' : '—',
+                    'new_rent' => isset($a->new_rent) ? $this->money((float) $a->new_rent) : '—',
+                ])->values()->all(),
+            'tenant.rentals', 'property.rentals' => $parent->rentals
+                ->sortBy('name')
+                ->map(fn (Rental $r): array => [
+                    'name' => $r->name,
+                    'tenant' => $r->tenant?->name ?? '—',
+                    'property' => $r->property?->name ?? '—',
+                    'rent' => $this->money((float) $r->monthly_amount),
+                    'is_active' => $r->is_active ? __('assistant.yes') : __('assistant.no'),
+                    'end_date' => $r->end_date?->toDateString() ?? '—',
+                ])->values()->all(),
+            'tenant.invoices', 'property.invoices' => $parent->rentals
+                ->flatMap(fn (Rental $r) => $r->invoices ?? collect())
+                ->sortBy('due_at')
+                ->map(fn (Invoice $i): array => [
+                    'number' => $i->number,
+                    'rental' => $i->rental?->name ?? '—',
+                    'amount' => $this->money((float) $i->amount),
+                    'balance' => $this->money($i->balance()),
+                    'status' => $i->status->label(),
+                    'due_at' => $i->due_at->toDateString(),
+                ])->values()->all(),
+            'tenant.payments', 'property.payments' => $parent->rentals
+                ->flatMap(fn (Rental $r) => $r->payments ?? collect())
+                ->sortByDesc('date')
+                ->map(fn (Payment $p): array => [
+                    'date' => $p->date?->toDateString() ?? '—',
+                    'rental' => $p->rental?->name ?? '—',
+                    'amount' => $this->money((float) $p->amount),
+                    'method' => $p->methodLabel(),
+                ])->values()->all(),
+            // "Cada propiedad con su inquilino": los inquilinos de los
+            // arriendos activos de la propiedad (salto doble
+            // propiedad -> arriendo -> inquilino, invisible en el
+            // SQL plano del modelo).
+            'property.tenant' => $parent->rentals
+                ->where('is_active', true)
+                ->pluck('tenant')
+                ->filter()
+                ->unique('id')
+                ->map(fn (Tenant $t): array => [
+                    'name' => $t->name,
+                    'document' => $t->document ?? '—',
+                    'phone' => $t->phone_number ?? '—',
+                ])->values()->all(),
+            'invoice.rental' => $this->singleRelationRow($parent->rental, ['name', 'tenant' => fn ($r) => $r->tenant?->name ?? '—']),
+            'invoice.tenant' => $this->singleRelationRow($parent->rental?->tenant, ['name', 'document', 'phone']),
+            'invoice.payments' => $parent->payments
+                ->sortByDesc('date')
+                ->map(fn (Payment $p): array => [
+                    'date' => $p->date?->toDateString() ?? '—',
+                    'amount' => $this->money((float) $p->amount),
+                    'method' => $p->methodLabel(),
+                    'reference' => $p->reference ?? '—',
+                ])->values()->all(),
+            'payment.invoice' => $this->singleRelationRow($parent->invoice, [
+                'number',
+                'amount' => fn (Invoice $i): string => $this->money((float) $i->amount),
+                'status' => fn (Invoice $i): string => $i->status->label(),
+            ]),
+            'payment.rental' => $this->singleRelationRow($parent->rental, ['name', 'tenant' => fn ($r) => $r->tenant?->name ?? '—']),
+            'payment.tenant' => $this->singleRelationRow($parent->rental?->tenant, ['name', 'document', 'phone']),
+            'delivery_act.rental' => $this->singleRelationRow($parent->rental, ['name', 'tenant' => fn ($r) => $r->tenant?->name ?? '—']),
+            'delivery_act.tenant' => $this->singleRelationRow($parent->rental?->tenant, ['name', 'document', 'phone']),
+            'adjustment.rental' => $this->singleRelationRow($parent->rental, ['name', 'tenant' => fn ($r) => $r->tenant?->name ?? '—']),
+            'adjustment.tenant' => $this->singleRelationRow($parent->rental?->tenant, ['name', 'document', 'phone']),
+            default => [],
+        };
+    }
+
+    /**
+     * Fila unica para relaciones 1:1. $fields mezcla nombres de
+     * atributo con closures para columnas derivadas.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function singleRelationRow(?\Illuminate\Database\Eloquent\Model $model, array $fields): array
+    {
+        if ($model === null) {
+            return [];
+        }
+
+        $row = [];
+
+        foreach ($fields as $key => $field) {
+            if (is_int($key)) {
+                $key = $field;
+                $field = null;
+            }
+
+            $row[$key] = $field instanceof \Closure
+                ? $field($model)
+                : ($model->{$key} ?? '—');
+        }
+
+        return [$row];
     }
 }

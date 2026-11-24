@@ -171,7 +171,20 @@ class InvoiceResource extends Resource
                 Tables\Columns\TextColumn::make('rental.name')
                     ->label(__('invoice.table.rental'))
                     ->badge()
-                    ->color('gray'),
+                    ->color('gray')
+                    // El buscador global tambien alcanza al inquilino:
+                    // "facturas de Nathan" debe encontrar las suyas aunque
+                    // el nombre este en rental.tenant, no en rental.name.
+                    ->searchable(query: function (Builder $query, string $search): Builder {
+                        return $query->whereHas('rental', function (Builder $rental) use ($search): void {
+                            $rental->where('name', 'like', "%{$search}%")
+                                ->orWhereHas('tenant', function (Builder $tenant) use ($search): void {
+                                    $tenant->where('name', 'like', "%{$search}%")
+                                        ->orWhere('document', 'like', "%{$search}%")
+                                        ->orWhere('phone_number', 'like', "%{$search}%");
+                                });
+                        });
+                    }),
 
                 Tables\Columns\TextColumn::make('amount')
                     ->label(__('invoice.table.amount'))

@@ -5,11 +5,28 @@
 <div
     x-data="{
         drawerOpen: false,
-        helpOpen: false,
+        promptsOpen: false,
+        // Repertorio de prompts: mensajes en cola mientras la IA responde
+        // (max 11, persistida por conversacion en localStorage), estado
+        // del drag para reordenar y flash cuando la cola esta llena.
+        msgQueue: [],
+        queueOpen: false,
+        // Badges del historial: chatId -> {d: borrador, q: encolados},
+        // leido de las mismas claves assistant.chatState.* del storage.
+        chatBadges: {},
+        queueDragFrom: null,
+        queueDragOver: null,
+        queueFullFlash: false,
+        QUEUE_MAX: 11,
+        // Clave del estado local (borrador + cola) del chat activo; se
+        // actualiza al cambiar de conversacion para guardar/restaurar.
+        _stateKey: null,
         // Chips de sugerencias colapsables: el usuario que ya conoce los
         // prompts libera espacio; la preferencia persiste entre sesiones.
         suggestOpen: localStorage.getItem('assistant.suggestOpen') !== '0',
         modelOpen: false,
+        modelTab: null,
+        modelGroupsMeta: @js(array_map(fn ($group) => ['driver' => $group['driver'], 'models' => $group['models']], $assistantModelGroups)),
         // Vista interna del drawer ('chat' | 'chats'). La controla Alpine
         // para que cambiar de panel sea instantaneo; el servidor la refleja
         // en `view` y el watcher la resincroniza tras cada respuesta.
@@ -19,6 +36,9 @@
         // la respuesta de Livewire, sin esperar el roundtrip para verlos.
         pendingMsgs: [],
         sending: false,
+        // Requests de envio en vuelo: con force-send pueden coexistir el
+        // cancelado y el nuevo; `sending` solo baja cuando todos cierran.
+        sendDepth: 0,
         // Texto del input al momento (Alpine): wire:model es diferido,
         // asi que el boton enviar se deshabilita con esto, no con $wire.
         inputText: '',
@@ -54,6 +74,10 @@
         // panel y nunca aparece un hueco entre ambos.
         composerHeight: null,
         wizardHeight: null,
+        // Altura manual del composer que el usuario tenia antes de que
+        // una UI grande (wizard, biblioteca de prompts) pidiera modo
+        // auto: se restaura cuando TODAS esas UI se cierran.
+        autoComposerHeight: null,
         vMode: null,
         vStartY: 0,
         vStartHeight: 0,
@@ -76,20 +100,56 @@
         cancelThinking() {
             this.$wire.cancelPending();
             this.sending = false;
-            this.pendingMsgs = [];
+            // pendingMsgs NO se limpia aqui: el finally de echoAndSend lo
+            // hace cuando llega la respuesta real (mensaje del usuario +
+            // burbuja de cancelado), asi el texto nunca desaparece de la
+            // conversacion. La cola sigue su curso cuando esa respuesta
+            // termine.
             this.scrollToBottom();
+        },
+        // Guard de clicks residual del gesto de resize. Dos capas:
+        // __assistantResizing queda activo durante TODO el arrastre —
+        // aunque el cursor se quede quieto a mitad y el timestamp de
+        // 400ms expire, el gesto sigue vivo — y al soltar queda una cola
+        // de 400ms para el click sintetico del mouseup. Antes solo
+        // existia la cola y una pausa larga dejaba pasar el click.
+        startClickGuard() {
+            window.__assistantResizing = true;
+        },
+        endClickGuard() {
+            window.__assistantResizing = false;
+            window.__assistantClickGuardUntil = Date.now() + 400;
+        },
+        guardClick() {
+            window.__assistantClickGuardUntil = Date.now() + 400;
+        },
+        clickGuardActive() {
+            return window.__assistantResizing === true
+                || Date.now() < (window.__assistantClickGuardUntil || 0);
         },
         startResize(event) {
             if (window.innerWidth < 1024) return;
             this.resizing = true;
-            this.resizeStartX = event.clientX;
+            this.startClickGuard();
+            this.resizeStartX = event.touches ? event.touches[0].clientX : event.clientX;
             this.resizeStartWidth = this.drawerWidth ?? (this.$refs.drawer?.offsetWidth || 448);
             document.body.style.userSelect = 'none';
             event.preventDefault();
         },
         resizeMove(event) {
+            // Si el mouseup cayo fuera de la ventana endResize no corrio
+            // y el gesto quedo colgado: un mousemove con el boton ya
+            // solado (buttons === 0) delata que termino de verdad.
+            if (this.resizing && event.buttons === 0) {
+                this.resizing = false;
+                document.body.style.userSelect = '';
+                this.endClickGuard();
+                return;
+            }
             if (! this.resizing) return;
-            const delta = this.resizeStartX - event.clientX;
+            this.guardClick();
+            const x = event.touches ? event.touches[0].clientX : event.clientX;
+            const delta = this.resizeStartX - x;
             // Minimo 360px: por debajo el boton copiar (que flota fuera
             // de la card) ya no cabe en el margen y generaria scroll
             // horizontal en el chat.
@@ -102,6 +162,9 @@
             if (! this.resizing) return;
             this.resizing = false;
             document.body.style.userSelect = '';
+            // El mouseup sintetiza un click sobre el elemento bajo el
+            // cursor: se ignora cualquier click los 400ms siguientes.
+            this.endClickGuard();
             // El ancho elegido persiste por dispositivo: cada pantalla
             // recuerda su preferencia y no hay que reajustarlo.
             try {
@@ -113,21 +176,45 @@
             return mode === 'wizard' ? this.wizardHeight : this.composerHeight;
         },
         // Limites: el compositor deja siempre 200px para el chat; el wizard
-        // no pasa del 60% del viewport. El presupuesto es chat + compositor
-        // (constante durante el arrastre), nunca solo el chat: medir solo el
-        // chat haria que el maximo se encogiera mientras el compositor crece.
+        // vive dentro del scroll del compositor y su maximo usa el
+        // presupuesto real chatPane + composer, constante durante el
+        // arrastre porque chatPane (flex-1) cede el espacio.
         vMaxFor(mode) {
-            if (mode === 'wizard') return Math.round(window.innerHeight * 0.6);
+            if (mode === 'wizard') {
+                const pane = this.$refs.chatPane?.offsetHeight ?? 0;
+                const composer = this.$refs.composer?.offsetHeight ?? 0;
+                if (pane <= 0 || composer <= 0) return Math.round(window.innerHeight * 0.55);
+                // chatPane + composer es constante durante el arrastre
+                // (el chat cede via flex-1). Se descuentan ~300px: 200 de
+                // chat minimo mas el cromo del compositor (input, chips).
+                return Math.max(160, pane + composer - 300);
+            }
             const chat = this.$refs.chatPane?.offsetHeight ?? 0;
             const composer = this.$refs.composer?.offsetHeight ?? 0;
             if (chat <= 0) return 110;
             return Math.max(110, chat + composer - 200);
         },
+        // Alto real del objetivo para aria-valuenow: el explicito si
+        // existe, si no lo que el elemento mide en el layout actual.
+        vCurrentHeight(mode) {
+            const explicit = this.vHeightFor(mode);
+            if (explicit !== null) return explicit;
+            const ref = mode === 'wizard' ? this.$refs.wizardCard : this.$refs.composer;
+            return ref ? ref.offsetHeight : 0;
+        },
         applyVHeight(mode, height) {
             const min = mode === 'wizard' ? 160 : 110;
             const value = Math.round(Math.min(this.vMaxFor(mode), Math.max(min, height)));
+            // Ambos modos cambian el alto natural del scroll: el
+            // textarea absorbe (o cede) el espacio resultante.
             if (mode === 'wizard') this.wizardHeight = value;
             else this.composerHeight = value;
+            // Escritura directa ademas del binding reactivo: durante el
+            // arrastre el morph de Livewire o un Alpine tardio no pueden
+            // dejar el alto a medias — el elemento obedece al cursor ya.
+            const el = mode === 'wizard' ? this.$refs.wizardCard : this.$refs.composer;
+            if (el) el.style.height = value + 'px';
+            this.scheduleFitChatInput();
         },
         // Igual que startResize del drawer: mide al empezar y persiste al
         // soltar. Solo el compositor cambia de altura; el chat es flex-1.
@@ -135,14 +222,27 @@
             const ref = mode === 'wizard' ? this.$refs.wizardCard : this.$refs.composer;
             if (! ref) return;
             this.vMode = mode;
-            this.vStartY = event.clientY;
+            this.startClickGuard();
+            this.vStartY = event.touches ? event.touches[0].clientY : event.clientY;
             this.vStartHeight = this.vHeightFor(mode) ?? ref.offsetHeight;
             document.body.style.userSelect = 'none';
             event.preventDefault();
         },
         vResizeMove(event) {
+            // Misma senal que en resizeMove: botones sueltos = gesto
+            // terminado fuera de la ventana.
+            if (this.vMode && event.buttons === 0) {
+                const mode = this.vMode;
+                this.vMode = null;
+                document.body.style.userSelect = '';
+                this.endClickGuard();
+                this.persistVHeight(mode);
+                return;
+            }
             if (! this.vMode) return;
-            const moved = event.clientY - this.vStartY;
+            this.guardClick();
+            const y = event.touches ? event.touches[0].clientY : event.clientY;
+            const moved = y - this.vStartY;
             // El handle sigue al cursor: subir agranda el compositor y el
             // chat (flex-1) se encoge; bajar hace lo contrario. En el wizard
             // el handle esta abajo, asi que bajar agranda la tarjeta.
@@ -154,6 +254,7 @@
             const mode = this.vMode;
             this.vMode = null;
             document.body.style.userSelect = '';
+            this.endClickGuard();
             this.persistVHeight(mode);
         },
         vResizeKey(mode, delta) {
@@ -165,6 +266,11 @@
         persistVHeight(mode) {
             const value = this.vHeightFor(mode);
             if (value === null) return;
+            // Si el usuario re-ajusto el composer con un panel abierto,
+            // su nueva preferencia es la que se restaura al cerrar.
+            if (mode === 'composer' && this.autoComposerHeight !== null) {
+                this.autoComposerHeight = value;
+            }
             try {
                 localStorage.setItem(
                     mode === 'wizard' ? 'assistant.wizardHeight' : 'assistant.composerSize',
@@ -183,11 +289,49 @@
             if (this.wizardHeight !== null) {
                 this.wizardHeight = Math.min(this.wizardHeight, this.vMaxFor('wizard'));
             }
+            this.scheduleFitChatInput();
+        },
+        // Altura del panel de prompts: ocupa el espacio real que queda
+        // bajo las chips en el scroll del composer. '' = sin tope
+        // inline y manda la clase max-h-96.
+        promptsMaxHeight() {
+            if (this.composerHeight === null) return '';
+            const scroll = this.$refs.composerScroll;
+            const panel = this.$refs.promptsPanel;
+            if (! scroll || ! panel || panel.offsetHeight === 0) return '';
+            const above = panel.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+            return Math.max(140, Math.floor(scroll.clientHeight - above - 8)) + 'px';
+        },
+        fitChatInput() {
+            const ta = this.$refs.chatInput;
+            if (! ta) return;
+            ta.style.height = 'auto';
+            ta.style.height = Math.min(Math.max(ta.scrollHeight, 42), 160) + 'px';
+        },
+        // Diferido a rAF: el alto del composer o el contenido de los
+        // paneles pueden cambiar por Alpine/morph en el mismo tick y la
+        // medicion debe correr con el layout ya aplicado.
+        scheduleFitChatInput() {
+            requestAnimationFrame(() => this.fitChatInput());
+            // x-transition deja el panel ~150-200ms en el layout al
+            // cerrar: una segunda medicion cubre el contenido que se
+            // esconde despues del primer frame.
+            setTimeout(() => this.fitChatInput(), 240);
         },
         resetComposerHeight() {
             this.composerHeight = null;
+            // Reset manual: ya no hay altura previa que restaurar cuando
+            // el panel abierto se cierre.
+            this.autoComposerHeight = null;
+            this.scheduleFitChatInput();
             try {
                 localStorage.removeItem('assistant.composerSize');
+            } catch (e) { /* sin storage: se queda el default */ }
+        },
+        resetWizardHeight() {
+            this.wizardHeight = null;
+            try {
+                localStorage.removeItem('assistant.wizardHeight');
             } catch (e) { /* sin storage: se queda el default */ }
         },
         onWindowResize() {
@@ -195,6 +339,7 @@
             this.clampVHeights();
         },
         toggleSuggest() {
+            if (this.clickGuardActive()) return;
             this.suggestOpen = ! this.suggestOpen;
             localStorage.setItem('assistant.suggestOpen', this.suggestOpen ? '1' : '0');
         },
@@ -274,7 +419,18 @@
         },
         // Modelo activo: el elegido localmente (optimista) o el del servidor.
         activeModelId() {
-            return this.modelSel ?? (this.$wire.assistantModel || @js(config('services.gemini.model')));
+            return this.modelSel ?? (this.$wire.assistantModel || @js(\App\Services\Assistant\AssistantProvider::model()));
+        },
+        activeModelTab() {
+            if (this.modelGroupsMeta.some((group) => group.driver === this.modelTab)) {
+                return this.modelTab;
+            }
+            const active = this.modelGroupsMeta.find((group) => group.models.includes(this.activeModelId()));
+            return active ? active.driver : (this.modelGroupsMeta[0]?.driver ?? '');
+        },
+        toggleModelPicker() {
+            this.modelOpen = ! this.modelOpen;
+            if (this.modelOpen) this.modelTab = null;
         },
         // Eleccion optimista: el radio se marca al instante y muestra spinner
         // hasta que Livewire confirma la preferencia en el servidor.
@@ -288,12 +444,17 @@
                 .catch(() => { this.modelSel = previous; })
                 .finally(() => { this.modelBusy = false; });
         },
-        async echoAndSend(text, call, restoreInput = null) {
-            if (this.sending || ! text.trim()) return;
+        async echoAndSend(text, call, restoreInput = null, force = false) {
+            // force=true solo para interruptSend: se salta el guard de
+            // `sending` porque el request en vuelo ya fue cancelado en el
+            // servidor via nonce y este mensaje debe salir ya.
+            if ((! force && this.sending) || ! text.trim()) return;
+            this.sendDepth++;
             this.sending = true;
             this.thinkingSince = Date.now();
             this.thinkingStep = 0;
-            this.pendingMsgs.push(text.trim());
+            const pendingText = text.trim();
+            this.pendingMsgs.push(pendingText);
             this.atBottom = true;
             this.scrollToBottom();
             try {
@@ -303,35 +464,51 @@
                 // para que el usuario no lo pierda y pueda reintentar.
                 if (restoreInput) restoreInput();
             } finally {
-                this.pendingMsgs = [];
-                this.sending = false;
+                // Se quita solo el eco de ESTE envio: un force-send pudo
+                // poner el suyo mientras este request seguia en vuelo y
+                // limpiarlo todo le borraria el mensaje optimista.
+                const pendingIndex = this.pendingMsgs.indexOf(pendingText);
+                if (pendingIndex !== -1) this.pendingMsgs.splice(pendingIndex, 1);
+                this.sendDepth = Math.max(0, this.sendDepth - 1);
+                this.sending = this.sendDepth > 0;
                 // Si la respuesta trajo un preview nuevo no debe quedar
                 // oculto por un dismiss anterior.
                 this.previewHidden = false;
                 this.scrollToBottom();
+                // Siguiente mensaje en cola: se envia solo cuando la
+                // respuesta anterior ya llego (un request a la vez).
+                this.pumpQueue();
             }
         },
         sendNow() {
-            const text = (this.$wire.input ?? '').trim();
-            if (! text) return Promise.resolve();
+            // Un click residual del resize no debe disparar un envio.
+            if (this.clickGuardActive()) return Promise.resolve();
             const input = this.$refs.chatInput;
+            const text = ((input ? input.value : (this.$wire.input ?? '')) ?? '').trim();
+            if (! text) return Promise.resolve();
             // El textarea se vacia en el instante del envio, sin esperar la
             // respuesta; el servidor confirma el vaciado al responder y, si
             // el request falla, restoreInput devuelve el texto.
             if (input) {
                 input.value = '';
-                input.style.height = 'auto';
             }
             this.inputText = '';
+            this.clearDraft();
+            this.scheduleFitChatInput();
+            // Con una respuesta en curso el mensaje entra a la cola en vez
+            // de perderse: se procesa en orden al terminar la actual.
+            if (this.sending) {
+                this.enqueueMessage(text);
+                return Promise.resolve();
+            }
             return this.echoAndSend(text, () => this.$wire.send(), () => {
                 if (! input) return;
                 input.value = text;
                 input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.style.height = 'auto';
-                input.style.height = Math.min(input.scrollHeight, 160) + 'px';
             });
         },
         sendSuggestion(text) {
+            if (this.sending || this.msgQueue.length > 0) return this.enqueueMessage(text);
             return this.echoAndSend(text, () => this.$wire.askSuggestion(text));
         },
         // Botones de prompt dentro del modal de preview (Hazlo
@@ -341,7 +518,215 @@
         // la IA, sin congelar la vista.
         sendFromPreview(text) {
             this.dismissPreviewForChat();
+            if (this.sending || this.msgQueue.length > 0) return this.enqueueMessage(text);
             return this.echoAndSend(text, () => this.$wire.askFromPreview(text));
+        },
+        // ---------------------------------------------------------------
+        // Cola de mensajes (max QUEUE_MAX): se persiste por conversacion
+        // en localStorage junto al borrador del input.
+        // ---------------------------------------------------------------
+        enqueueMessage(text) {
+            const clean = (text ?? '').trim();
+            if (clean === '') return false;
+            if (this.msgQueue.length >= this.QUEUE_MAX) {
+                // Cola llena: el texto vuelve al input para no perderlo y
+                // la barra de cola avisa del limite unos segundos.
+                this.restoreInputText(clean);
+                this.queueFullFlash = true;
+                setTimeout(() => { this.queueFullFlash = false; }, 2200);
+                return false;
+            }
+            this.msgQueue.push(clean);
+            this.persistQueue();
+            this.queueOpen = true;
+            return true;
+        },
+        pumpQueue() {
+            if (this.sending || this.msgQueue.length === 0) return;
+            const next = this.msgQueue.shift();
+            this.persistQueue();
+            if (! next) return;
+            this.echoAndSend(next, () => this.$wire.askSuggestion(next));
+        },
+        removeQueued(index) {
+            this.msgQueue.splice(index, 1);
+            this.persistQueue();
+        },
+        // Force-send de un item encolado: si hay respuesta en curso la
+        // cancela en el servidor (nonce) y envia este mensaje ya.
+        sendQueuedNow(index) {
+            const text = this.msgQueue.splice(index, 1)[0];
+            this.persistQueue();
+            if (! text) return;
+            if (this.sending) {
+                this.interruptSendNow(text);
+            } else {
+                this.echoAndSend(text, () => this.$wire.askSuggestion(text));
+            }
+        },
+        // Ctrl+Enter / Cmd+Enter: interrumpe la respuesta en curso y manda
+        // el texto del input de una vez, sin pasar por la cola. Sin
+        // respuesta en curso equivale a un envio normal (sendNow).
+        forceSendInput() {
+            if (! this.sending) {
+                this.sendNow();
+                return;
+            }
+            const input = this.$refs.chatInput;
+            const text = ((input ? input.value : (this.$wire.input ?? '')) ?? '').trim();
+            if (! text) return;
+            if (input) {
+                input.value = '';
+            }
+            this.inputText = '';
+            this.clearDraft();
+            this.scheduleFitChatInput();
+            this.interruptSendNow(text);
+        },
+        interruptSendNow(text) {
+            return this.echoAndSend(text, () => this.$wire.interruptSend(text), null, true);
+        },
+        // Drag & drop del item encolado: se guarda el indice origen en
+        // dragstart y el destino se calcula en drop.
+        queueDragStart(index, event) {
+            this.queueDragFrom = index;
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+        },
+        queueDragOver(index, event) {
+            event.preventDefault();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+            this.queueDragOver = index;
+        },
+        queueDrop(index, event) {
+            event.preventDefault();
+            const from = this.queueDragFrom;
+            this.queueDragFrom = null;
+            this.queueDragOver = null;
+            if (from === null || from === index || from >= this.msgQueue.length) return;
+            const [item] = this.msgQueue.splice(from, 1);
+            this.msgQueue.splice(index, 0, item);
+            this.persistQueue();
+        },
+        queueDragEnd() {
+            this.queueDragFrom = null;
+            this.queueDragOver = null;
+        },
+        // ---------------------------------------------------------------
+        // Estado local por conversacion: borrador del input + cola.
+        // Una sola clave JSON por chat en localStorage.
+        // ---------------------------------------------------------------
+        chatStateKey() {
+            return 'assistant.chatState.' + (this.$wire.activeChatId ?? 'new');
+        },
+        saveChatState(key) {
+            try {
+                localStorage.setItem(key ?? this.chatStateKey(), JSON.stringify({
+                    d: this.inputText,
+                    q: this.msgQueue,
+                }));
+            } catch (e) { /* storage lleno/bloqueado: el estado sigue en sesion */ }
+            this.refreshChatBadges();
+        },
+        // Relee todas las claves assistant.chatState.* y reconstruye el
+        // mapa de badges: se llama tras cada guardado, al entrar a la
+        // vista de chats y al restaurar estado de una conversacion.
+        refreshChatBadges() {
+            const map = {};
+            try {
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (! key || ! key.startsWith('assistant.chatState.')) continue;
+                    const id = key.slice('assistant.chatState.'.length);
+                    if (id === 'new' || id === '') continue;
+                    const state = JSON.parse(localStorage.getItem(key) || 'null');
+                    const draft = typeof state?.d === 'string' ? state.d.trim() : '';
+                    const queued = Array.isArray(state?.q) ? state.q.length : 0;
+                    if (draft !== '' || queued > 0) {
+                        map[id] = { d: draft, q: queued };
+                    }
+                }
+            } catch (e) { /* storage bloqueado: sin badges */ }
+            this.chatBadges = map;
+        },
+        // Los x-text del historial se evaluan aunque el badge este
+        // oculto: sin este fallback revienta con undefined.d antes de
+        // que refreshChatBadges() termine de leer localStorage.
+        badgeFor(id) {
+            const badge = this.chatBadges[id];
+            return badge && typeof badge === 'object' ? badge : { d: '', q: 0 };
+        },
+        restoreChatState(key) {
+            let state = null;
+            try {
+                state = JSON.parse(localStorage.getItem(key) || 'null');
+            } catch (e) { state = null; }
+            this.msgQueue = Array.isArray(state?.q) ? state.q.slice(0, this.QUEUE_MAX) : [];
+            this.applyDraft(typeof state?.d === 'string' ? state.d : '');
+        },
+        // Al cambiar de conversacion: guarda el estado del chat saliente
+        // bajo su clave y restaura el del entrante. No hay migracion
+        // '.new' -> id: cuando el primer mensaje crea el chat el borrador
+        // ya se consumio y la cola se vacia al procesarse.
+        onChatStateKeyChange() {
+            const prev = this._stateKey ?? this.chatStateKey();
+            const next = this.chatStateKey();
+            if (prev === next) return;
+            this.saveChatState(prev);
+            this._stateKey = next;
+            this.restoreChatState(next);
+        },
+        applyDraft(text) {
+            const input = this.$refs.chatInput;
+            if (input) {
+                input.value = text;
+                this.fitChatInput();
+            }
+            this.inputText = text;
+        },
+        saveDraft() {
+            this.saveChatState();
+        },
+        clearDraft() {
+            try {
+                const key = this.chatStateKey();
+                const raw = localStorage.getItem(key);
+                if (raw !== null) {
+                    const state = JSON.parse(raw);
+                    state.d = '';
+                    localStorage.setItem(key, JSON.stringify(state));
+                }
+            } catch (e) { /* sin storage: nada que limpiar */ }
+        },
+        persistQueue() {
+            this.saveChatState();
+            // La cola visible cambia el reparto del composer: el
+            // textarea cede o recupera ese espacio.
+            this.scheduleFitChatInput();
+        },
+        restoreInputText(text) {
+            const input = this.$refs.chatInput;
+            if (input) {
+                input.value = text;
+                this.fitChatInput();
+                input.focus();
+            }
+            this.inputText = text;
+            this.saveDraft();
+        },
+        // Descarga del chat exportado: el servidor manda el Markdown en
+        // el detail del evento y aqui se materializa el blob + <a>.
+        downloadExport(detail) {
+            try {
+                const blob = new Blob([detail.content || ''], { type: 'text/markdown;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = detail.name || 'chat.md';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 5000);
+            } catch (e) { /* sin download: el contenido sigue en el chat */ }
         },
         toggleDrawer() {
             this.drawerOpen = ! this.drawerOpen;
@@ -407,7 +792,7 @@
             // hay que devolver el textarea a una linea manualmente.
             this.$wire.$watch('input', (value) => {
                 if (value === '' && this.$refs.chatInput) {
-                    this.$refs.chatInput.style.height = 'auto';
+                    this.scheduleFitChatInput();
                     this.inputText = '';
                 }
             });
@@ -415,6 +800,15 @@
             // panel visible se ajusta solo.
             this.$wire.$watch('view', (value) => {
                 this.chatView = value;
+            });
+            // Cambio de conversacion: guarda borrador+cola del chat
+            // saliente y restaura los del entrante (localStorage). El
+            // restore va en nextTick porque chatInput aun no existe
+            // durante init().
+            this._stateKey = this.chatStateKey();
+            this.$nextTick(() => this.restoreChatState(this._stateKey));
+            this.$wire.$watch('activeChatId', () => {
+                this.onChatStateKeyChange();
             });
             // Al abrir el drawer el foco va al input: el usuario puede
             // escribir de una vez sin hacer click extra. Con el drawer ya
@@ -447,6 +841,118 @@
                     this.wizardHeight = savedWizard;
                 }
             } catch (e) { /* sin storage: alturas por defecto */ }
+            // UI grande dentro del composer (wizard guiado, biblioteca
+            // de prompts): el panel manda sobre el espacio — si su
+            // contenido necesita MAS alto del que el usuario reservo con
+            // el resize, el composer crece hasta cubrirlo; si la altura
+            // del usuario ya alcanza o sobra, NO se toca su resize.
+            // Al cerrarse todo se restaura la altura previa (si el
+            // usuario no la modifico mientras tanto).
+            this.updateComposerAuto = () => {
+                // El textarea se reajusta en cuanto cambie la altura del
+                // composer o el contenido de los paneles (rAF: corre
+                // despues de que Alpine aplique el estilo y el morph).
+                this.scheduleFitChatInput();
+                // El panel de prompts solo ocupa espacio cuando es
+                // visible de verdad: promptsOpen dentro de la seccion
+                // suggestOpen (colapsada = display:none = alto 0).
+                const wantsAuto = this.$wire.pendingForm !== null
+                    || (this.promptsOpen && this.suggestOpen);
+                if (wantsAuto) {
+                    if (this.composerHeight !== null && this.autoComposerHeight === null) {
+                        this.autoComposerHeight = this.composerHeight;
+                    }
+                    // Solo aplica cuando el usuario tenia altura manual:
+                    // en modo auto el contenido ya dimensiona el composer.
+                    if (this.autoComposerHeight === null) return;
+                    // $nextTick: el watcher puede disparar antes de que
+                    // x-show pinte el panel y el contenido lo mediria
+                    // como si no existiera.
+                    this.$nextTick(() => {
+                        if (! this.$wire.pendingForm && ! (this.promptsOpen && this.suggestOpen)) return;
+                        if (this.autoComposerHeight === null) return;
+                        const composer = this.$refs.composer;
+                        const scroll = this.$refs.composerScroll;
+                        if (! composer || ! scroll) return;
+                        // composer = scroll + bloque del input; la diferencia
+                        // de offsetHeight es el chrome fijo del input.
+                        const chrome = composer.offsetHeight - scroll.offsetHeight;
+                        // composerContent.offsetHeight es la altura NATURAL
+                        // del contenido del scroll: scrollHeight mediria la
+                        // caja flex-1 (que ya incluye el espacio sobrante).
+                        const contentH = this.$refs.composerContent?.offsetHeight ?? scroll.scrollHeight;
+                        // chrome incluye el textarea ya agrandado por el
+                        // espacio sobrante: se descuenta su parte flexible
+                        // (todo lo que exceda el minimo de 42px) para que
+                        // `needed` no dependa del alto actual del input.
+                        const ta = this.$refs.chatInput;
+                        const taFlex = ta ? Math.max(0, ta.offsetHeight - 42) : 0;
+                        const needed = contentH + chrome - taFlex;
+                        const target = Math.min(
+                            this.vMaxFor('composer'),
+                            Math.max(110, this.autoComposerHeight, needed),
+                        );
+                        if (target !== this.composerHeight) this.composerHeight = target;
+                    });
+                } else if (this.autoComposerHeight !== null) {
+                    this.composerHeight = this.autoComposerHeight;
+                    this.autoComposerHeight = null;
+                }
+            };
+            this.$wire.$watch('pendingForm', this.updateComposerAuto);
+            this.$watch('promptsOpen', this.updateComposerAuto);
+            // Colapsar/expandir la seccion de prompts tambien cambia el
+            // alto natural del scroll: el composer y el textarea se
+            // reajustan en el acto, sin esperar al resize.
+            this.$watch('suggestOpen', this.updateComposerAuto);
+            this.updateComposerAuto();
+            // Otros contenidos del composer que cambian el reparto del
+            // espacio: la cola de mensajes y la propia vista (al volver
+            // del historial el composer reaparece).
+            this.$watch('queueOpen', () => this.scheduleFitChatInput());
+            this.$watch('msgQueue', () => this.scheduleFitChatInput());
+            this.scheduleFitChatInput();
+            // El click sintetico tras soltar un resize no debe activar lo
+            // que quede bajo el cursor (toggle de prompts, chips, wizard).
+            // Listener global UNA sola vez: el flag vive en window para
+            // sobrevivir re-inits del componente y el capture+stopImmediate
+            // mata el evento antes de que llegue a cualquier handler.
+            if (! window.__assistantClickGuardBound) {
+                window.__assistantClickGuardBound = true;
+                window.addEventListener('click', (e) => {
+                    if (window.__assistantResizing === true
+                        || Date.now() < (window.__assistantClickGuardUntil || 0)) {
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        e.preventDefault();
+                    }
+                }, true);
+                // Si la ventana pierde el foco a mitad del gesto (alt+tab,
+                // otra app) el mouseup puede no llegar nunca: el flag se
+                // liberaria y todos los clicks quedarian muertos.
+                window.addEventListener('blur', () => {
+                    window.__assistantResizing = false;
+                });
+                // Y si el mouseup cayo FUERA de la ventana, endResize/
+                // endVResize no corrieron: el flag quedaria atascado y
+                // todo click moriria. Se libera solo tras despachar el
+                // evento — durante el gesto no hay mouseup, asi que un
+                // resize real nunca lo limpia antes de tiempo.
+                ['mouseup', 'touchend'].forEach((evt) => {
+                    window.addEventListener(evt, () => {
+                        setTimeout(() => { window.__assistantResizing = false; }, 0);
+                    });
+                });
+            }
+            // Badges del historial: se refrescan al abrir la vista de
+            // chats y una vez al iniciar por si ya habia estado guardado.
+            this.$watch('chatView', (view) => {
+                if (view === 'chats') this.refreshChatBadges();
+                // Al volver a la vista de chat el composer se re-muestra:
+                // hay que re-medir el reparto de alturas.
+                this.scheduleFitChatInput();
+            });
+            this.refreshChatBadges();
             // Rota el texto del indicador de pensamiento mientras haya
             // una respuesta en curso; un solo intervalo para toda la vida
             // del componente.
@@ -460,6 +966,7 @@
     }"
     x-on:keydown.escape.window="escapeKey()"
     x-on:assistant-close.window="closeDrawer()"
+    x-on:assistant-export.window="downloadExport($event.detail)"
     x-on:assistant-theme.window="
         window.dispatchEvent(new CustomEvent('theme-changed', { detail: $event.detail.theme }));
         const switcher = document.querySelector('.fi-theme-switcher');
@@ -469,7 +976,11 @@
     "
     x-on:mousemove.window="resizeMove($event); vResizeMove($event)"
     x-on:mouseup.window="endResize(); endVResize()"
+    x-on:touchmove.window="resizeMove($event); vResizeMove($event)"
+    x-on:touchend.window="endResize(); endVResize()"
     x-on:resize.window="onWindowResize()"
+    {{-- La supresion del click post-resize vive en un listener de
+         window capture dentro de init(): ver suppressClickUntil. --}}
     class="pointer-events-none fixed inset-0 z-40"
 >
     {{-- FAB --}}
@@ -530,8 +1041,9 @@
              drawer. Solo escritorio (lg+); el ancho maximo es 75vw. --}}
         <div
             x-on:mousedown="startResize($event)"
+            x-on:touchstart="startResize($event)"
             title="{{ __('assistant.resize') }}"
-            class="absolute inset-y-0 left-0 z-30 hidden w-1.5 cursor-col-resize transition-colors hover:bg-primary-500/40 lg:block"
+            class="absolute inset-y-0 left-0 z-30 hidden w-1.5 cursor-col-resize touch-none transition-colors hover:bg-primary-500/40 lg:block"
             :class="resizing && 'bg-primary-500/60'"
         ></div>
 
@@ -570,6 +1082,18 @@
                 <div wire:ignore.self x-show="chatView === 'chats'" class="flex items-center gap-1">
                     <button
                         type="button"
+                        wire:click="exportWeeklyReport"
+                        wire:loading.attr="disabled"
+                        wire:target="exportWeeklyReport"
+                        title="{{ __('assistant.weekly_report.button') }}"
+                        class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-gray-200"
+                    >
+                        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                        </svg>
+                    </button>
+                    <button
+                        type="button"
                         x-on:click="chatView = 'chat'; $wire.backToChat()"
                         title="{{ __('assistant.back_to_chat') }}"
                         class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
@@ -580,13 +1104,17 @@
                     </button>
                 </div>
                 <div wire:ignore.self x-show="chatView === 'chat'" class="flex items-center gap-1">
-                    {{-- Selector de modelo del copiloto: los 3 modelos
+                    {{-- Selector de modelo del copiloto: los modelos
                          gratuitos de Gemini con su uso recomendado. El
-                         cambio aplica en tiempo real al proximo mensaje. --}}
+                         cambio aplica en tiempo real al proximo mensaje.
+                         Las opciones las define el proveedor activo:
+                         catalogo fijo de Gemini o AI_MODELS del endpoint
+                         OpenAI-compatible (Groq, OpenAI, OpenRouter...). --}}
+                    @if ($showModelPicker)
                     <div class="relative">
                         <button
                             type="button"
-                            x-on:click="modelOpen = ! modelOpen"
+                            x-on:click="toggleModelPicker()"
                             title="{{ __('assistant.model.title') }}"
                             class="rounded-lg p-2 transition"
                             :class="modelOpen || modelBusy ? 'bg-primary-100 text-primary-600 dark:bg-primary-500/20 dark:text-primary-400' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200'"
@@ -613,44 +1141,69 @@
                             <p class="border-b border-gray-100 px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:border-white/10 dark:text-gray-500">
                                 {{ __('assistant.model.title') }}
                             </p>
-                            <div class="max-h-80 overflow-y-auto p-1.5">
-                                @foreach ($assistantModels as $modelIndex => $modelId)
-                                    <button
-                                        type="button"
-                                        x-on:click="selectModel('{{ $modelId }}')"
-                                        class="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition"
-                                        :class="activeModelId() === '{{ $modelId }}' ? 'bg-primary-50 dark:bg-primary-500/10' : 'hover:bg-gray-50 dark:hover:bg-white/5'"
-                                    >
-                                        <span
-                                            class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition"
-                                            :class="activeModelId() === '{{ $modelId }}' ? 'border-primary-600 bg-primary-600' : 'border-gray-300 dark:border-gray-600'"
+                            {{-- Un tab por proveedor configurado: con un
+                                 solo proveedor la barra no aporta nada y
+                                 se oculta. --}}
+                            @if (count($assistantModelGroups) > 1)
+                                <div class="flex gap-1 border-b border-gray-100 px-2 py-1.5 dark:border-white/10">
+                                    @foreach ($assistantModelGroups as $modelGroup)
+                                        <button
+                                            type="button"
+                                            x-on:click="modelTab = @js($modelGroup['driver'])"
+                                            title="{{ $modelGroup['label'] }}"
+                                            class="flex-1 truncate rounded-lg px-2 py-1 text-[11px] font-semibold transition"
+                                            :class="activeModelTab() === @js($modelGroup['driver']) ? 'bg-primary-100 text-primary-700 dark:bg-primary-500/20 dark:text-primary-300' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/10'"
                                         >
-                                            <svg
-                                                x-show="modelBusy && modelSel === '{{ $modelId }}'"
-                                                x-cloak
-                                                class="h-2.5 w-2.5 animate-spin text-white"
-                                                xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                            {{ $modelGroup['label'] }}
+                                        </button>
+                                    @endforeach
+                                </div>
+                            @endif
+                            <div class="max-h-80 overflow-y-auto p-1.5">
+                                @foreach ($assistantModelGroups as $modelGroup)
+                                    <div x-show="activeModelTab() === @js($modelGroup['driver'])">
+                                    @foreach ($modelGroup['models'] as $modelIndex => $modelId)
+                                        @php $modelMeta = $assistantModelMeta($modelId, $modelIndex); @endphp
+                                        <button
+                                            type="button"
+                                            x-on:click="selectModel(@js($modelId))"
+                                            class="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition"
+                                            :class="activeModelId() === @js($modelId) ? 'bg-primary-50 dark:bg-primary-500/10' : 'hover:bg-gray-50 dark:hover:bg-white/5'"
+                                        >
+                                            <span
+                                                class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition"
+                                                :class="activeModelId() === @js($modelId) ? 'border-primary-600 bg-primary-600' : 'border-gray-300 dark:border-gray-600'"
                                             >
-                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z"></path>
-                                            </svg>
-                                            <svg
-                                                x-show="!(modelBusy && modelSel === '{{ $modelId }}') && activeModelId() === '{{ $modelId }}'"
-                                                x-cloak
-                                                class="h-2.5 w-2.5 text-white"
-                                                xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor" aria-hidden="true"
-                                            >
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                                            </svg>
-                                        </span>
-                                        <span class="min-w-0 flex-1">
-                                            <span class="flex items-center gap-1.5">
-                                                <span class="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{{ __("assistant.models.{$modelIndex}.name") }}</span>
-                                                <span class="shrink-0 rounded-full bg-gray-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-gray-500 dark:bg-white/10 dark:text-gray-400">{{ __("assistant.models.{$modelIndex}.tag") }}</span>
+                                                <svg
+                                                    x-show="modelBusy && modelSel === @js($modelId)"
+                                                    x-cloak
+                                                    class="h-2.5 w-2.5 animate-spin text-white"
+                                                    xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                                >
+                                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z"></path>
+                                                </svg>
+                                                <svg
+                                                    x-show="!(modelBusy && modelSel === @js($modelId)) && activeModelId() === @js($modelId)"
+                                                    x-cloak
+                                                    class="h-2.5 w-2.5 text-white"
+                                                    xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor" aria-hidden="true"
+                                                >
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                                </svg>
                                             </span>
-                                            <span class="mt-0.5 block text-[10px] leading-snug text-gray-500 dark:text-gray-400">{{ __("assistant.models.{$modelIndex}.use") }}</span>
-                                        </span>
-                                    </button>
+                                            <span class="min-w-0 flex-1">
+                                                <span class="flex items-center gap-1.5">
+                                                    <span class="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{{ $modelMeta['name'] }}</span>
+                                                    <span class="shrink-0 rounded-full bg-gray-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-gray-500 dark:bg-white/10 dark:text-gray-400">{{ $modelMeta['tag'] }}</span>
+                                                </span>
+                                                @if ($modelMeta['use'] !== '')
+                                                    <span class="mt-0.5 block text-[10px] leading-snug text-gray-500 dark:text-gray-400">{{ $modelMeta['use'] }}</span>
+                                                @endif
+                                            </span>
+                                        </button>
+                                    @endforeach
+                                    </div>
                                 @endforeach
                             </div>
                             <p class="border-t border-gray-100 px-3 py-2 text-[10px] leading-snug text-gray-400 dark:border-white/10 dark:text-gray-500">
@@ -658,6 +1211,7 @@
                             </p>
                         </div>
                     </div>
+                    @endif
                     <button
                         type="button"
                         x-on:click="chatView = 'chats'; $wire.showChats()"
@@ -668,6 +1222,37 @@
                             <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.76 9.76 0 0 1-2.555-.337A5.97 5.97 0 0 1 5.41 20.97a5.97 5.97 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
                         </svg>
                     </button>
+                    @if ($briefChat)
+                    <button
+                        type="button"
+                        wire:click="toggleBriefing"
+                        wire:loading.attr="disabled"
+                        wire:target="toggleBriefing"
+                        title="{{ $briefEnabled ? __('assistant.briefing.toggle_off') : __('assistant.briefing.toggle_on') }}"
+                        class="rounded-lg p-2 transition {{ $briefEnabled ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-500/10' : 'text-gray-300 hover:bg-gray-100 hover:text-gray-500 dark:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-400' }}"
+                    >
+                        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
+                            @unless ($briefEnabled)
+                                <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 4.5 15 15" />
+                            @endunless
+                        </svg>
+                    </button>
+                    @endif
+                    @if ($activeChatId !== null)
+                        <button
+                            type="button"
+                            wire:click="exportChat"
+                            wire:loading.attr="disabled"
+                            wire:target="exportChat"
+                            title="{{ __('assistant.export_chat') }}"
+                            class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-gray-200"
+                        >
+                            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                            </svg>
+                        </button>
+                    @endif
                     <button
                         type="button"
                         x-bind:disabled="chatBusy"
@@ -748,18 +1333,64 @@
                                 x-on:click="chatView = 'chat'; chatBusy = true; $wire.selectChat({{ $chat['id'] }}).finally(() => chatBusy = false)"
                                 class="flex min-w-0 flex-1 items-center gap-3 text-left disabled:opacity-60"
                             >
-                                <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-200 text-gray-500 dark:bg-white/10 dark:text-gray-400">
-                                    <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" />
-                                    </svg>
+                                <span @class([
+                                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                                    'bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300' => ($chat['kind'] ?? 'user') === 'briefing' && ($chat['brief_enabled'] ?? true),
+                                    'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500' => ($chat['kind'] ?? 'user') !== 'briefing' || ! ($chat['brief_enabled'] ?? true),
+                                ])>
+                                    @if (($chat['kind'] ?? 'user') === 'briefing')
+                                        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                                        </svg>
+                                    @else
+                                        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" />
+                                        </svg>
+                                    @endif
                                 </span>
                                 <span class="min-w-0">
-                                    <span class="block truncate text-sm font-medium text-gray-800 dark:text-gray-100">{{ $chat['title'] }}</span>
+                                    <span class="flex items-center gap-1.5">
+                                        <span class="truncate text-sm font-medium text-gray-800 dark:text-gray-100">{{ ($chat['kind'] ?? 'user') === 'briefing' ? __('assistant.briefing.title') : $chat['title'] }}</span>
+                                        @if (($chat['kind'] ?? 'user') === 'briefing')
+                                            @if ($chat['brief_enabled'] ?? true)
+                                                <span class="shrink-0 rounded-md bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-700 ring-1 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/25">{{ __('assistant.briefing.badge') }}</span>
+                                            @else
+                                                <span class="shrink-0 rounded-md bg-gray-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-gray-500 ring-1 ring-gray-500/20 dark:bg-white/10 dark:text-gray-400 dark:ring-white/15">{{ __('assistant.briefing.disabled_badge') }}</span>
+                                            @endif
+                                        @endif
+                                    </span>
+                                    <span
+                                        x-show="chatBadges[{{ $chat['id'] }}]"
+                                        class="mt-0.5 flex flex-wrap items-center gap-1"
+                                    >
+                                        <span
+                                            x-show="badgeFor({{ $chat['id'] }}).d !== ''"
+                                            class="inline-flex max-w-full items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/25"
+                                        >
+                                            <svg class="h-3 w-3 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+                                            </svg>
+                                            <span
+                                                class="truncate"
+                                                x-text="@js(__('assistant.badge_draft') . ': ') + badgeFor({{ $chat['id'] }}).d.slice(0, 42) + (badgeFor({{ $chat['id'] }}).d.length > 42 ? '…' : '')"
+                                            ></span>
+                                        </span>
+                                        <span
+                                            x-show="badgeFor({{ $chat['id'] }}).q > 0"
+                                            class="inline-flex items-center gap-1 rounded-md bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 ring-1 ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-400/25"
+                                        >
+                                            <svg class="h-3 w-3 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 0 1 0 3.75H5.625a1.875 1.875 0 0 1 0-3.75Z" />
+                                            </svg>
+                                            <span x-text="badgeFor({{ $chat['id'] }}).q + ' ' + @js(__('assistant.badge_queue'))"></span>
+                                        </span>
+                                    </span>
                                     @if ($chat['updated_at'])
                                         <span class="block text-[11px] text-gray-400 dark:text-gray-500">{{ $chat['updated_at'] }}</span>
                                     @endif
                                 </span>
                             </button>
+                            @if (($chat['kind'] ?? 'user') !== 'briefing')
                             <button
                                 type="button"
                                 x-data
@@ -771,6 +1402,7 @@
                                     <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
                                 </svg>
                             </button>
+                            @endif
                         </div>
                     @empty
                         <p class="px-2 py-6 text-center text-sm text-gray-400 dark:text-gray-500">{{ __('assistant.no_chats') }}</p>
@@ -778,6 +1410,35 @@
                 </div>
                 @endif
             </div>
+
+            @if ($briefMuted)
+                {{-- Briefing desactivado: el chat no existe como conversacion.
+                     Ni mensajes, ni composer, ni sugerencias — solo el aviso
+                     y el boton para reactivar el job diario. --}}
+                <div
+                    x-show="chatView === 'chat'"
+                    class="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-center"
+                >
+                    <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-100 text-gray-400 ring-1 ring-gray-950/5 dark:bg-white/5 dark:text-gray-500 dark:ring-white/10">
+                        <svg class="h-7 w-7" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
+                        </svg>
+                    </div>
+                    <div class="space-y-1">
+                        <p class="text-sm font-bold text-gray-800 dark:text-gray-100">{{ __('assistant.briefing.disabled_title') }}</p>
+                        <p class="max-w-xs text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ __('assistant.briefing.disabled_text') }}</p>
+                    </div>
+                    <button
+                        type="button"
+                        wire:click="toggleBriefing"
+                        wire:loading.attr="disabled"
+                        wire:target="toggleBriefing"
+                        class="rounded-xl bg-primary-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-primary-500 disabled:opacity-50"
+                    >
+                        {{ __('assistant.briefing.toggle_on') }}
+                    </button>
+                </div>
+            @else
 
             {{-- Conversacion --}}
             <div
@@ -863,6 +1524,9 @@
                             $sameRoleAsNext = $nextMessage !== null
                                 && $nextMessage['role'] === $message['role']
                                 && ($messageDay === null || $nextMessageDay === $messageDay->toDateString());
+                            // Respuesta descartada por cancelacion/force-send:
+                            // se pinta como aviso neutro, no como burbuja normal.
+                            $isCancelledNotice = ($message['notice'] ?? null) === 'cancelled';
                         @endphp
                         <div
                             wire:key="msg-{{ $message['id'] ?? $index }}"
@@ -886,10 +1550,22 @@
                                 </span>
                             @endif
                             <div @class([
-                                'relative max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm lg:max-w-3xl',
+                                'relative min-w-0 w-fit max-w-[75%] rounded-2xl px-4 py-3 text-sm shadow-sm lg:max-w-xl',
                                 'rounded-br-md bg-primary-600 text-white' => $isUserMessage,
-                                'rounded-bl-md bg-white text-gray-800 ring-1 ring-gray-950/5 dark:bg-gray-800 dark:text-gray-100 dark:ring-white/10' => ! $isUserMessage,
+                                'rounded-bl-md bg-white text-gray-800 ring-1 ring-gray-950/5 dark:bg-gray-800 dark:text-gray-100 dark:ring-white/10' => ! $isUserMessage && ! $isCancelledNotice,
+                                'rounded-bl-md bg-gray-100 text-gray-600 ring-1 ring-gray-950/5 dark:bg-white/5 dark:text-gray-300 dark:ring-white/10' => $isCancelledNotice,
                             ])>
+                                @if ($isCancelledNotice)
+                                    {{-- Cancelado: cabecera de aviso neutra
+                                         estilo Laravel; el texto de abajo
+                                         explica que se puede reformular. --}}
+                                    <p class="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                        <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                            <rect x="7" y="7" width="10" height="10" rx="2" />
+                                        </svg>
+                                        {{ __('assistant.cancelled_title') }}
+                                    </p>
+                                @endif
                                 {{-- Respuestas batch: cada seccion lleva su texto
                                      seguido de sus tablas, en el orden en que el
                                      usuario pidio las cosas. --}}
@@ -1243,27 +1919,107 @@
                                     </div>
                                 @endif
 
-                                @if ($message['role'] === 'assistant')
-                                    <button
-                                        type="button"
-                                        x-data="{ copied: false }"
-                                        x-on:click="navigator.clipboard.writeText(@js($message['text'])).then(() => { copied = true; setTimeout(() => copied = false, 1500) })"
-                                        title="{{ __('assistant.copy') }}"
-                                        // Flota fuera del borde derecho de la
-                                        // card (4px de aire): aparece al
-                                        // hacer hover en el mensaje o al
-                                        // acercar el cursor al propio boton.
-                                        // En pantallas touch no hay hover:
-                                        // se muestra siempre.
-                                        class="absolute -right-7 top-1/2 z-10 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white text-gray-400 opacity-0 shadow-md ring-1 ring-gray-950/10 transition hover:text-primary-600 focus-visible:opacity-100 group-hover:opacity-100 hover:opacity-100 [@media(hover:none)]:opacity-100 dark:bg-gray-700 dark:text-gray-400 dark:ring-white/10 dark:hover:text-primary-400"
-                                    >
-                                        <svg x-show="!copied" class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" />
-                                        </svg>
-                                        <svg x-show="copied" x-cloak class="h-3 w-3 text-success-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                                        </svg>
-                                    </button>
+                                @if ($message['role'] === 'assistant' && ! $isCancelledNotice)
+                                    @php $isLastMessage = $index === count($messages) - 1; @endphp
+                                    <div class="absolute -right-7 top-1/2 z-10 flex -translate-y-1/2 flex-col items-center gap-1">
+                                        {{-- Regenerar: solo en el ultimo mensaje
+                                             del chat — rehace la respuesta sobre
+                                             la misma pregunta sin duplicarla. --}}
+                                        @if ($isLastMessage)
+                                            <button
+                                                type="button"
+                                                wire:click="regenerateLast"
+                                                wire:loading.attr="disabled"
+                                                wire:target="regenerateLast"
+                                                x-bind:class="sending ? 'pointer-events-none opacity-50' : ''"
+                                                title="{{ __('assistant.regenerate') }}"
+                                                class="flex h-6 w-6 items-center justify-center rounded-full bg-white text-gray-400 opacity-0 shadow-md ring-1 ring-gray-950/10 transition hover:text-primary-600 focus-visible:opacity-100 group-hover:opacity-100 hover:opacity-100 disabled:opacity-50 [@media(hover:none)]:opacity-100 dark:bg-gray-700 dark:text-gray-400 dark:ring-white/10 dark:hover:text-primary-400"
+                                            >
+                                                <svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                                                </svg>
+                                            </button>
+                                        @endif
+                                        <button
+                                            type="button"
+                                            x-data="{ copied: false }"
+                                            x-on:click="navigator.clipboard.writeText(@js($message['text'])).then(() => { copied = true; setTimeout(() => copied = false, 1500) })"
+                                            title="{{ __('assistant.copy') }}"
+                                            // Flota fuera del borde derecho de la
+                                            // card (4px de aire): aparece al
+                                            // hacer hover en el mensaje o al
+                                            // acercar el cursor al propio boton.
+                                            // En pantallas touch no hay hover:
+                                            // se muestra siempre.
+                                            class="flex h-6 w-6 items-center justify-center rounded-full bg-white text-gray-400 opacity-0 shadow-md ring-1 ring-gray-950/10 transition hover:text-primary-600 focus-visible:opacity-100 group-hover:opacity-100 hover:opacity-100 [@media(hover:none)]:opacity-100 dark:bg-gray-700 dark:text-gray-400 dark:ring-white/10 dark:hover:text-primary-400"
+                                        >
+                                            <svg x-show="!copied" class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" />
+                                            </svg>
+                                            <svg x-show="copied" x-cloak class="h-3 w-3 text-success-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                @endif
+
+                                {{-- Chip "profundizar": solo en respuestas
+                                     con reporte — relanza el analisis en
+                                     modo exhaustivo sobre el mismo tema. --}}
+                                @if (($message['role'] ?? '') === 'assistant' && ! empty($message['data']['report'] ?? null))
+                                    <div class="mt-2">
+                                        <button
+                                            type="button"
+                                            x-on:click="sendSuggestion(@js(__('assistant.deep_prompt')))"
+                                            x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
+                                            class="inline-flex items-center gap-1.5 rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 ring-1 ring-violet-600/20 transition hover:bg-violet-100 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-400/25 dark:hover:bg-violet-500/20"
+                                        >
+                                            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 0 0 6 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0 1 18 16.5h-2.25m-7.5 0h7.5m-7.5 0-1 3m8.5-3 1 3m0 0 .5 1.5m-.5-1.5h-9.5m0 0-.5 1.5M9 11.25v1.5M12 9v3.75m3-6v6" />
+                                            </svg>
+                                            {{ __('assistant.deep_chip') }}
+                                        </button>
+                                    </div>
+                                @endif
+
+                                {{-- Feedback sutil: 👍/👎 sobre la calidad
+                                     de la respuesta; el estado activo queda
+                                     guardado en el payload del mensaje. --}}
+                                @if ($message['role'] === 'assistant' && ! $isCancelledNotice && ! empty($message['id']))
+                                    <div class="mt-2 flex items-center justify-end gap-0.5">
+                                        <button
+                                            type="button"
+                                            wire:click="setFeedback({{ $message['id'] }}, 'up')"
+                                            wire:loading.attr="disabled"
+                                            wire:target="setFeedback"
+                                            title="{{ __('assistant.feedback_up') }}"
+                                            @class([
+                                                'rounded-md p-1 transition',
+                                                'text-success-500' => ($message['feedback'] ?? null) === 'up',
+                                                'text-gray-300 hover:text-success-500 dark:text-gray-600 dark:hover:text-success-400' => ($message['feedback'] ?? null) !== 'up',
+                                            ])
+                                        >
+                                            <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                                <path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z" />
+                                            </svg>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            wire:click="setFeedback({{ $message['id'] }}, 'down')"
+                                            wire:loading.attr="disabled"
+                                            wire:target="setFeedback"
+                                            title="{{ __('assistant.feedback_down') }}"
+                                            @class([
+                                                'rounded-md p-1 transition',
+                                                'text-danger-500' => ($message['feedback'] ?? null) === 'down',
+                                                'text-gray-300 hover:text-danger-500 dark:text-gray-600 dark:hover:text-danger-400' => ($message['feedback'] ?? null) !== 'down',
+                                            ])
+                                        >
+                                            <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                                <path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z" />
+                                            </svg>
+                                        </button>
+                                    </div>
                                 @endif
 
                                 @if (($message['at'] ?? null) && ! $sameRoleAsNext)
@@ -1319,7 +2075,7 @@
                          reemplaza cuando llega la respuesta. --}}
                     <template x-for="(pendingText, pendingIndex) in pendingMsgs" :key="'pending-' + pendingIndex">
                         <div class="assistant-msg flex items-end justify-end gap-2">
-                            <div class="relative max-w-[85%] rounded-2xl rounded-br-md bg-primary-600 px-4 py-3 text-sm text-white shadow-sm lg:max-w-3xl">
+                            <div class="relative w-fit max-w-[75%] rounded-2xl rounded-br-md bg-primary-600 px-4 py-3 text-sm text-white shadow-sm lg:max-w-xl">
                                 <p class="whitespace-pre-line leading-relaxed" x-text="pendingText"></p>
                             </div>
                             <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-100 text-[10px] font-bold text-primary-700 ring-1 ring-primary-600/15 dark:bg-primary-500/15 dark:text-primary-300 dark:ring-primary-400/25" aria-hidden="true">
@@ -1369,7 +2125,7 @@
             <div
                 x-show="chatBusy"
                 x-cloak
-                class="absolute inset-0 z-20 flex flex-col gap-4 bg-gray-50 px-4 py-4 dark:bg-gray-950/60"
+                class="absolute inset-0 z-20 flex flex-col gap-4 bg-gray-50 px-4 py-4 dark:bg-gray-950"
             >
                 @foreach ([1, 2, 3] as $i)
                     <div @class(['h-12 w-2/3 animate-pulse rounded-2xl bg-gray-200 dark:bg-white/10', 'self-end' => $i % 2 === 0])></div>
@@ -1404,6 +2160,7 @@
             x-show="chatView === 'chat'"
             x-ref="vHandleMessages"
             x-on:mousedown="startVResize($event, 'composer')"
+            x-on:touchstart="startVResize($event, 'composer')"
             x-on:keydown.up.prevent="vResizeKey('composer', 24)"
             x-on:keydown.down.prevent="vResizeKey('composer', -24)"
             x-on:dblclick="resetComposerHeight()"
@@ -1412,10 +2169,10 @@
             aria-label="{{ __('assistant.resize_messages') }}"
             aria-valuemin="110"
             :aria-valuemax="vMaxFor('composer')"
-            :aria-valuenow="composerHeight ?? 160"
+            :aria-valuenow="vCurrentHeight('composer')"
             tabindex="0"
             title="{{ __('assistant.resize_messages') }}"
-            class="group flex h-2 w-full shrink-0 cursor-row-resize items-center justify-center bg-gray-100 transition hover:bg-primary-500/30 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-white/5 dark:hover:bg-primary-500/20"
+            class="group flex h-2 w-full shrink-0 cursor-row-resize touch-none items-center justify-center bg-gray-100 transition hover:bg-primary-500/30 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-white/5 dark:hover:bg-primary-500/20"
             :class="vMode === 'composer' && 'bg-primary-500/40'"
         >
             <span class="h-1 w-12 rounded-full bg-gray-300 transition group-hover:bg-primary-500 group-focus:bg-primary-500 dark:bg-white/20"></span>
@@ -1427,11 +2184,12 @@
             x-show="chatView === 'chat'"
             x-ref="composer"
             :style="composerHeight !== null ? 'height: ' + composerHeight + 'px; flex: none' : ''"
+            :class="composerHeight === null && 'max-h-[72dvh]'"
             class="flex min-h-0 shrink-0 flex-col overflow-hidden bg-white dark:bg-gray-900"
         >
         <div
-            :class="composerHeight !== null && 'min-h-0 flex-1'"
-            class="flex flex-col border-t border-gray-200 bg-white px-3 pb-3 pt-2 dark:border-white/10 dark:bg-gray-900"
+            x-ref="composerInner"
+            class="flex min-h-0 flex-1 flex-col border-t border-gray-200 bg-white px-3 pb-3 pt-2 dark:border-white/10 dark:bg-gray-900"
             style="padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px))"
         >
                 {{-- Sugerencias contextuales + centro de ayuda: los chips
@@ -1461,9 +2219,19 @@
                          al reducir el compositor se oculta lo de arriba y
                          nunca desaparece el input. --}}
                     <div
-                        :class="composerHeight !== null && 'min-h-0 flex-1'"
-                        class="assistant-scroll overflow-y-auto"
+                        x-ref="composerScroll"
+                        class="assistant-scroll min-h-0 flex-1 overflow-y-auto"
                     >
+                    {{-- Wrapper flow-root: contiene los margenes de los
+                         paneles para que offsetHeight sea la altura
+                         natural del contenido (fitChatInput la usa para
+                         saber cuanto espacio queda para el textarea). --}}
+                    <div x-ref="composerContent" class="flow-root">
+                    {{-- Los quick prompts ceden el sitio cuando hay otra
+                         UI dentro del composer: wizard guiado (pendingForm)
+                         o mensajes en cola. Sin ellos el composer abraza
+                         solo lo que importa y el input queda pegado. --}}
+                    @if ($pendingForm === null)
                     <div class="mb-2">
                         <div class="mb-1.5 flex items-center justify-between px-0.5">
                             <button
@@ -1480,15 +2248,15 @@
                             <button
                                 type="button"
                                 x-show="suggestOpen"
-                                x-on:click="helpOpen = ! helpOpen"
-                                :aria-expanded="helpOpen"
+                                x-on:click="if (! clickGuardActive()) promptsOpen = ! promptsOpen"
+                                :aria-expanded="promptsOpen"
                                 class="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-primary-600 transition hover:bg-primary-50 dark:text-primary-400 dark:hover:bg-primary-500/10"
                             >
                                 <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
                                 </svg>
                                 {{ __('assistant.help.toggle') }}
-                                <svg class="h-3 w-3 transition-transform duration-200" :class="helpOpen && 'rotate-180'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                <svg class="h-3 w-3 transition-transform duration-200" :class="promptsOpen && 'rotate-180'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
                                 </svg>
                             </button>
@@ -1513,18 +2281,20 @@
                             </div>
                         @endif
 
-                        {{-- Centro de ayuda: categorias desplegables con todos
-                             los prompts que la IA entiende. Cada opcion envia
-                             el texto traducido como mensaje normal. --}}
+                        {{-- Repertorio de prompts: categorias desplegables con
+                             todos los prompts que la IA entiende. Cada opcion
+                             envia el texto traducido como mensaje normal. --}}
                         <div
-                            x-show="helpOpen"
+                            x-show="promptsOpen"
+                            x-ref="promptsPanel"
                             x-transition:enter="transition ease-out duration-200"
                             x-transition:enter-start="opacity-0 -translate-y-1"
                             x-transition:enter-end="opacity-100 translate-y-0"
                             x-transition:leave="transition ease-in duration-150"
                             x-transition:leave-start="opacity-100"
                             x-transition:leave-end="opacity-0"
-                            class="mt-2 max-h-72 overflow-y-auto rounded-xl bg-gray-50 p-2.5 ring-1 ring-gray-950/5 [overscroll-behavior:contain] [scrollbar-width:thin] dark:bg-white/5 dark:ring-white/10"
+                            :style="{ 'max-height': promptsMaxHeight() }"
+                            class="mt-2 max-h-96 overflow-y-auto rounded-xl bg-gray-50 p-2.5 ring-1 ring-gray-950/5 [overscroll-behavior:contain] [scrollbar-width:thin] dark:bg-white/5 dark:ring-white/10"
                         >
                             <p class="px-1 pb-2 text-xs font-semibold text-gray-700 dark:text-gray-200">{{ __('assistant.help.title') }}</p>
                             <div class="grid gap-3 sm:grid-cols-2">
@@ -1541,7 +2311,7 @@
                                                 <button
                                                     type="button"
                                                     x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
-                                                    x-on:click="helpOpen = false; sendSuggestion(@js($prompt))"
+                                                    x-on:click="if (! clickGuardActive()) { promptsOpen = false; sendSuggestion(@js($prompt)) }"
                                                     class="rounded-lg px-2 py-1.5 text-left text-xs text-gray-600 transition hover:bg-white hover:text-primary-700 hover:shadow-sm dark:text-gray-300 dark:hover:bg-white/10 dark:hover:text-primary-300"
                                                 >
                                                     {{ $prompt }}
@@ -1554,6 +2324,7 @@
                         </div>
                         </div>
                     </div>
+                    @endif
 
                 {{-- Wizard guiado en curso: progreso, campo actual,
                      respuestas rapidas y cancelacion. --}}
@@ -1561,13 +2332,15 @@
                     @php
                         $wizardStep = max(1, min((int) ($pendingForm['step'] ?? 1), (int) ($pendingForm['total_steps'] ?? 1)));
                         $wizardTotal = max(1, (int) ($pendingForm['total_steps'] ?? 1));
+                        $wizardLast = $wizardStep >= $wizardTotal;
                     @endphp
                     <div
                         wire:ignore.self
                         x-data="{ open: true }"
                         x-ref="wizardCard"
                         :style="wizardHeight !== null ? 'height: ' + wizardHeight + 'px' : ''"
-                        class="mb-2 flex min-h-0 flex-col rounded-xl bg-primary-50 p-3 ring-1 ring-primary-600/15 dark:bg-primary-500/10 dark:ring-primary-400/25"
+                        :class="wizardHeight === null && 'max-h-[52dvh]'"
+                        class="mx-1 mb-2 mt-1 flex min-h-0 min-w-0 flex-col overflow-x-clip rounded-xl bg-primary-50 p-3 ring-1 ring-primary-600/15 dark:bg-primary-500/10 dark:ring-primary-400/25"
                     >
                         <div class="flex items-center justify-between gap-2">
                             <p class="flex min-w-0 items-center gap-1.5 text-xs font-bold text-primary-700 dark:text-primary-300">
@@ -1580,10 +2353,19 @@
                                 </span>
                             </p>
                             <span class="flex shrink-0 items-center gap-1">
+                                @if ($wizardStep > 1 && empty($pendingForm['fields']) && empty($pendingForm['input']))
+                                    <button
+                                        type="button"
+                                        wire:click="prevFormStep"
+                                        class="rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-gray-600 ring-1 ring-gray-950/10 transition hover:bg-gray-50 dark:bg-white/10 dark:text-gray-300 dark:ring-white/15 dark:hover:bg-white/15"
+                                    >
+                                        {{ __('assistant.wizard.previous') }}
+                                    </button>
+                                @endif
                                 <button
                                     type="button"
-                                    x-on:click="open = ! open"
-                                    x-bind:title="open ? '{{ __('assistant.wizard.collapse') }}' : '{{ __('assistant.wizard.expand') }}'"
+                                    x-on:click="open = ! open; scheduleFitChatInput()"
+                                    x-bind:title="open ? @js(__('assistant.wizard.collapse')) : @js(__('assistant.wizard.expand'))"
                                     class="rounded-full p-1 text-primary-500 transition hover:bg-primary-100 dark:hover:bg-white/10"
                                 >
                                     <svg class="h-3.5 w-3.5 transition-transform" x-bind:class="open ? '' : 'rotate-180'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
@@ -1628,8 +2410,7 @@
                             <form
                                 wire:key="wf-{{ $pendingForm['form'] ?? 'x' }}-{{ $pendingForm['step'] ?? 1 }}-{{ $pendingForm['total_steps'] ?? 1 }}-{{ md5(json_encode([$pendingForm['prompt'] ?? '', $wfFields])) }}"
                                 x-on:submit.prevent="$wire.submitForm(Object.fromEntries(new FormData($el).entries()))"
-                                :class="wizardHeight !== null ? '' : 'max-h-72'"
-                                class="mt-2 grid min-h-0 flex-1 gap-2 overflow-y-auto overscroll-contain pr-1 sm:grid-cols-2"
+                                class="mt-2 grid min-h-0 flex-1 content-start gap-2 overflow-y-auto pr-1 sm:grid-cols-2"
                             >
                                 {{-- Discriminador de sesion: en un batch mixto
                                      pueden coexistir cola de creacion y de
@@ -1687,12 +2468,25 @@
                                         @endif
                                     </label>
                                 @endforeach
-                                <div class="flex justify-end sm:col-span-2">
+                                <div class="flex items-center justify-between gap-2 self-start sm:col-span-2">
+                                    @if ($wizardStep > 1)
+                                        <button
+                                            type="button"
+                                            wire:click="prevFormStep"
+                                            class="h-fit shrink-0 rounded-lg bg-white px-3.5 py-1.5 text-[11px] font-bold leading-tight text-gray-600 ring-1 ring-gray-950/10 transition hover:bg-gray-50 dark:bg-white/10 dark:text-gray-300 dark:ring-white/15 dark:hover:bg-white/15"
+                                        >
+                                            {{ __('assistant.wizard.previous') }}
+                                        </button>
+                                    @else
+                                        <span></span>
+                                    @endif
                                     <button
                                         type="submit"
-                                        class="rounded-lg bg-primary-600 px-3.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-primary-500"
+                                        class="h-fit shrink-0 rounded-lg bg-primary-600 px-3.5 py-1.5 text-[11px] font-bold leading-tight text-white transition hover:bg-primary-500"
                                     >
-                                        {{ str_starts_with($pendingForm['form'] ?? '', 'create_') ? __('assistant.create_form.submit') : __('assistant.update_form.submit') }}
+                                        {{ $wizardLast
+                                            ? (str_starts_with($pendingForm['form'] ?? '', 'create_') ? __('assistant.create_form.submit') : __('assistant.update_form.submit'))
+                                            : __('assistant.wizard.next') }}
                                     </button>
                                 </div>
                             </form>
@@ -1772,12 +2566,23 @@
                                 @else
                                     <input type="text" name="fv" autocomplete="off" class="{{ $wfClass }}">
                                 @endif
-                                <button
-                                    type="submit"
-                                    class="shrink-0 rounded-lg bg-primary-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-primary-500"
-                                >
-                                    {{ __('assistant.wizard.send') }}
-                                </button>
+                                <span class="flex items-center gap-2 sm:ml-auto">
+                                    @if ($wizardStep > 1)
+                                        <button
+                                            type="button"
+                                            wire:click="prevFormStep"
+                                            class="shrink-0 rounded-lg bg-white px-3 py-1.5 text-[11px] font-bold text-gray-600 ring-1 ring-gray-950/10 transition hover:bg-gray-50 dark:bg-white/10 dark:text-gray-300 dark:ring-white/15 dark:hover:bg-white/15"
+                                        >
+                                            {{ __('assistant.wizard.previous') }}
+                                        </button>
+                                    @endif
+                                    <button
+                                        type="submit"
+                                        class="shrink-0 rounded-lg bg-primary-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-primary-500"
+                                    >
+                                        {{ $wizardLast ? __('assistant.wizard.send') : __('assistant.wizard.next') }}
+                                    </button>
+                                </span>
                             </form>
                         @endif
 
@@ -1796,27 +2601,110 @@
                             </div>
                         @endif
 
-                        {{-- Splitter de la tarjeta: crece el formulario y
-                             el historial se desplaza dentro del scroll. --}}
+                        {{-- Splitter de la tarjeta: barra completa como la
+                             del composer para que el resize sea evidente.
+                             Arrastrar abajo agranda el wizard; el historial
+                             se desplaza dentro del scroll del composer. --}}
                         <div
                             x-on:mousedown="startVResize($event, 'wizard')"
+                            x-on:touchstart="startVResize($event, 'wizard')"
                             x-on:keydown.up.prevent="vResizeKey('wizard', -24)"
                             x-on:keydown.down.prevent="vResizeKey('wizard', 24)"
+                            x-on:dblclick="resetWizardHeight()"
                             role="separator"
                             aria-orientation="horizontal"
                             aria-label="{{ __('assistant.resize_wizard') }}"
                             aria-valuemin="160"
                             :aria-valuemax="vMaxFor('wizard')"
-                            :aria-valuenow="wizardHeight ?? 160"
+                            :aria-valuenow="vCurrentHeight('wizard')"
                             tabindex="0"
                             title="{{ __('assistant.resize_wizard') }}"
-                            class="mx-auto mt-1 h-1.5 w-10 shrink-0 cursor-row-resize rounded-full bg-primary-600/30 transition hover:bg-primary-600/60 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                            :class="vMode === 'wizard' && 'bg-primary-600/80'"
-                        ></div>
+                            class="group -mx-3 mt-1 flex h-2.5 w-[calc(100%+1.5rem)] shrink-0 cursor-row-resize touch-none items-center justify-center rounded-b-xl transition hover:bg-primary-600/15 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500"
+                            :class="vMode === 'wizard' && 'bg-primary-600/25'"
+                        >
+                            <span class="h-1 w-12 rounded-full bg-primary-600/30 transition group-hover:bg-primary-600/70 group-focus:bg-primary-600/70 dark:bg-primary-400/30 dark:group-hover:bg-primary-400/70" :class="vMode === 'wizard' && 'bg-primary-600/80'"></span>
+                        </div>
                         </div>
                     </div>
                 @endif
+                    </div>
+                    </div>
 
+                {{-- Cola de mensajes: aparece cuando la IA esta respondiendo
+                     y el usuario sigue escribiendo. Cada item se puede
+                     reordenar (arrastrar), quitar o enviar ya — eso cancela
+                     la respuesta en curso y la manda de inmediato. --}}
+                <div
+                    x-show="msgQueue.length > 0"
+                    x-cloak
+                    class="mb-2 shrink-0 overflow-hidden rounded-xl bg-gray-50 ring-1 ring-gray-950/5 dark:bg-white/5 dark:ring-white/10"
+                >
+                    <button
+                        type="button"
+                        x-on:click="queueOpen = ! queueOpen"
+                        class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left"
+                    >
+                        <svg class="h-3.5 w-3.5 shrink-0 text-primary-500 dark:text-primary-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+                        </svg>
+                        <span class="min-w-0 flex-1 truncate text-[11px] font-bold text-gray-600 dark:text-gray-300">{{ __('assistant.queue.title') }}</span>
+                        <span
+                            x-show="queueFullFlash"
+                            x-cloak
+                            x-text="@js(__('assistant.queue.full'))"
+                            class="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-600 dark:bg-red-500/15 dark:text-red-400"
+                        ></span>
+                        <span class="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary-600 px-1.5 text-[10px] font-bold text-white" x-text="msgQueue.length"></span>
+                        <svg class="h-3.5 w-3.5 shrink-0 text-gray-400 transition-transform duration-200" :class="queueOpen && 'rotate-180'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                        </svg>
+                    </button>
+                    <div
+                        x-show="queueOpen"
+                        x-transition:enter="transition ease-out duration-150"
+                        x-transition:enter-start="opacity-0 -translate-y-1"
+                        x-transition:enter-end="opacity-100 translate-y-0"
+                        class="max-h-36 overflow-y-auto border-t border-gray-950/5 px-1.5 py-1 [overscroll-behavior:contain] dark:border-white/10"
+                    >
+                        <template x-for="(item, qi) in msgQueue" :key="'queued-' + qi">
+                            <div
+                                draggable="true"
+                                x-on:dragstart="queueDragStart(qi, $event)"
+                                x-on:dragover="queueDragOver(qi, $event)"
+                                x-on:drop="queueDrop(qi, $event)"
+                                x-on:dragend="queueDragEnd()"
+                                x-bind:class="queueDragOver === qi && queueDragFrom !== qi ? 'bg-primary-50 ring-1 ring-primary-500/40 dark:bg-primary-500/10 dark:ring-primary-400/30' : ''"
+                                class="group/q flex cursor-grab items-center gap-1.5 rounded-lg px-1 py-1.5 transition active:cursor-grabbing hover:bg-white dark:hover:bg-white/5"
+                            >
+                                <svg class="h-3.5 w-3.5 shrink-0 text-gray-300 transition group-hover/q:text-gray-400 dark:text-white/20 dark:group-hover/q:text-white/40" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle cx="8" cy="6" r="1.6" /><circle cx="16" cy="6" r="1.6" /><circle cx="8" cy="12" r="1.6" /><circle cx="16" cy="12" r="1.6" /><circle cx="8" cy="18" r="1.6" /><circle cx="16" cy="18" r="1.6" />
+                                </svg>
+                                <span class="min-w-0 flex-1 truncate text-xs text-gray-600 dark:text-gray-300" x-text="item"></span>
+                                <button
+                                    type="button"
+                                    x-on:click="sendQueuedNow(qi)"
+                                    x-bind:title="@js(__('assistant.queue.send_now'))"
+                                    aria-label="{{ __('assistant.queue.send_now') }}"
+                                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-primary-500 opacity-0 transition hover:bg-primary-100 group-hover/q:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 dark:hover:bg-primary-500/20"
+                                >
+                                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+                                    </svg>
+                                </button>
+                                <button
+                                    type="button"
+                                    x-on:click="removeQueued(qi)"
+                                    x-bind:title="@js(__('assistant.queue.remove'))"
+                                    aria-label="{{ __('assistant.queue.remove') }}"
+                                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-0 transition hover:bg-red-100 hover:text-red-500 group-hover/q:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 dark:hover:bg-red-500/15 dark:hover:text-red-400"
+                                >
+                                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </template>
+                    </div>
                 </div>
 
                 <form
@@ -1831,35 +2719,78 @@
                         aria-label="{{ __('assistant.placeholder') }}"
                         placeholder="{{ __('assistant.placeholder') }}"
                         autocomplete="off"
-                        x-on:input="inputText = $el.value; $el.style.height = 'auto'; $el.style.height = Math.min($el.scrollHeight, 160) + 'px'"
-                        x-on:keydown="if ($event.key === 'Enter' && ! $event.shiftKey) { $event.preventDefault(); $el.form.requestSubmit(); }"
-                        class="max-h-40 min-h-[42px] flex-1 resize-none overflow-y-auto rounded-2xl border-0 bg-gray-100 px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:bg-white focus:ring-2 focus:ring-primary-500 dark:bg-white/10 dark:text-white dark:placeholder:text-gray-500 dark:focus:bg-white/15"
+                        x-on:input="inputText = $el.value; fitChatInput(); saveDraft()"
+                        x-on:keydown="if ($event.key === 'Enter' && ($event.ctrlKey || $event.metaKey)) { $event.preventDefault(); forceSendInput(); } else if ($event.key === 'Enter' && ! $event.shiftKey) { $event.preventDefault(); $el.form.requestSubmit(); }"
+                        class="min-h-[42px] flex-1 resize-none overflow-y-auto rounded-2xl border-0 bg-gray-100 px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:bg-white focus:ring-2 focus:ring-primary-500 dark:bg-white/10 dark:text-white dark:placeholder:text-gray-500 dark:focus:bg-white/15"
                     ></textarea>
                     <button
-                        type="submit"
-                        aria-label="{{ __('assistant.send') }}"
-                        x-bind:disabled="sending || inputText.trim() === ''"
+                        x-bind:type="sending ? 'button' : 'submit'"
+                        x-on:click="sending && cancelThinking()"
+                        x-bind:aria-label="sending ? @js(__('assistant.cancel')) : @js(__('assistant.send'))"
+                        x-bind:disabled="! sending && inputText.trim() === ''"
                         class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white shadow-md transition hover:bg-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
-                        wire:loading.attr="disabled"
-                        wire:target="send,askSuggestion,confirmAction,cancelAction"
                     >
+                        {{-- Mientras la IA responde el boton enviar se
+                             convierte en stop: cancela la respuesta en
+                             curso sin borrar el mensaje del usuario. --}}
                         <svg x-show="! sending" class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
                         </svg>
-                        <svg x-show="sending" x-cloak class="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z"></path>
+                        <svg x-show="sending" x-cloak class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <rect x="6" y="6" width="12" height="12" rx="2.5" />
                         </svg>
                     </button>
                 </form>
-                <p class="mt-1.5 px-1 text-center text-[10px] leading-tight text-gray-400 dark:text-gray-500">
-                    {{ __('assistant.input_hint') }}
-                </p>
+                <div class="relative mt-1.5 px-1" x-data="{ helpOpen: false }">
+                    <button
+                        type="button"
+                        x-on:click="helpOpen = ! helpOpen"
+                        x-on:click.outside="helpOpen = false"
+                        x-bind:aria-expanded="helpOpen"
+                        title="{{ __('assistant.shortcuts.title') }}"
+                        class="absolute right-1 top-0 rounded-full p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-300"
+                    >
+                        <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M12 17.25h.008v.008H12v-.008Z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                        </svg>
+                    </button>
+                    <p class="text-center text-[10px] leading-tight text-gray-400 dark:text-gray-500">
+                        {{ __('assistant.input_hint') }}
+                    </p>
+                    <div
+                        x-show="helpOpen"
+                        x-cloak
+                        x-transition.opacity.duration.120ms
+                        class="absolute bottom-full right-0 z-30 mb-1 w-56 rounded-xl bg-white p-3 text-left shadow-lg ring-1 ring-gray-950/10 dark:bg-gray-800 dark:ring-white/15"
+                    >
+                        <p class="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">{{ __('assistant.shortcuts.title') }}</p>
+                        <ul class="space-y-1 text-[11px] text-gray-600 dark:text-gray-300">
+                            <li class="flex items-center justify-between gap-2">
+                                <span>{{ __('assistant.shortcuts.enter') }}</span>
+                                <kbd class="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-gray-500 dark:bg-white/10 dark:text-gray-400">Enter</kbd>
+                            </li>
+                            <li class="flex items-center justify-between gap-2">
+                                <span>{{ __('assistant.shortcuts.shift_enter') }}</span>
+                                <kbd class="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-gray-500 dark:bg-white/10 dark:text-gray-400">Shift + Enter</kbd>
+                            </li>
+                            <li class="flex items-center justify-between gap-2">
+                                <span>{{ __('assistant.shortcuts.ctrl_enter') }}</span>
+                                <kbd class="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-gray-500 dark:bg-white/10 dark:text-gray-400">Ctrl + Enter</kbd>
+                            </li>
+                            <li class="flex items-center justify-between gap-2">
+                                <span>{{ __('assistant.shortcuts.queued') }}</span>
+                                <span class="text-[10px] text-gray-400 dark:text-gray-500">{{ __('assistant.shortcuts.queued_hint') }}</span>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
                 <p class="mt-0.5 px-1 text-center text-[10px] leading-tight text-gray-400 dark:text-gray-500">
                     {{ __('assistant.disclaimer') }}
                 </p>
         </div>
         </div>
+        @endif
 
         {{-- Modal de preview: acciones por confirmar o tablas expandidas.
              Vive DENTRO del drawer (absolute), asi no pelea con el z-index
@@ -2171,7 +3102,7 @@
                         {{-- Reporte compuesto por la IA: mismas acciones
                              prompt/url que en la burbuja, cerrando el modal
                              antes de enviar al chat. --}}
-                        @include('livewire.partials.assistant-report', ['data' => ['report' => $preview['payload'] ?? null], 'compact' => false, 'fromPreview' => true])
+                        @include('livewire.partials.assistant-report', ['data' => ['report' => $preview['payload'] ?? null], 'compact' => false, 'fromPreview' => true, 'pdfIndex' => $preview['message_index'] ?? null])
                     @elseif ($preview['kind'] === 'file')
                         {{-- Documento generado: ocupa TODA la altura del
                              drawer; el visor del iframe ya trae descarga. --}}

@@ -19,6 +19,9 @@
     $fromPreview = $fromPreview ?? false;
     $previewMethod = $previewMethod ?? null;
     $previewIndex = $previewIndex ?? null;
+    // Indice del mensaje en el chat para la descarga del PDF: en la
+    // burbuja es previewIndex; en el modal llega como pdfIndex.
+    $pdfIndex = $pdfIndex ?? $previewIndex;
     // Los botones prompt van por Alpine (sendSuggestion/sendFromPreview):
     // echo optimista + cierre instantaneo del modal sin congelar la UI.
     $alpinePromptMethod = $fromPreview ? 'sendFromPreview' : 'sendSuggestion';
@@ -71,7 +74,21 @@
                     </svg>
                 </span>
                 <div class="min-w-0 flex-1">
-                    <p class="truncate text-xs font-bold text-gray-900 transition group-hover:text-gray-700 dark:text-white dark:group-hover:text-gray-200">{{ $report['title'] }}</p>
+                    <div class="flex items-center gap-1.5">
+                        <p class="truncate text-xs font-bold text-gray-900 transition group-hover:text-gray-700 dark:text-white dark:group-hover:text-gray-200">{{ $report['title'] }}</p>
+                        @if ($pdfIndex !== null)
+                            <button
+                                type="button"
+                                x-on:click.stop="$wire.exportReportPdf({{ $pdfIndex }})"
+                                title="{{ __('assistant.report.pdf_download') }}"
+                                class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-300 transition hover:bg-gray-200/70 hover:text-gray-500 focus-visible:opacity-100 dark:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-300"
+                            >
+                                <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                </svg>
+                            </button>
+                        @endif
+                    </div>
                     <p class="truncate text-[11px] text-gray-500 dark:text-gray-400">
                         {{ $sectionCount }} {{ __('assistant.report.sections_label') }} · {{ $blockCount }} {{ __('assistant.report.blocks_label') }}
                     </p>
@@ -95,10 +112,29 @@
                     </svg>
                 </span>
                 <div class="min-w-0 flex-1">
-                    <h4 class="text-sm font-bold text-gray-900 dark:text-white">{{ $report['title'] }}</h4>
-                    @if (($report['intro'] ?? '') !== '')
-                        <p class="mt-0.5 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ $report['intro'] }}</p>
-                    @endif
+                    <div class="flex items-start justify-between gap-2">
+                        <div class="min-w-0">
+                            <h4 class="text-sm font-bold text-gray-900 dark:text-white">{{ $report['title'] }}</h4>
+                            @if (($report['intro'] ?? '') !== '')
+                                <p class="mt-0.5 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ $report['intro'] }}</p>
+                            @endif
+                        </div>
+                        @if ($pdfIndex !== null)
+                            <button
+                                type="button"
+                                wire:click="exportReportPdf({{ $pdfIndex }})"
+                                wire:loading.attr="disabled"
+                                wire:target="exportReportPdf"
+                                title="{{ __('assistant.report.pdf_download') }}"
+                                class="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-600 shadow-sm ring-1 ring-gray-950/10 transition hover:bg-gray-50 disabled:opacity-50 dark:bg-gray-800 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-white/5"
+                            >
+                                <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                </svg>
+                                PDF
+                            </button>
+                        @endif
+                    </div>
                 </div>
             </div>
 

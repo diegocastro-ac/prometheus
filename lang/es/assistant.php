@@ -24,7 +24,7 @@ return [
     'greeting' => '¡Hola! Soy tu copiloto de arriendos. Pregúntame por saldos, facturas vencidas, ingresos, inquilinos o pídeme redactar mensajes. ¿En qué te ayudo?',
 
     'quick_prompts' => 'Preguntas rápidas',
-    'input_hint' => 'Enter envía · Shift + Enter salto de línea',
+    'input_hint' => 'Enter envía · Shift + Enter salto de línea · Ctrl + Enter envía ya',
     'resize' => 'Arrastra para ajustar el ancho',
     'resize_messages' => 'Arrastra para ajustar la altura del chat · doble clic para restablecer',
     'resize_wizard' => 'Arrastra para ajustar la altura del formulario guiado',
@@ -41,6 +41,15 @@ return [
     'empty_state' => 'Pregúntame lo que necesites sobre tu portafolio: saldos, vencidos, ingresos, reajustes o pide que redacte un mensaje.',
     'disclaimer' => 'La IA interpreta tu pregunta; todas las cifras las calcula el sistema con tus datos reales.',
 
+    'shortcuts' => [
+        'title' => 'Atajos del chat',
+        'enter' => 'Enviar el mensaje',
+        'shift_enter' => 'Salto de línea',
+        'ctrl_enter' => 'Enviar ya: cancela la respuesta en curso y se salta la cola',
+        'queued' => 'Mientras la IA responde',
+        'queued_hint' => 'los mensajes se encolan y salen en orden',
+    ],
+
     'confirm' => 'Confirmar',
     'cancel' => 'Cancelar',
     'action_proposed' => 'Acción propuesta',
@@ -48,6 +57,13 @@ return [
     'action_done' => 'Acción completada',
     'action_cancelled' => 'Acción cancelada. No se modificó nada.',
     'action_cancelled_title' => 'Acción cancelada',
+    'cancelled_title' => 'Respuesta cancelada',
+    'queue' => [
+        'title' => 'Mensajes en cola',
+        'full' => 'Cola llena (máx. 11)',
+        'send_now' => 'Enviar ahora (cancela la respuesta en curso)',
+        'remove' => 'Quitar de la cola',
+    ],
     'go_to' => 'Ir a la sección',
 
     'unavailable' => 'El asistente con IA no está configurado. Agrega GEMINI_API_KEY en el archivo .env para activarlo (key gratuita en Google AI Studio).',
@@ -260,9 +276,9 @@ return [
     ],
 
     'help' => [
-        'toggle' => 'Centro de ayuda',
-        'title' => '¿Qué puedo hacer por ti?',
-        'subtitle' => 'Toca una opción y te respondo al instante',
+        'toggle' => 'Prompts rápidos',
+        'title' => 'Biblioteca de prompts',
+        'subtitle' => 'Toca una opción y te la envío al chat',
         'categories' => [
             'collections' => [
                 'title' => 'Cobros y cartera',
@@ -395,6 +411,7 @@ return [
         'next_adjustment' => 'Próximo reajuste',
         'rental_type' => 'Tipo de arriendo',
         'is_active' => 'Activo',
+        'severity' => 'Severidad',
         'effective_from' => 'Vigente desde',
         'new' => 'Nuevo canon',
         'previous_rent' => 'Canon anterior',
@@ -461,6 +478,7 @@ return [
         'theme_light' => 'Listo, cambié el panel a modo claro.',
         'theme_system' => 'Listo, volví al tema del sistema.',
         'request_cancelled' => 'Dejé de procesar tu solicitud. Puedes reformularla o intentar de nuevo.',
+        'request_cancelled_operation' => 'Operación cancelada: no se aplicó ningún cambio. Puedes intentarlo de nuevo.',
         'navigate_filtered' => 'Te llevo a :section filtrado por :filter.',
         'navigate_no_filter' => 'No puedo abrir :section ya filtrado por :filter desde aquí, pero aquí tienes los datos:',
         'navigate_no_data' => 'No puedo abrir :section con ese filtro y tampoco tengo datos para mostrártelo aquí.',
@@ -483,7 +501,7 @@ return [
         'no_tenants' => 'No tienes inquilinos registrados todavía.',
         'need_tenant_name' => '¿Cómo se llama el inquilino? También necesitaré su documento y teléfono.',
         'need_tenant_details' => 'Para registrar al inquilino me falta: :missing. Dime por ejemplo "agrega al inquilino Juan Pérez, CC 1234567890, teléfono 3001234567".',
-        'tenant_exists' => 'Ya tienes un inquilino que coincide con ":name". Si es otra persona dime un nombre distinto o más completo.',
+        'tenant_exists' => 'Ya tienes un inquilino registrado con ese documento, teléfono o correo. Si es otra persona, revisa los datos.',
         'need_property_name' => 'Dime el nombre de la propiedad o inmueble (por ejemplo "Apartamento 301" o "Local Centro").',
         'need_property_details' => 'Para registrar la propiedad me falta: :missing. Dime por ejemplo "agrega la propiedad Local Centro, dirección Calle 5 #10-20".',
         'property_exists' => 'Ya tienes una propiedad que coincide con ":name". Si es otra, dime un nombre distinto.',
@@ -709,6 +727,8 @@ return [
         'step_of' => 'Paso :step de :total',
         'cancel' => 'Cancelar',
         'send' => 'Enviar',
+        'next' => 'Siguiente',
+        'previous' => 'Anterior',
         'yes' => 'Sí',
         'no' => 'No',
         'collapse' => 'Contraer',
@@ -721,6 +741,9 @@ return [
         'sections_label' => 'secciones',
         'blocks_label' => 'bloques',
         'chart_total' => 'Total',
+        'pdf_download' => 'Descargar análisis en PDF',
+        'pdf_badge' => 'Análisis IA',
+        'pdf_footer' => 'Documento generado por el asistente de IA con datos reales del negocio.',
     ],
 
     'act_wizard' => [
@@ -790,6 +813,23 @@ return [
             'name' => 'Gemma 4 31B',
             'tag' => 'Abierto',
             'use' => 'Modelo abierto de Google; alternativa generalista para chat y redacción.',
+        ],
+    ],
+
+    // Modelos de endpoints OpenAI-compatible (Groq, OpenAI, etc.). La
+    // clave es el id del modelo sin caracteres especiales.
+    'ai_models' => [
+        'openai_gpt_oss_120b' => [
+            'name' => 'GPT-OSS 120B',
+            'use' => 'El más capaz de Groq: análisis profundos y razonamiento complejo.',
+        ],
+        'openai_gpt_oss_20b' => [
+            'name' => 'GPT-OSS 20B',
+            'use' => 'Rápido y económico: consultas simples y respuestas al instante.',
+        ],
+        'qwen_qwen3_8_27b' => [
+            'name' => 'Qwen3 27B',
+            'use' => 'Alternativa abierta de Alibaba; buena para chat y redacción.',
         ],
     ],
 
@@ -1063,5 +1103,66 @@ return [
         'disclaimer' => 'Esto es un análisis con los datos que tienes hoy, no una predicción exacta. Sirve para decidir dónde mirar primero.',
         'view_full' => 'Ver análisis completo',
         'draft_instruction' => 'Redacta un análisis breve (3-6 frases, tono cercano de asesor) del portafolio del arrendador usando SOLO el contexto JSON entregado. PRIORIZA la pregunta del usuario (user_question) y su foco (focus): si pide riesgos, enfatiza riesgos; si pide mejoras, enfatiza recomendaciones; si nombra un inquilino, habla solo de él. Estructura: primero lo más relevante para su pregunta, luego los datos que lo sustentan citando cifras concretas del contexto (mora, canon, antigüedad, daños del acta), y cierra con la recomendación más útil. DEBES distinguir claramente lo que es dato real ("tiene X vencidos") de lo que es proyección ("si sigue igual..."). Nunca inventes cifras que no estén en el contexto. Termina invitando a revisar la tarjeta de análisis que se muestra debajo.',
+    ],
+
+    'regenerate' => 'Regenerar respuesta',
+    'feedback_up' => 'Respuesta útil',
+    'feedback_down' => 'Respuesta no útil',
+    'deep_chip' => 'Profundizar análisis',
+    'deep_prompt' => 'Haz un análisis exhaustivo y MUCHO más extenso que el anterior: hasta 20 secciones, más tablas con todas las filas relevantes, una gráfica por cada comparación o distribución, cruza todos los datos del portafolio (facturas, pagos, arriendos, inquilinos, propiedades, actas) y termina con una conclusión de decisión clara.',
+    'export_chat' => 'Exportar conversación',
+    'badge_draft' => 'Borrador',
+    'badge_queue' => 'en cola',
+    'row_detail' => 'Ver detalle',
+    'row_detail_prompt' => 'Cuéntame sobre :type :name',
+    'row_detail_types' => [
+        'rental' => 'el arriendo',
+        'tenant' => 'el inquilino',
+        'property' => 'la propiedad',
+        'invoice' => 'la factura',
+    ],
+
+    'briefing' => [
+        'title' => 'Briefing diario',
+        'badge' => 'Briefing',
+        'greeting' => 'Buenos días. Este es tu briefing del :date.',
+        'line_overdue' => 'Tienes :count factura(s) vencida(s) por :amount.',
+        'line_due_soon' => ':count factura(s) vencen en los próximos 7 días.',
+        'line_payments' => 'Recaudo de hoy: :amount.',
+        'line_expiring' => ':count contrato(s) terminan en los próximos 60 días.',
+        'line_adjustments' => ':count reajuste(s) vencen o están por vencer.',
+        'line_acts' => ':count acta(s) de entrega sin firmar.',
+        'all_clear' => 'Todo en orden: no hay vencidos, vencimientos próximos ni pendientes urgentes.',
+        'footer' => 'Revisa las tablas para el detalle. Tienes :alerts alerta(s) activa(s).',
+        'table_alerts' => 'Alertas del día',
+        'table_overdue' => 'Facturas vencidas',
+        'table_due_soon' => 'Por vencer (7 días)',
+        'table_payments' => 'Recaudo de hoy',
+        'table_expiring' => 'Contratos por terminar',
+        'table_adjustments' => 'Reajustes por vencer',
+        'table_acts' => 'Actas sin firmar',
+        'severity_high' => 'Alta',
+        'severity_medium' => 'Media',
+        'severity_low' => 'Baja',
+        'alert_due_soon' => 'La factura :invoice de :tenant vence el :date.',
+        'alert_adjustment' => 'El reajuste de :rental vence el :date.',
+        'alert_unsigned_act' => 'El acta de :rental del :date sigue sin firmar.',
+        'alert_old_debt' => ':tenant acumula facturas con más de 45 días de mora por :amount.',
+        'suggest_overdue' => '¿Qué facturas vencidas tengo y de quiénes?',
+        'suggest_expiring' => '¿Qué contratos terminan pronto?',
+        'suggest_analysis' => 'Dame un análisis de la salud de mi cartera',
+        'suggest_today' => '¿Cómo va mi negocio hoy? Hazme un análisis del día',
+        'disabled_badge' => 'Desactivado',
+        'toggle_on' => 'Activar briefing diario',
+        'toggle_off' => 'Desactivar briefing diario',
+        'muted_notice' => 'Briefing diario desactivado: este chat queda en solo lectura.',
+        'disabled_title' => 'Briefing desactivado',
+        'disabled_text' => 'El resumen diario está apagado para tu cuenta: el asistente no publicará novedades aquí. Reactívalo cuando quieras volver a recibirlo.',
+    ],
+
+    'weekly_report' => [
+        'title' => 'Reporte semanal del asistente',
+        'subtitle' => 'Historial del :from al :to',
+        'button' => 'Descargar reporte semanal (Markdown)',
     ],
 ];

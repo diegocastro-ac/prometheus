@@ -20,6 +20,17 @@
     <php>
         <env name="APP_ENV" value="testing"/>
         <!--
+            El driver de IA se fija aqui y no se hereda del .env: la suite
+            fakea el endpoint de Gemini; si el .env local apunta a Groq u
+            otro proveedor, los tests harian llamadas reales a esa API.
+            Las credenciales quedan vacias para que el fallback entre
+            proveedores no reactive la IA en tests de "sin configurar".
+        -->
+        <env name="AI_DRIVER" value="gemini"/>
+        <env name="AI_API_KEY" value=""/>
+        <env name="AI_BASE_URL" value=""/>
+        <env name="AI_MODEL" value=""/>
+        <!--
             El idioma se fija aqui y no se hereda del .env.
 
             Las pruebas de documentos y de interfaz afirmaciones en texto: comprueban

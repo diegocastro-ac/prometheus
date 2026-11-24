@@ -34,3 +34,7 @@ Schedule::command('ipc:sync:geographies')->monthlyOn(20, '08:30')->withoutOverla
 // Red de seguridad: si el IPC quedo desalineado porque el DANE corrigio un dato,
 // el recalculo lo deja consistente.
 Schedule::command('rent-adjustments:recalculate')->weeklyOn(1, '07:00')->withoutOverlapping();
+
+// Briefing diario del copiloto: publica las alertas del dia en el chat
+// protegido de cada usuario. El comando es idempotente dentro del dia.
+Schedule::command('assistant:brief')->dailyAt('07:00')->withoutOverlapping();
