@@ -112,4 +112,52 @@ Workflow `.github/workflows/cd.yml`:
 
 ## Resultado del deploy
 
-Pendiente del run de GitHub Actions.
+Bloqueado por cuota de Azure. Runs:
+
+| Run | Commit | Resultado |
+| --- | --- | --- |
+| https://github.com/diegocastro-ac/prometheus/actions/runs/45530486694 | `69e8ed3` | Fallo: `gh api /user/packages/.../visibility` → 404 (`GITHUB_TOKEN` no es token de usuario) |
+| https://github.com/diegocastro-ac/prometheus/actions/runs/45531197213 | `10b43c5` | Fallo: backend Terraform → `AuthorizationPermissionMismatch` (SP sin rol de datos de blobs) |
+| Rerun del anterior | `10b43c5` | Fallo: `linux_fx_version` no configurable en azurerm 5.x |
+| https://github.com/diegocastro-ac/prometheus/actions/runs/45532784501 | `c1a3083` | Fallo: `terraform apply` → cuota B1 = 0 |
+
+Correcciones aplicadas:
+
+1. Se eliminó el paso de visibilidad GHCR. El paquete ya es público: pull anónimo con token de registro anónimo devuelve HTTP 200 para el tag `c1a3083`.
+2. Rol `Storage Blob Data Contributor` asignado al SP `keynography-terraform` sobre `stpromdiegotf50a468a8`. OIDC quedó funcional: `terraform init` y `plan` pasaron.
+3. Imagen configurada con `site_config.application_stack`:
+
+```hcl
+application_stack {
+  docker_image_name   = "diegocastro-ac/prometheus-diego:<SHA>"
+  docker_registry_url = "https://ghcr.io"
+}
+```
+
+### Bloqueo actual: cuota App Service
+
+```text
+Error: creating App Service Plan ... performing CreateOrUpdate: unexpected status 401
+{"Code":"Unauthorized","Message":"Operation cannot be completed without additional quota.
+Current Limit (B1 App Service instances): 0
+Current Usage: 0
+Amount required: 1"}
+```
+
+Consulta a `Microsoft.Web/locations/{región}/usages?api-version=2025-05-01`:
+
+```text
+westus        B1=0/0   F1=0/0   S1=0/0
+canadacentral B1=0/0   F1=0/0   S1=0/0
+northcentralus B1=0/0  F1=0/0   S1=0/0
+westus2       B1=0/0   F1=0/0   S1=0/0
+chilecentral  B1=0/0   F1=0/0   S1=0/0
+```
+
+Suscripción `Enabled`; política de región no es el problema esta vez. No existe SKU de App Service con cuota disponible, así que cambiar de SKU o de región no desbloquea. Hace falta solicitar aumento de cuota a Azure (portal Quotas o ticket de soporte).
+
+Recursos creados hasta ahora (coste cero): `rg-prometheus-diego-tfstate-50a468a8` (state) y `rg-prometheus-diego-86f565ed` (vacío, creado antes del fallo del plan). La imagen `prometheus-diego:<SHA>` ya está en GHCR y es pública.
+
+## Estado
+
+**Bloqueada.** IaC, OIDC, GHCR y CD están verificados hasta `terraform plan`. Falta aprobación de cuota para ejecutar `apply` y verificar `/up`.
