@@ -1,8 +1,14 @@
 # Cotización Azure — Fase 3
 
-Fecha: 25 nov 2026. Región: `westus2`. Suscripción: Azure for Students (`f3c81d52-...`).
+Fecha: 25 nov 2026. Región final: `eastus`. Suscripción final: `Suscripción de Azure 1` (`eec1fba8-...`).
 
-`eastus` quedó descartado: la política `sys.regionrestriction` de la suscripción solo permite `westus`, `canadacentral`, `northcentralus`, `westus2` y `chilecentral`. Se eligió `westus2` por disponibilidad y mismo precio B1 Linux.
+Historial de decisiones:
+
+1. `eastus` fue descartado al inicio por la política `sys.regionrestriction` de Azure for Students (`f3c81d52-...`), que solo permitía `westus`, `canadacentral`, `northcentralus`, `westus2` y `chilecentral`. Se eligió `westus2`.
+2. Azure for Students resultó tener **cuota B1 = 0 en todas las regiones permitidas**, sin opción self-service. Se migró el backend y el state a `eec1fba8-...`, misma organización, sin política de región y con B1 = 0/30.
+3. En `westus2` la API devolvió `409 No available instances to satisfy this request`: cuota había, pero no capacidad física. Se cambió la región del deploy a `eastus` (B1 = 0/30, mismo precio).
+
+El storage del state sigue en `westus2`; eso no afecta al coste ni al deploy.
 
 Fuente: Azure Retail Prices API, consultada antes de crear recursos.
 
@@ -38,7 +44,7 @@ Resultado relevante:
 
 **Total Fase 3: ≈ US$ 12.42/mes** (~US$ 0.41/día).
 
-Crédito Azure for Students: US$ 100. Autonomía estimada: ~8 meses si no se crean otros recursos.
+El coste se carga a la suscripción `eec1fba8-...`. La estimación de autonomía con el crédito de Azure for Students ya no aplica; revisar el saldo de esa suscripción en Cost Management.
 
 ## Notas
 

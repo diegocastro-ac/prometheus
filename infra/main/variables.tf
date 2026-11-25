@@ -1,7 +1,7 @@
 variable "location" {
   description = "Región de Azure."
   type        = string
-  default     = "westus2"
+  default     = "eastus"
 }
 
 variable "image_tag" {
