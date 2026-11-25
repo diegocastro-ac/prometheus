@@ -47,12 +47,8 @@ jobs:
           docker build -t "$IMAGE:${GITHUB_SHA}" .
           docker push "$IMAGE:${GITHUB_SHA}"
 
-      - name: Make GHCR package public
-        run: |
-          gh api --method PUT \
-            -H 'Accept: application/vnd.github+json' \
-            /user/packages/container/prometheus-diego/visibility \
-            -f visibility=public
+      # El paquete hereda visibilidad pública del repo público. Verificado con
+      # pull anónimo a ghcr.io (HTTP 200); el endpoint /user/packages requiere PAT.
 
       - name: Terraform init
         run: |
