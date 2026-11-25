@@ -1,0 +1,87 @@
+name: CD
+
+on:
+  push:
+    branches: [aisaac-ai]
+
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+
+concurrency:
+  group: cd-aisaac-ai
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build image and deploy to Azure
+    runs-on: ubuntu-latest
+    environment: diego
+
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_image_tag: ${{ github.sha }}
+      TF_VAR_app_key: ${{ secrets.APP_KEY }}
+      TF_RESOURCE_GROUP: ${{ vars.AZURE_TF_RESOURCE_GROUP }}
+      TF_STORAGE_ACCOUNT: ${{ vars.AZURE_TF_STORAGE_ACCOUNT }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE: ghcr.io/diegocastro-ac/prometheus-diego
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.2
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push image
+        run: |
+          docker build -t "$IMAGE:${GITHUB_SHA}" .
+          docker push "$IMAGE:${GITHUB_SHA}"
+
+      - name: Make GHCR package public
+        run: |
+          gh api --method PUT \
+            -H 'Accept: application/vnd.github+json' \
+            /user/packages/container/prometheus-diego/visibility \
+            -f visibility=public
+
+      - name: Terraform init
+        run: |
+          terraform -chdir=infra/main init -input=false \
+            -backend-config="resource_group_name=$TF_RESOURCE_GROUP" \
+            -backend-config="storage_account_name=$TF_STORAGE_ACCOUNT" \
+            -backend-config="container_name=tfstate-prometheus-diego" \
+            -backend-config="key=prometheus-diego.tfstate"
+
+      - name: Terraform validate
+        run: terraform -chdir=infra/main validate
+
+      - name: Terraform plan
+        run: terraform -chdir=infra/main plan -input=false -out=tfplan
+
+      - name: Terraform apply
+        run: terraform -chdir=infra/main apply -auto-approve -input=false tfplan
+
+      - name: Verify deployment
+        run: |
+          HOST="$(terraform -chdir=infra/main output -raw hostname)"
+          IMAGE_OUT="$(terraform -chdir=infra/main output -raw image)"
+          echo "hostname=$HOST"
+          echo "image=$IMAGE_OUT"
+          CODE=""
+          for i in $(seq 1 30); do
+            CODE="$(curl -s -o /dev/null -w '%{http_code}' "https://$HOST/up" || true)"
+            if [ "$CODE" = "200" ]; then break; fi
+            sleep 10
+          done
+          echo "health_http_code=$CODE"
+          test "$CODE" = "200"

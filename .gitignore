@@ -28,9 +28,11 @@ Thumbs.db
 .codegraph/
 
 # Terraform
-infra/.terraform/
+**/.terraform/
 **/*.tfstate
 **/*.tfstate.*
+*.tfplan
+crash.log
 
 # Local agent tooling (no subir)
 /.agents/
