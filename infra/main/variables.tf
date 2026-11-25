@@ -1,7 +1,7 @@
 variable "location" {
   description = "Región de Azure."
   type        = string
-  default     = "eastus"
+  default     = "westus2"
 }
 
 variable "image_tag" {
@@ -9,8 +9,7 @@ variable "image_tag" {
   type        = string
 }
 
-variable "app_key" {
-  description = "APP_KEY de Laravel. Nunca almacenar en Git ni en logs."
+variable "ssh_public_key" {
+  description = "Clave pública SSH para el administrador de la VM. Nunca se guarda la privada."
   type        = string
-  sensitive   = true
 }

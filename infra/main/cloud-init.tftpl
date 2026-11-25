@@ -1,0 +1,49 @@
+#cloud-config
+package_update: true
+packages:
+  - docker.io
+
+write_files:
+  - path: /etc/systemd/system/prometheus.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Prometheus Laravel container
+      After=docker.service network-online.target
+      Requires=docker.service
+
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=10
+      ExecStartPre=-/usr/bin/docker rm -f prometheus
+      ExecStart=/usr/bin/docker run --rm --name prometheus \
+        -p 80:8080 \
+        -v /opt/prometheus/.env:/var/www/html/.env:ro \
+        -v /opt/prometheus/database/database.sqlite:/var/www/html/database/database.sqlite:rw \
+        -e DB_DATABASE=/var/www/html/database/database.sqlite \
+        ${image}
+      ExecStop=/usr/bin/docker stop prometheus
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - mkdir -p /opt/prometheus/database
+  - touch /opt/prometheus/database/database.sqlite
+  - |
+    cat > /opt/prometheus/.env <<ENVEOF
+    APP_NAME=Prometheus
+    APP_ENV=production
+    APP_KEY=base64:$(openssl rand -base64 32 | tr -d '\n')
+    APP_DEBUG=false
+    APP_URL=http://${hostname}
+    DB_CONNECTION=sqlite
+    DB_DATABASE=/var/www/html/database/database.sqlite
+    SESSION_DRIVER=database
+    CACHE_STORE=database
+    QUEUE_CONNECTION=database
+    ENVEOF
+  - chmod 600 /opt/prometheus/.env
+  - systemctl daemon-reload
+  - systemctl enable --now prometheus

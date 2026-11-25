@@ -1,9 +1,13 @@
 output "hostname" {
-  value = azurerm_linux_web_app.main.default_hostname
+  value = azurerm_public_ip.main.fqdn
 }
 
-output "app_name" {
-  value = azurerm_linux_web_app.main.name
+output "public_ip" {
+  value = azurerm_public_ip.main.ip_address
+}
+
+output "vm_name" {
+  value = azurerm_linux_virtual_machine.main.name
 }
 
 output "resource_group_name" {
