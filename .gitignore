@@ -26,3 +26,16 @@ Thumbs.db
 
 # CodeGraph
 .codegraph/
+
+# Terraform
+infra/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+
+# Local agent tooling (no subir)
+/.agents/
+/openspec/
+skills-lock.json
+
+# Docker local DB
+/.docker-db
