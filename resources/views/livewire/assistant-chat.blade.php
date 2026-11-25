@@ -26,6 +26,7 @@
         suggestOpen: localStorage.getItem('assistant.suggestOpen') !== '0',
         modelOpen: false,
         modelTab: null,
+        weeklyReportOpen: false,
         modelGroupsMeta: @js(array_map(fn ($group) => ['driver' => $group['driver'], 'models' => $group['models']], $assistantModelGroups)),
         // Vista interna del drawer ('chat' | 'chats'). La controla Alpine
         // para que cambiar de panel sea instantaneo; el servidor la refleja
@@ -127,12 +128,21 @@
             return window.__assistantResizing === true
                 || Date.now() < (window.__assistantClickGuardUntil || 0);
         },
+        // Resolucion de refs a prueba de scopes: los handlers del wizard
+        // viven dentro de un x-data anidado ({open:true}) donde $refs no
+        // siempre alcanza los refs del componente raiz. Primero intenta
+        // $refs y si no, busca el atributo x-ref en el DOM — siempre hay
+        // un solo elemento con cada nombre.
+        domRef(name) {
+            const viaRefs = this.$refs ? this.$refs[name] : null;
+            return viaRefs ?? document.querySelector('[x-ref=' + name + ']');
+        },
         startResize(event) {
             if (window.innerWidth < 1024) return;
             this.resizing = true;
             this.startClickGuard();
             this.resizeStartX = event.touches ? event.touches[0].clientX : event.clientX;
-            this.resizeStartWidth = this.drawerWidth ?? (this.$refs.drawer?.offsetWidth || 448);
+            this.resizeStartWidth = this.drawerWidth ?? (this.domRef('drawer')?.offsetWidth || 448);
             document.body.style.userSelect = 'none';
             event.preventDefault();
         },
@@ -181,16 +191,16 @@
         // arrastre porque chatPane (flex-1) cede el espacio.
         vMaxFor(mode) {
             if (mode === 'wizard') {
-                const pane = this.$refs.chatPane?.offsetHeight ?? 0;
-                const composer = this.$refs.composer?.offsetHeight ?? 0;
+                const pane = this.domRef('chatPane')?.offsetHeight ?? 0;
+                const composer = this.domRef('composer')?.offsetHeight ?? 0;
                 if (pane <= 0 || composer <= 0) return Math.round(window.innerHeight * 0.55);
                 // chatPane + composer es constante durante el arrastre
                 // (el chat cede via flex-1). Se descuentan ~300px: 200 de
                 // chat minimo mas el cromo del compositor (input, chips).
                 return Math.max(160, pane + composer - 300);
             }
-            const chat = this.$refs.chatPane?.offsetHeight ?? 0;
-            const composer = this.$refs.composer?.offsetHeight ?? 0;
+            const chat = this.domRef('chatPane')?.offsetHeight ?? 0;
+            const composer = this.domRef('composer')?.offsetHeight ?? 0;
             if (chat <= 0) return 110;
             return Math.max(110, chat + composer - 200);
         },
@@ -199,7 +209,7 @@
         vCurrentHeight(mode) {
             const explicit = this.vHeightFor(mode);
             if (explicit !== null) return explicit;
-            const ref = mode === 'wizard' ? this.$refs.wizardCard : this.$refs.composer;
+            const ref = mode === 'wizard' ? this.domRef('wizardCard') : this.domRef('composer');
             return ref ? ref.offsetHeight : 0;
         },
         applyVHeight(mode, height) {
@@ -212,14 +222,20 @@
             // Escritura directa ademas del binding reactivo: durante el
             // arrastre el morph de Livewire o un Alpine tardio no pueden
             // dejar el alto a medias — el elemento obedece al cursor ya.
-            const el = mode === 'wizard' ? this.$refs.wizardCard : this.$refs.composer;
-            if (el) el.style.height = value + 'px';
+            // Se fija tambien flex:none y se limpia el max-h de modo auto
+            // para que el alto explícito mande sin esperar al proximo tick.
+            const el = mode === 'wizard' ? this.domRef('wizardCard') : this.domRef('composer');
+            if (el) {
+                el.style.height = value + 'px';
+                el.style.flex = 'none';
+                el.style.maxHeight = 'none';
+            }
             this.scheduleFitChatInput();
         },
         // Igual que startResize del drawer: mide al empezar y persiste al
         // soltar. Solo el compositor cambia de altura; el chat es flex-1.
         startVResize(event, mode) {
-            const ref = mode === 'wizard' ? this.$refs.wizardCard : this.$refs.composer;
+            const ref = mode === 'wizard' ? this.domRef('wizardCard') : this.domRef('composer');
             if (! ref) return;
             this.vMode = mode;
             this.startClickGuard();
@@ -258,7 +274,7 @@
             this.persistVHeight(mode);
         },
         vResizeKey(mode, delta) {
-            const ref = mode === 'wizard' ? this.$refs.wizardCard : this.$refs.composer;
+            const ref = mode === 'wizard' ? this.domRef('wizardCard') : this.domRef('composer');
             if (! ref) return;
             this.applyVHeight(mode, (this.vHeightFor(mode) ?? ref.offsetHeight) + delta);
             this.persistVHeight(mode);
@@ -279,34 +295,69 @@
             } catch (e) { /* storage lleno/bloqueado: la altura sigue aplicando en sesion */ }
         },
         clampVHeights() {
-            const pane = this.$refs.chatPane;
+            const pane = this.domRef('chatPane');
             // Con el drawer cerrado o en la vista de chats el panel no tiene
             // altura util: no se tocan los valores guardados.
             if (! pane || pane.clientHeight <= 0) return;
             if (this.composerHeight !== null) {
                 this.composerHeight = Math.min(this.composerHeight, this.vMaxFor('composer'));
+                const el = this.domRef('composer');
+                if (el) {
+                    el.style.height = this.composerHeight + 'px';
+                    el.style.flex = 'none';
+                    el.style.maxHeight = 'none';
+                }
             }
             if (this.wizardHeight !== null) {
                 this.wizardHeight = Math.min(this.wizardHeight, this.vMaxFor('wizard'));
+                const el = this.domRef('wizardCard');
+                if (el) el.style.height = this.wizardHeight + 'px';
             }
             this.scheduleFitChatInput();
         },
-        // Altura del panel de prompts: ocupa el espacio real que queda
-        // bajo las chips en el scroll del composer. '' = sin tope
-        // inline y manda la clase max-h-96.
-        promptsMaxHeight() {
-            if (this.composerHeight === null) return '';
-            const scroll = this.$refs.composerScroll;
-            const panel = this.$refs.promptsPanel;
-            if (! scroll || ! panel || panel.offsetHeight === 0) return '';
-            const above = panel.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
-            return Math.max(140, Math.floor(scroll.clientHeight - above - 8)) + 'px';
-        },
+        // Reparto de espacio del composer: los componentes (sugerencias,
+        // panel de prompts, wizard, cola) tienen prioridad — se dimensionan
+        // a su alto natural y el scroll interno absorbe la falta. El input
+        // de chat se expande DESPUES: solo cuando queda espacio vacio real
+        // (composer con altura fija) el textarea crece mas alla de su
+        // contenido, hasta un tope sano. En modo auto no hay sobrante:
+        // el composer abraza el contenido y el calculo da el mismo alto.
         fitChatInput() {
-            const ta = this.$refs.chatInput;
-            if (! ta) return;
+            const ta = this.domRef('chatInput');
+            const inner = this.domRef('composerInner');
+            const content = this.domRef('composerContent');
+            if (! ta || ! inner || ! content) return;
             ta.style.height = 'auto';
-            ta.style.height = Math.min(Math.max(ta.scrollHeight, 42), 160) + 'px';
+            const contentH = Math.min(Math.max(ta.scrollHeight, 42), 160);
+            if (inner.clientHeight <= 0 || this.composerHeight === null) {
+                // Modo auto: el composer abraza el contenido — el textarea
+                // toma exactamente su alto de contenido y el composer
+                // crece solo. No hay sobrante que repartir.
+                ta.style.height = contentH + 'px';
+                return;
+            }
+            const padY = parseFloat(getComputedStyle(inner).paddingTop)
+                + parseFloat(getComputedStyle(inner).paddingBottom);
+            const form = ta.closest('form');
+            const formChrome = form ? Math.max(0, form.offsetHeight - ta.offsetHeight) : 0;
+            const othersH = content.offsetHeight
+                + (this.domRef('queuePanel')?.offsetHeight ?? 0)
+                + (this.domRef('composerHint')?.offsetHeight ?? 0)
+                + (this.domRef('composerDisclaimer')?.offsetHeight ?? 0)
+                + formChrome;
+            // Los margenes de los componentes (form mt-2, cola mb-2,
+            // hint mt-1.5, disclaimer mt-0.5) no cuentan en offsetHeight
+            // pero si en el layout: sin descontarlos el textarea queda
+            // unos px mas alto de lo que cabe y desborda el composer.
+            const gaps = 16 + ((this.domRef('queuePanel')?.offsetHeight ?? 0) > 0 ? 8 : 0);
+            // Espacio real disponible para el textarea: el alto del
+            // composer menos TODO lo demas a su medida natural.
+            const spaceForTa = inner.clientHeight - padY - othersH - gaps;
+            // El input se queda con su alto de contenido y, si sobra
+            // espacio, lo llena hasta el tope (nunca mas de 320px).
+            const desired = Math.max(contentH, Math.min(Math.max(spaceForTa, 0), 320));
+            const finalH = Math.min(desired, Math.max(spaceForTa, 42));
+            ta.style.height = Math.max(42, finalH) + 'px';
         },
         // Diferido a rAF: el alto del composer o el contenido de los
         // paneles pueden cambiar por Alpine/morph en el mismo tick y la
@@ -323,6 +374,15 @@
             // Reset manual: ya no hay altura previa que restaurar cuando
             // el panel abierto se cierre.
             this.autoComposerHeight = null;
+            // Los estilos inline que applyVHeight escribe directo hay que
+            // retirarlos a mano: el binding :style vuelve a '' pero no
+            // siempre limpia cssText ya tocado por JS.
+            const el = this.domRef('composer');
+            if (el) {
+                el.style.height = '';
+                el.style.flex = '';
+                el.style.maxHeight = '';
+            }
             this.scheduleFitChatInput();
             try {
                 localStorage.removeItem('assistant.composerSize');
@@ -330,6 +390,12 @@
         },
         resetWizardHeight() {
             this.wizardHeight = null;
+            const el = this.domRef('wizardCard');
+            if (el) {
+                el.style.height = '';
+                el.style.flex = '';
+                el.style.maxHeight = '';
+            }
             try {
                 localStorage.removeItem('assistant.wizardHeight');
             } catch (e) { /* sin storage: se queda el default */ }
@@ -348,17 +414,17 @@
         atBottom: true,
         scrollToBottom() {
             this.$nextTick(() => {
-                const el = this.$refs.messagesScroll;
+                const el = this.domRef('messagesScroll');
                 if (el) el.scrollTop = el.scrollHeight;
             });
         },
         updateAtBottom() {
-            const el = this.$refs.messagesScroll;
+            const el = this.domRef('messagesScroll');
             if (! el) return;
             this.atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         },
         scrollDown() {
-            const el = this.$refs.messagesScroll;
+            const el = this.domRef('messagesScroll');
             if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
         },
         // Mientras el drawer este abierto la rueda nunca llega a la pagina:
@@ -367,12 +433,12 @@
         // la pagina ni siquiera cuando el chat llega a su tope.
         forwardWheel(event) {
             if (! this.drawerOpen || ! (event.target instanceof Element)) return;
-            const drawer = this.$refs.drawer;
+            const drawer = this.domRef('drawer');
             if (! drawer) return;
             if (drawer === event.target || drawer.contains(event.target)) return;
             const el = this.previewVisible()
-                ? this.$refs.previewScroll
-                : (this.chatView === 'chats' ? this.$refs.chatsScroll : this.$refs.messagesScroll);
+                ? this.domRef('previewScroll')
+                : (this.chatView === 'chats' ? this.domRef('chatsScroll') : this.domRef('messagesScroll'));
             if (! el || el.scrollHeight <= el.clientHeight) return;
             event.preventDefault();
             // Scroll suavizado por inercia: se acumula un objetivo y un
@@ -483,7 +549,7 @@
         sendNow() {
             // Un click residual del resize no debe disparar un envio.
             if (this.clickGuardActive()) return Promise.resolve();
-            const input = this.$refs.chatInput;
+            const input = this.domRef('chatInput');
             const text = ((input ? input.value : (this.$wire.input ?? '')) ?? '').trim();
             if (! text) return Promise.resolve();
             // El textarea se vacia en el instante del envio, sin esperar la
@@ -572,7 +638,7 @@
                 this.sendNow();
                 return;
             }
-            const input = this.$refs.chatInput;
+            const input = this.domRef('chatInput');
             const text = ((input ? input.value : (this.$wire.input ?? '')) ?? '').trim();
             if (! text) return;
             if (input) {
@@ -676,7 +742,7 @@
             this.restoreChatState(next);
         },
         applyDraft(text) {
-            const input = this.$refs.chatInput;
+            const input = this.domRef('chatInput');
             if (input) {
                 input.value = text;
                 this.fitChatInput();
@@ -704,7 +770,7 @@
             this.scheduleFitChatInput();
         },
         restoreInputText(text) {
-            const input = this.$refs.chatInput;
+            const input = this.domRef('chatInput');
             if (input) {
                 input.value = text;
                 this.fitChatInput();
@@ -791,7 +857,7 @@
             // Al enviar, Livewire limpia `input` por morph (sin evento input):
             // hay que devolver el textarea a una linea manualmente.
             this.$wire.$watch('input', (value) => {
-                if (value === '' && this.$refs.chatInput) {
+                if (value === '' && this.domRef('chatInput')) {
                     this.scheduleFitChatInput();
                     this.inputText = '';
                 }
@@ -817,7 +883,7 @@
                 if (open) {
                     this.$nextTick(() => {
                         this.clampVHeights();
-                        this.$refs.chatInput?.focus();
+                        this.domRef('chatInput')?.focus();
                     });
                 }
             });
@@ -871,8 +937,8 @@
                     this.$nextTick(() => {
                         if (! this.$wire.pendingForm && ! (this.promptsOpen && this.suggestOpen)) return;
                         if (this.autoComposerHeight === null) return;
-                        const composer = this.$refs.composer;
-                        const scroll = this.$refs.composerScroll;
+                        const composer = this.domRef('composer');
+                        const scroll = this.domRef('composerScroll');
                         if (! composer || ! scroll) return;
                         // composer = scroll + bloque del input; la diferencia
                         // de offsetHeight es el chrome fijo del input.
@@ -880,23 +946,27 @@
                         // composerContent.offsetHeight es la altura NATURAL
                         // del contenido del scroll: scrollHeight mediria la
                         // caja flex-1 (que ya incluye el espacio sobrante).
-                        const contentH = this.$refs.composerContent?.offsetHeight ?? scroll.scrollHeight;
+                        const contentH = this.domRef('composerContent')?.offsetHeight ?? scroll.scrollHeight;
                         // chrome incluye el textarea ya agrandado por el
                         // espacio sobrante: se descuenta su parte flexible
                         // (todo lo que exceda el minimo de 42px) para que
                         // `needed` no dependa del alto actual del input.
-                        const ta = this.$refs.chatInput;
+                        const ta = this.domRef('chatInput');
                         const taFlex = ta ? Math.max(0, ta.offsetHeight - 42) : 0;
                         const needed = contentH + chrome - taFlex;
                         const target = Math.min(
                             this.vMaxFor('composer'),
                             Math.max(110, this.autoComposerHeight, needed),
                         );
-                        if (target !== this.composerHeight) this.composerHeight = target;
+                        // applyVHeight (no asignacion directa): escribe
+                        // tambien los estilos inline del elemento para que
+                        // el alto nuevo se vea en el mismo frame.
+                        if (target !== this.composerHeight) this.applyVHeight('composer', target);
                     });
                 } else if (this.autoComposerHeight !== null) {
-                    this.composerHeight = this.autoComposerHeight;
+                    const restore = this.autoComposerHeight;
                     this.autoComposerHeight = null;
+                    this.applyVHeight('composer', restore);
                 }
             };
             this.$wire.$watch('pendingForm', this.updateComposerAuto);
@@ -1082,18 +1152,6 @@
                 <div wire:ignore.self x-show="chatView === 'chats'" class="flex items-center gap-1">
                     <button
                         type="button"
-                        wire:click="exportWeeklyReport"
-                        wire:loading.attr="disabled"
-                        wire:target="exportWeeklyReport"
-                        title="{{ __('assistant.weekly_report.button') }}"
-                        class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-gray-200"
-                    >
-                        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
-                        </svg>
-                    </button>
-                    <button
-                        type="button"
                         x-on:click="chatView = 'chat'; $wire.backToChat()"
                         title="{{ __('assistant.back_to_chat') }}"
                         class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
@@ -1104,6 +1162,46 @@
                     </button>
                 </div>
                 <div wire:ignore.self x-show="chatView === 'chat'" class="flex items-center gap-1">
+                    {{-- Grupo de conversacion: historial de chats, exportar
+                         el chat activo y chat nuevo. El export individual
+                         no aplica al briefing: ahi el boton es el reporte
+                         semanal de los resumenes. --}}
+                    <button
+                        type="button"
+                        x-on:click="chatView = 'chats'; $wire.showChats()"
+                        title="{{ __('assistant.chats_title') }}"
+                        class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
+                    >
+                        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.76 9.76 0 0 1-2.555-.337A5.97 5.97 0 0 1 5.41 20.97a5.97 5.97 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
+                        </svg>
+                    </button>
+                    @if ($activeChatId !== null && ! $briefChat)
+                        <button
+                            type="button"
+                            wire:click="exportChat"
+                            wire:loading.attr="disabled"
+                            wire:target="exportChat"
+                            title="{{ __('assistant.export_chat') }}"
+                            class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-gray-200"
+                        >
+                            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                            </svg>
+                        </button>
+                    @endif
+                    <button
+                        type="button"
+                        x-bind:disabled="chatBusy"
+                        x-on:click="chatBusy = true; $wire.newChat().finally(() => chatBusy = false)"
+                        title="{{ __('assistant.new_chat') }}"
+                        class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-gray-200"
+                    >
+                        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                        </svg>
+                    </button>
+                    <span class="mx-0.5 h-5 w-px shrink-0 bg-gray-200 dark:bg-white/15" aria-hidden="true"></span>
                     {{-- Selector de modelo del copiloto: los modelos
                          gratuitos de Gemini con su uso recomendado. El
                          cambio aplica en tiempo real al proximo mensaje.
@@ -1212,17 +1310,8 @@
                         </div>
                     </div>
                     @endif
-                    <button
-                        type="button"
-                        x-on:click="chatView = 'chats'; $wire.showChats()"
-                        title="{{ __('assistant.chats_title') }}"
-                        class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
-                    >
-                        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.76 9.76 0 0 1-2.555-.337A5.97 5.97 0 0 1 5.41 20.97a5.97 5.97 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
-                        </svg>
-                    </button>
                     @if ($briefChat)
+                    <span class="mx-0.5 h-5 w-px shrink-0 bg-gray-200 dark:bg-white/15" aria-hidden="true"></span>
                     <button
                         type="button"
                         wire:click="toggleBriefing"
@@ -1238,33 +1327,22 @@
                             @endunless
                         </svg>
                     </button>
-                    @endif
-                    @if ($activeChatId !== null)
-                        <button
-                            type="button"
-                            wire:click="exportChat"
-                            wire:loading.attr="disabled"
-                            wire:target="exportChat"
-                            title="{{ __('assistant.export_chat') }}"
-                            class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-gray-200"
-                        >
-                            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                            </svg>
-                        </button>
-                    @endif
+                    {{-- Reporte semanal: solo dentro del chat de resumen
+                         diario — exporta los resumenes de los ultimos 7
+                         dias de este chat, no el historico general. --}}
                     <button
                         type="button"
-                        x-bind:disabled="chatBusy"
-                        x-on:click="chatView = 'chat'; chatBusy = true; $wire.newChat().finally(() => chatBusy = false)"
-                        title="{{ __('assistant.new_chat') }}"
-                        class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50 dark:hover:bg-white/10 dark:hover:text-gray-200"
+                        x-on:click="weeklyReportOpen = true"
+                        title="{{ __('assistant.weekly_report.button') }}"
+                        class="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
                     >
-                        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
                         </svg>
                     </button>
+                    @endif
                 </div>
+                <span class="mx-0.5 h-5 w-px shrink-0 bg-gray-200 dark:bg-white/15" aria-hidden="true"></span>
                 <button
                     type="button"
                     x-on:click="closeDrawer()"
@@ -1411,36 +1489,9 @@
                 @endif
             </div>
 
-            @if ($briefMuted)
-                {{-- Briefing desactivado: el chat no existe como conversacion.
-                     Ni mensajes, ni composer, ni sugerencias — solo el aviso
-                     y el boton para reactivar el job diario. --}}
-                <div
-                    x-show="chatView === 'chat'"
-                    class="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-center"
-                >
-                    <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-100 text-gray-400 ring-1 ring-gray-950/5 dark:bg-white/5 dark:text-gray-500 dark:ring-white/10">
-                        <svg class="h-7 w-7" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
-                        </svg>
-                    </div>
-                    <div class="space-y-1">
-                        <p class="text-sm font-bold text-gray-800 dark:text-gray-100">{{ __('assistant.briefing.disabled_title') }}</p>
-                        <p class="max-w-xs text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ __('assistant.briefing.disabled_text') }}</p>
-                    </div>
-                    <button
-                        type="button"
-                        wire:click="toggleBriefing"
-                        wire:loading.attr="disabled"
-                        wire:target="toggleBriefing"
-                        class="rounded-xl bg-primary-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-primary-500 disabled:opacity-50"
-                    >
-                        {{ __('assistant.briefing.toggle_on') }}
-                    </button>
-                </div>
-            @else
-
-            {{-- Conversacion --}}
+            {{-- Conversacion: el chat de briefing muestra su historial
+                 igual, pero abajo no hay composer — es un canal de solo
+                 lectura donde el job publica el resumen diario. --}}
             <div
                 wire:ignore.self
                 x-ref="chatPane"
@@ -1645,6 +1696,7 @@
                                         <div class="flex items-stretch">
                                             <button
                                                 type="button"
+                                                wire:click="previewFile({{ $index }})"
                                                 x-on:click="openPreview(() => $wire.previewFile({{ $index }}))"
                                                 title="{{ __('assistant.preview.view_file') }}"
                                                 class="flex items-center justify-center px-3 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
@@ -1742,6 +1794,7 @@
                                                  prefiere, confirmacion directa aqui. --}}
                                             <button
                                                 type="button"
+                                                wire:click="previewAction({{ $index }})"
                                                 x-on:click="openPreview(() => $wire.previewAction({{ $index }}))"
                                                 class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:ring-white/15 dark:hover:bg-gray-700"
                                             >
@@ -1852,6 +1905,7 @@
                                         @if (($message['table_count'] ?? 0) > 1)
                                             <button
                                                 type="button"
+                                                wire:click="previewAllData({{ $index }})"
                                                 x-on:click="openPreview(() => $wire.previewAllData({{ $index }}))"
                                                 class="inline-flex items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-semibold text-gray-600 transition hover:bg-primary-100 hover:text-primary-700 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-primary-500/20 dark:hover:text-primary-300"
                                             >
@@ -1902,9 +1956,78 @@
                                     </div>
                                 @endif
 
+                                {{-- Preguntas aclaratorias Q:/A:: la
+                                     respuesta se hace en el stepper del
+                                     composer (una por paso); aqui la
+                                     burbuja queda como registro. Si ya se
+                                     respondieron — el siguiente mensaje
+                                     del usuario trae los pares "Q:/A:" —
+                                     cada pregunta muestra la eleccion. --}}
+                                @if (! empty($message['questions']) && is_array($message['questions']))
+                                    @php
+                                        $qaQuestions = array_slice($message['questions'], 0, 4);
+                                        $qaPending = $index === $lastAssistantIndex;
+                                        $qaAnswers = [];
+                                        if (! $qaPending) {
+                                            for ($qaJ = $index + 1; $qaJ < count($messages); $qaJ++) {
+                                                if (($messages[$qaJ]['role'] ?? '') !== 'user') {
+                                                    continue;
+                                                }
+                                                if (preg_match_all('/Q:\s*(.+?)\nA:\s*(.+?)(?=\n\nQ:|\z)/su', (string) ($messages[$qaJ]['text'] ?? ''), $qaMatches)) {
+                                                    foreach ($qaMatches[1] as $qaK => $qaQText) {
+                                                        $qaAnswers[trim((string) $qaQText)] = trim((string) $qaMatches[2][$qaK]);
+                                                    }
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    @endphp
+                                    <div class="mt-3">
+                                        <p class="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                                            {{ $qaPending ? __('assistant.questions.answer_below') : __('assistant.questions.answered') }}
+                                        </p>
+                                        <div class="space-y-2">
+                                            @foreach ($qaQuestions as $qi => $qa)
+                                                @php
+                                                    $qaAnswer = $qaAnswers[trim((string) ($qa['q'] ?? ''))] ?? null;
+                                                    $qaOptions = array_map('strval', (array) ($qa['options'] ?? []));
+                                                    $qaCustom = $qaAnswer !== null && ! in_array($qaAnswer, $qaOptions, true);
+                                                @endphp
+                                                <div class="rounded-lg bg-gray-50 p-2.5 ring-1 ring-gray-950/5 dark:bg-white/5 dark:ring-white/10">
+                                                    <p class="text-xs font-semibold leading-snug text-gray-700 dark:text-gray-200">
+                                                        <span class="mr-1 font-mono text-[10px] font-bold text-primary-500 dark:text-primary-400">{{ __('assistant.questions.label') }}</span>{{ $qa['q'] }}
+                                                    </p>
+                                                    <div class="mt-1.5 grid gap-1 sm:grid-cols-2">
+                                                        @foreach ($qaOptions as $oi => $option)
+                                                            @php $qaOptPicked = $qaAnswer !== null && $qaAnswer === $option; @endphp
+                                                            <div class="flex items-center gap-2 rounded-lg border px-2 py-1.5 text-left text-[11px] font-medium ring-1 {{ $qaOptPicked ? 'border-primary-500 bg-primary-50 text-primary-800 ring-primary-500/40 dark:border-primary-400 dark:bg-primary-500/15 dark:text-primary-200' : ($qaPending ? 'border-transparent bg-white text-gray-600 ring-gray-950/10 dark:bg-gray-800 dark:text-gray-300 dark:ring-white/10' : 'border-transparent bg-white text-gray-400 ring-gray-950/5 dark:bg-gray-800 dark:text-gray-500 dark:ring-white/5') }}">
+                                                                <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border text-[9px] font-bold {{ $qaOptPicked ? 'border-primary-500 bg-primary-600 text-white dark:border-primary-400 dark:bg-primary-500' : 'border-gray-300 text-gray-400 dark:border-white/20 dark:text-gray-500' }}">{{ chr(65 + $oi) }}</span>
+                                                                <span class="line-clamp-2 min-w-0 flex-1 break-words">{{ $option }}</span>
+                                                                @if ($qaOptPicked)
+                                                                    <svg class="h-3.5 w-3.5 shrink-0 text-primary-600 dark:text-primary-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" aria-hidden="true">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                                                    </svg>
+                                                                @endif
+                                                            </div>
+                                                        @endforeach
+                                                    </div>
+                                                    @if ($qaCustom)
+                                                        <div class="mt-1.5 flex items-center gap-2 rounded-lg border border-primary-500 bg-primary-50 px-2 py-1.5 text-[11px] font-medium text-primary-800 ring-1 ring-primary-500/40 dark:border-primary-400 dark:bg-primary-500/15 dark:text-primary-200">
+                                                            <svg class="h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+                                                            </svg>
+                                                            <span class="min-w-0 flex-1 break-words">{{ $qaAnswer }}</span>
+                                                        </div>
+                                                    @endif
+                                                </div>
+                                            @endforeach
+                                        </div>
+                                    </div>
+                                @endif
+
                                 {{-- Sugerencias: solo en el ultimo mensaje del
                                      asistente para no saturar el historial. --}}
-                                @if (! empty($message['suggestions']) && $index === $lastAssistantIndex)
+                                @if (! empty($message['suggestions']) && $index === $lastAssistantIndex && ! $briefChat)
                                     <div class="mt-3 flex flex-wrap gap-1.5">
                                         @foreach ($message['suggestions'] as $suggestion)
                                             <button
@@ -1940,26 +2063,6 @@
                                                 </svg>
                                             </button>
                                         @endif
-                                        <button
-                                            type="button"
-                                            x-data="{ copied: false }"
-                                            x-on:click="navigator.clipboard.writeText(@js($message['text'])).then(() => { copied = true; setTimeout(() => copied = false, 1500) })"
-                                            title="{{ __('assistant.copy') }}"
-                                            // Flota fuera del borde derecho de la
-                                            // card (4px de aire): aparece al
-                                            // hacer hover en el mensaje o al
-                                            // acercar el cursor al propio boton.
-                                            // En pantallas touch no hay hover:
-                                            // se muestra siempre.
-                                            class="flex h-6 w-6 items-center justify-center rounded-full bg-white text-gray-400 opacity-0 shadow-md ring-1 ring-gray-950/10 transition hover:text-primary-600 focus-visible:opacity-100 group-hover:opacity-100 hover:opacity-100 [@media(hover:none)]:opacity-100 dark:bg-gray-700 dark:text-gray-400 dark:ring-white/10 dark:hover:text-primary-400"
-                                        >
-                                            <svg x-show="!copied" class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" />
-                                            </svg>
-                                            <svg x-show="copied" x-cloak class="h-3 w-3 text-success-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                                            </svg>
-                                        </button>
                                     </div>
                                 @endif
 
@@ -1982,11 +2085,25 @@
                                     </div>
                                 @endif
 
-                                {{-- Feedback sutil: 👍/👎 sobre la calidad
-                                     de la respuesta; el estado activo queda
-                                     guardado en el payload del mensaje. --}}
-                                @if ($message['role'] === 'assistant' && ! $isCancelledNotice && ! empty($message['id']))
-                                    <div class="mt-2 flex items-center justify-end gap-0.5">
+                                {{-- Acciones de la respuesta: copiar junto al
+                                     feedback 👍/👎; el estado activo del
+                                     feedback queda en el payload del mensaje. --}}
+                                @if ($message['role'] === 'assistant' && ! $isCancelledNotice)
+                                    <div class="mt-2 flex items-center justify-end gap-0.5" x-data="{ copied: false }">
+                                        <button
+                                            type="button"
+                                            x-on:click="navigator.clipboard.writeText(@js($message['text'])).then(() => { copied = true; setTimeout(() => copied = false, 1500) })"
+                                            title="{{ __('assistant.copy') }}"
+                                            class="rounded-md p-1 text-gray-300 transition hover:text-primary-600 dark:text-gray-600 dark:hover:text-primary-400"
+                                        >
+                                            <svg x-show="!copied" class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" />
+                                            </svg>
+                                            <svg x-show="copied" x-cloak class="h-4 w-4 text-success-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                            </svg>
+                                        </button>
+                                        @if (! empty($message['id']))
                                         <button
                                             type="button"
                                             wire:click="setFeedback({{ $message['id'] }}, 'up')"
@@ -2019,6 +2136,7 @@
                                                 <path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z" />
                                             </svg>
                                         </button>
+                                        @endif
                                     </div>
                                 @endif
 
@@ -2153,6 +2271,7 @@
             </button>
             </div>
 
+        @if (! $briefChat)
         {{-- Splitter vertical: el chat es flex-1 y el compositor tiene
              altura propia; arrastrar arriba agranda el chat, abajo el
              compositor. Doble clic restablece el reparto. --}}
@@ -2178,9 +2297,14 @@
             <span class="h-1 w-12 rounded-full bg-gray-300 transition group-hover:bg-primary-500 group-focus:bg-primary-500 dark:bg-white/20"></span>
         </div>
 
-        {{-- Input (solo visible en vista de chat) --}}
+        {{-- Input (solo visible en vista de chat). wire:key propio: sin
+             el, el morph emparejaba este div con la barra de briefing
+             (ambos <div> en la misma posicion) y wire:ignore.self hacia
+             que el composer conservara su altura de resize envolviendo
+             la barra — se veia "achicada a 0". --}}
         <div
             wire:ignore.self
+            wire:key="composer-box"
             x-show="chatView === 'chat'"
             x-ref="composer"
             :style="composerHeight !== null ? 'height: ' + composerHeight + 'px; flex: none' : ''"
@@ -2220,7 +2344,8 @@
                          nunca desaparece el input. --}}
                     <div
                         x-ref="composerScroll"
-                        class="assistant-scroll min-h-0 flex-1 overflow-y-auto"
+                        class="assistant-scroll min-h-0 overflow-y-auto"
+                        :class="composerHeight !== null && 'flex-1'"
                     >
                     {{-- Wrapper flow-root: contiene los margenes de los
                          paneles para que offsetHeight sea la altura
@@ -2228,11 +2353,34 @@
                          saber cuanto espacio queda para el textarea). --}}
                     <div x-ref="composerContent" class="flow-root">
                     {{-- Los quick prompts ceden el sitio cuando hay otra
-                         UI dentro del composer: wizard guiado (pendingForm)
-                         o mensajes en cola. Sin ellos el composer abraza
-                         solo lo que importa y el input queda pegado. --}}
-                    @if ($pendingForm === null)
-                    <div class="mb-2">
+                         UI dentro del composer: wizard guiado (pendingForm),
+                         mensajes en cola, o una pregunta del asistente
+                         esperando respuesta (options/questions del ultimo
+                         mensaje). Sin ellos el composer abraza solo lo que
+                         importa y el input queda pegado. --}}
+                    @php
+                        // ¿El ultimo mensaje del asistente quedo esperando
+                        // una eleccion del usuario (opciones A-D o ronda
+                        // Q:/A:)? Mientras tanto los quick prompts se
+                        // ocultan: son un segundo canal de entrada que
+                        // confundiria la respuesta pendiente.
+                        $awaitingAnswer = false;
+                        $pendingQuestions = [];
+                        $pendingQuestionsId = null;
+                        foreach (array_reverse($messages ?? []) as $msg) {
+                            if (($msg['role'] ?? '') !== 'assistant') {
+                                continue;
+                            }
+                            $awaitingAnswer = ! empty($msg['options']) || ! empty($msg['questions']);
+                            if (! empty($msg['questions']) && is_array($msg['questions'])) {
+                                $pendingQuestions = array_slice($msg['questions'], 0, 4);
+                                $pendingQuestionsId = $msg['id'] ?? null;
+                            }
+                            break;
+                        }
+                    @endphp
+                    @if ($pendingForm === null && ! $awaitingAnswer)
+                    <div wire:key="quick-prompts" class="mb-2">
                         <div class="mb-1.5 flex items-center justify-between px-0.5">
                             <button
                                 type="button"
@@ -2264,7 +2412,7 @@
 
                         <div x-show="suggestOpen" x-transition.opacity.duration.150ms>
                         @if (! empty($contextSuggestions))
-                            <div class="flex gap-1.5 overflow-x-auto px-0.5 pb-1 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                            <div class="flex flex-wrap gap-1.5 px-0.5 pb-1 pt-2">
                                 @foreach ($contextSuggestions as $key)
                                     <button
                                         type="button"
@@ -2293,8 +2441,7 @@
                             x-transition:leave="transition ease-in duration-150"
                             x-transition:leave-start="opacity-100"
                             x-transition:leave-end="opacity-0"
-                            :style="{ 'max-height': promptsMaxHeight() }"
-                            class="mt-2 max-h-96 overflow-y-auto rounded-xl bg-gray-50 p-2.5 ring-1 ring-gray-950/5 [overscroll-behavior:contain] [scrollbar-width:thin] dark:bg-white/5 dark:ring-white/10"
+                            class="mt-2 max-h-[52dvh] overflow-y-auto rounded-xl bg-gray-50 p-2.5 ring-1 ring-gray-950/5 [overscroll-behavior:contain] [scrollbar-width:thin] dark:bg-white/5 dark:ring-white/10"
                         >
                             <p class="px-1 pb-2 text-xs font-semibold text-gray-700 dark:text-gray-200">{{ __('assistant.help.title') }}</p>
                             <div class="grid gap-3 sm:grid-cols-2">
@@ -2326,6 +2473,134 @@
                     </div>
                     @endif
 
+                {{-- Stepper de preguntas aclaratorias: el asistente no
+                     pudo resolver la ambiguedad ni con una herramienta
+                     flexible, asi que pregunta. Una pregunta por paso,
+                     mismo diseno de opciones A-D; al final "Enviar
+                     respuestas" manda todos los pares Q:/A: en un solo
+                     mensaje. wire:key por mensaje+contenido: cada ronda
+                     nueva de preguntas reinicia la seleccion. --}}
+                @if ($pendingQuestions !== [] && $pendingForm === null)
+                    @php $qaTotal = count($pendingQuestions); @endphp
+                    <div
+                        wire:key="qa-stepper-{{ $pendingQuestionsId ?? 'x' }}-{{ md5(json_encode($pendingQuestions)) }}"
+                        x-data="{
+                            step: 0,
+                            sel: @js(array_fill(0, $qaTotal, '')),
+                            custom: @js(array_fill(0, $qaTotal, '')),
+                            qs: @js($pendingQuestions),
+                            stepFmt: @js(__('assistant.questions.step_of', ['step' => ':step', 'total' => $qaTotal])),
+                        }"
+                        class="mx-1 mb-2 mt-1 rounded-xl bg-primary-50 p-3 ring-1 ring-primary-600/15 dark:bg-primary-500/10 dark:ring-primary-400/25"
+                    >
+                        <div class="flex items-center gap-1.5">
+                            @for ($qaStepIndex = 0; $qaStepIndex < $qaTotal; $qaStepIndex++)
+                                <button
+                                    type="button"
+                                    x-on:click="step = {{ $qaStepIndex }}"
+                                    class="h-1.5 flex-1 rounded-full transition-colors"
+                                    x-bind:class="step >= {{ $qaStepIndex }} ? 'bg-primary-600 dark:bg-primary-400' : 'bg-primary-600/15 dark:bg-white/10'"
+                                    title="{{ __('assistant.questions.step_of', ['step' => $qaStepIndex + 1, 'total' => $qaTotal]) }}"
+                                ></button>
+                            @endfor
+                        </div>
+                        <p class="mt-2 flex items-center gap-1.5 text-xs font-bold text-primary-700 dark:text-primary-300">
+                            <svg class="h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M12 17.25h.008v.008H12v-.008Z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                            </svg>
+                            <span class="truncate">{{ __('assistant.questions.title') }} · <span x-text="stepFmt.replace(':step', step + 1)"></span></span>
+                        </p>
+                        <p class="mt-1.5 text-[10px] text-gray-500 dark:text-gray-400">{{ __('assistant.questions.hint') }}</p>
+
+                        <div class="mt-2 space-y-2">
+                            @foreach ($pendingQuestions as $qi => $qa)
+                                <div x-show="step === {{ $qi }}" x-cloak>
+                                    <div class="rounded-lg bg-white p-2.5 ring-1 ring-gray-950/5 dark:bg-gray-900/60 dark:ring-white/10">
+                                        <p class="text-xs font-semibold leading-snug text-gray-700 dark:text-gray-200">
+                                            <span class="mr-1 font-mono text-[10px] font-bold text-primary-500 dark:text-primary-400">{{ __('assistant.questions.label') }}</span>{{ $qa['q'] }}
+                                        </p>
+                                        <div class="mt-1.5 grid gap-1 sm:grid-cols-2">
+                                            @foreach ($qa['options'] as $oi => $option)
+                                                <button
+                                                    type="button"
+                                                    x-on:click="sel[{{ $qi }}] = sel[{{ $qi }}] === @js($option) ? '' : @js($option); custom[{{ $qi }}] = ''"
+                                                    x-bind:class="[sel[{{ $qi }}] === @js($option) ? 'border-primary-500 bg-primary-50 text-primary-800 ring-primary-500/40 dark:border-primary-400 dark:bg-primary-500/15 dark:text-primary-200' : 'border-transparent bg-gray-50 text-gray-600 ring-gray-950/10 hover:bg-primary-50/60 hover:text-primary-700 dark:bg-white/5 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-primary-500/10', sending ? 'pointer-events-none opacity-60' : '']"
+                                                    class="flex items-center gap-2 rounded-lg border px-2 py-1.5 text-left text-[11px] font-medium ring-1 transition"
+                                                >
+                                                    <span
+                                                        class="flex h-5 w-5 shrink-0 items-center justify-center rounded border text-[9px] font-bold"
+                                                        :class="sel[{{ $qi }}] === @js($option) ? 'border-primary-500 bg-primary-600 text-white dark:border-primary-400 dark:bg-primary-500' : 'border-gray-300 text-gray-400 dark:border-white/20 dark:text-gray-500'"
+                                                        x-text="String.fromCharCode(65 + {{ $oi }})"
+                                                    ></span>
+                                                    <span class="line-clamp-2 min-w-0 flex-1 break-words">{{ $option }}</span>
+                                                </button>
+                                            @endforeach
+                                        </div>
+                                        <input
+                                            type="text"
+                                            x-model="custom[{{ $qi }}]"
+                                            x-on:input="sel[{{ $qi }}] = ''"
+                                            placeholder="{{ __('assistant.questions.custom_placeholder') }}"
+                                            autocomplete="off"
+                                            class="mt-1.5 w-full rounded-lg bg-gray-50 px-2.5 py-1.5 text-[11px] text-gray-700 ring-1 ring-gray-950/10 placeholder:text-gray-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-gray-900 dark:text-gray-200 dark:ring-white/10"
+                                        >
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+
+                        <div class="mt-2 flex items-center justify-between gap-2">
+                            <button
+                                type="button"
+                                x-show="step > 0"
+                                x-cloak
+                                x-on:click="step = Math.max(0, step - 1)"
+                                x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
+                                class="rounded-lg bg-white px-3 py-1.5 text-[11px] font-bold text-gray-600 ring-1 ring-gray-950/10 transition hover:bg-gray-50 dark:bg-white/10 dark:text-gray-300 dark:ring-white/15 dark:hover:bg-white/15"
+                            >
+                                {{ __('assistant.wizard.previous') }}
+                            </button>
+                            <span x-show="step === 0" x-cloak></span>
+                            <button
+                                type="button"
+                                x-show="step < {{ $qaTotal - 1 }}"
+                                x-cloak
+                                x-on:click="step = Math.min({{ $qaTotal - 1 }}, step + 1)"
+                                x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
+                                class="rounded-lg bg-primary-600 px-3.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-primary-500"
+                            >
+                                {{ __('assistant.wizard.next') }}
+                            </button>
+                            <button
+                                type="button"
+                                x-show="step === {{ $qaTotal - 1 }}"
+                                x-cloak
+                                x-on:click="
+                                    const pairs = [];
+                                    qs.forEach((q, i) => {
+                                        const a = ((custom[i] || '').trim() !== '' ? custom[i].trim() : sel[i]);
+                                        if (a) pairs.push('Q: ' + q.q + '\nA: ' + a);
+                                    });
+                                    if (pairs.length > 0) {
+                                        sel.fill('');
+                                        custom.fill('');
+                                        sendSuggestion(pairs.join('\n\n'));
+                                    }
+                                "
+                                x-bind:disabled="! sel.some(s => s !== '') && ! custom.some(c => (c || '').trim() !== '')"
+                                x-bind:class="sending ? 'pointer-events-none opacity-60' : ''"
+                                class="flex items-center gap-1.5 rounded-lg bg-primary-600 px-3.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-primary-500 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+                                </svg>
+                                {{ __('assistant.questions.send') }}
+                            </button>
+                        </div>
+                    </div>
+                @endif
+
                 {{-- Wizard guiado en curso: progreso, campo actual,
                      respuestas rapidas y cancelacion. --}}
                 @if ($pendingForm !== null)
@@ -2336,6 +2611,7 @@
                     @endphp
                     <div
                         wire:ignore.self
+                        wire:key="wizard-card"
                         x-data="{ open: true }"
                         x-ref="wizardCard"
                         :style="wizardHeight !== null ? 'height: ' + wizardHeight + 'px' : ''"
@@ -2637,6 +2913,7 @@
                 <div
                     x-show="msgQueue.length > 0"
                     x-cloak
+                    x-ref="queuePanel"
                     class="mb-2 shrink-0 overflow-hidden rounded-xl bg-gray-50 ring-1 ring-gray-950/5 dark:bg-white/5 dark:ring-white/10"
                 >
                     <button
@@ -2709,7 +2986,7 @@
 
                 <form
                     x-on:submit.prevent="sendNow()"
-                    class="flex shrink-0 items-end gap-2"
+                    class="mt-2 flex shrink-0 items-end gap-2 border-t border-gray-200/80 pt-2 dark:border-white/10"
                 >
                     <textarea
                         x-ref="chatInput"
@@ -2741,7 +3018,7 @@
                         </svg>
                     </button>
                 </form>
-                <div class="relative mt-1.5 px-1" x-data="{ helpOpen: false }">
+                <div class="relative mt-1.5 px-1" x-data="{ helpOpen: false }" x-ref="composerHint">
                     <button
                         type="button"
                         x-on:click="helpOpen = ! helpOpen"
@@ -2785,12 +3062,89 @@
                         </ul>
                     </div>
                 </div>
-                <p class="mt-0.5 px-1 text-center text-[10px] leading-tight text-gray-400 dark:text-gray-500">
+                <p x-ref="composerDisclaimer" class="mt-0.5 px-1 text-center text-[10px] leading-tight text-gray-400 dark:text-gray-500">
                     {{ __('assistant.disclaimer') }}
                 </p>
         </div>
         </div>
+        @else
+        {{-- Briefing: canal de solo lectura. El job publica el resumen y
+             el usuario no escribe aqui — la campana del header (o este
+             boton) solo activa/desactiva la llegada de novedades. --}}
+        <div
+            wire:key="briefing-bar"
+            x-show="chatView === 'chat'"
+            class="flex shrink-0 items-center gap-3 border-t border-gray-200 bg-white px-4 py-3 dark:border-white/10 dark:bg-gray-900"
+        >
+            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl {{ $briefEnabled ? 'bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300' : 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500' }}">
+                <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
+                    @unless ($briefEnabled)
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 4.5 15 15" />
+                    @endunless
+                </svg>
+            </span>
+            <div class="min-w-0 flex-1">
+                <p class="truncate text-xs font-semibold {{ $briefEnabled ? 'text-gray-700 dark:text-gray-200' : 'text-gray-400 dark:text-gray-500' }}">
+                    {{ $briefEnabled ? __('assistant.briefing.readonly') : __('assistant.briefing.disabled_notice') }}
+                </p>
+                <p class="text-[10px] text-gray-400 dark:text-gray-500">{{ __('assistant.briefing.readonly_hint') }}</p>
+            </div>
+            <button
+                type="button"
+                wire:click="toggleBriefing"
+                wire:loading.attr="disabled"
+                wire:target="toggleBriefing"
+                class="shrink-0 rounded-lg px-3 py-1.5 text-[11px] font-bold transition {{ $briefEnabled ? 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15' : 'bg-primary-600 text-white hover:bg-primary-500' }}"
+            >
+                {{ $briefEnabled ? __('assistant.briefing.toggle_off') : __('assistant.briefing.toggle_on') }}
+            </button>
+        </div>
         @endif
+
+        {{-- Confirmacion del reporte semanal: resume que se va a
+             descargar (mensajes + analisis + tablas + resumen IA) antes
+             de disparar el export. --}}
+        <div
+            x-show="weeklyReportOpen"
+            x-cloak
+            x-transition.opacity.duration.150ms
+            class="absolute inset-0 z-30 flex items-center justify-center bg-gray-950/40 px-4 backdrop-blur-[2px]"
+            x-on:click.self="weeklyReportOpen = false"
+        >
+            <div class="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl ring-1 ring-gray-950/10 dark:bg-gray-800 dark:ring-white/10">
+                <div class="flex items-start gap-3">
+                    <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-50 text-primary-600 ring-1 ring-primary-600/15 dark:bg-primary-500/10 dark:text-primary-400 dark:ring-primary-400/25">
+                        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                        </svg>
+                    </span>
+                    <div class="min-w-0">
+                        <h3 class="text-sm font-bold text-gray-900 dark:text-white">{{ __('assistant.weekly_report.confirm_title') }}</h3>
+                        <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ __('assistant.weekly_report.confirm_text') }}</p>
+                    </div>
+                </div>
+                <div class="mt-4 flex gap-2">
+                    <button
+                        type="button"
+                        x-on:click="weeklyReportOpen = false"
+                        class="flex-1 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-600 ring-1 ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-700 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-gray-600"
+                    >
+                        {{ __('assistant.weekly_report.cancel') }}
+                    </button>
+                    <button
+                        type="button"
+                        wire:click="exportWeeklyReport"
+                        wire:loading.attr="disabled"
+                        wire:target="exportWeeklyReport"
+                        x-on:click="weeklyReportOpen = false"
+                        class="flex-1 rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-500 disabled:opacity-50"
+                    >
+                        {{ __('assistant.weekly_report.confirm_cta') }}
+                    </button>
+                </div>
+            </div>
+        </div>
 
         {{-- Modal de preview: acciones por confirmar o tablas expandidas.
              Vive DENTRO del drawer (absolute), asi no pelea con el z-index

@@ -313,8 +313,10 @@ class AssistantChat extends Component
             return;
         }
 
-        // Briefing desactivado: el chat es solo lectura.
-        if ($this->briefMuted) {
+        // El chat de briefing es un canal de solo lectura: el job publica
+        // el resumen y el usuario no puede escribirle, este activo o no
+        // el toggle del job (ese solo controla si llegan novedades).
+        if ($this->briefChat) {
             return;
         }
 
@@ -410,17 +412,16 @@ class AssistantChat extends Component
         // Una respuesta puede encadenar varias llamadas al proveedor
         // (clasificar, lookups, redactar, reporte): el max_execution_time
         // por defecto de PHP (30s) mata el request a mitad de la espera
-        // de cURL. La profundidad del analisis la decide la IA al
-        // clasificar — sin regex de por medio — y cuando la enciende,
-        // GeminiDataAssistant amplia este limite con set_time_limit en
-        // el mismo request. Aqui solo va el piso para classify + la
-        // cadena normal.
+        // de cURL. La extension del analisis la decide la IA segun lo
+        // que pidio el usuario, asi que el limite cubre la cadena
+        // completa de consultas de apoyo (~mismo criterio que
+        // requestBudgetSeconds en GeminiDataAssistant).
         $providerTimeout = \App\Services\Assistant\AssistantProvider::timeoutForDriver(
             \App\Services\Assistant\AssistantProvider::driverForModel(
                 (string) (User::query()->whereKey($this->userId())->value('assistant_model') ?: ''),
             ) ?? \App\Services\Assistant\AssistantProvider::driver(),
         );
-        set_time_limit(max(120, ($providerTimeout * 3) + 60));
+        set_time_limit(max(300, ($providerTimeout * 24)));
 
         // Marca de cancelacion vigente: si cambia mientras la IA piensa,
         // la respuesta se descarta. El nonce vive en cache porque cada
@@ -471,6 +472,13 @@ class AssistantChat extends Component
             return;
         }
 
+        // Tope de rondas de preguntas aclaratorias: si la IA ya pregunto
+        // 3 veces sin resolver la peticion, la cuarta se reemplaza por un
+        // "no pude" — seguir preguntando ya no tiene sentido.
+        if ($reply->questions !== [] && $this->questionRounds() >= 3) {
+            $reply = AssistantReply::say(__('assistant.replies.could_not_resolve'));
+        }
+
         $this->pushReply($reply);
         // Recarga desde BD antes de responder: un force-send concurrente
         // pudo persistir turnos mientras esta respuesta se generaba y el
@@ -518,6 +526,11 @@ class AssistantChat extends Component
      */
     public function regenerateLast(): void
     {
+        // El briefing es solo lectura: nada de regenerar sus mensajes.
+        if ($this->briefChat) {
+            return;
+        }
+
         if (! $this->messagesLoaded) {
             $this->loadMessages();
         }
@@ -581,6 +594,10 @@ class AssistantChat extends Component
      */
     public function submitForm(array $values): void
     {
+        if ($this->briefChat) {
+            return;
+        }
+
         try {
             $reply = app(\App\Services\Assistant\AssistantToolInvoker::class)
                 ->submitForm($values, $this->userId());
@@ -598,6 +615,10 @@ class AssistantChat extends Component
      */
     public function prevFormStep(): void
     {
+        if ($this->briefChat) {
+            return;
+        }
+
         try {
             $reply = app(\App\Services\Assistant\AssistantToolInvoker::class)
                 ->previousFormStep($this->userId());
@@ -718,20 +739,21 @@ class AssistantChat extends Component
     }
 
     /**
-     * Reporte semanal: todo el historial de los ultimos 7 dias de TODOS
-     * los chats (incluido el briefing) en un solo Markdown descargable.
-     * Es la via rapida para llevarse el historico completo sin exportar
-     * chat por chat.
+     * Reporte semanal de los resumenes diarios: el historial de los
+     * ultimos 7 dias del chat de briefing en un solo Markdown
+     * descargable. El boton vive dentro de ese chat — no mezcla el
+     * resto de conversaciones.
      */
     public function exportWeeklyReport(): void
     {
         $since = now()->subDays(7)->startOfDay();
 
-        $chats = AssistantChatModel::query()
+        $briefingChat = AssistantChatModel::query()
             ->where('user_id', $this->userId())
-            ->where('updated_at', '>=', $since)
-            ->orderBy('updated_at')
-            ->get();
+            ->where('kind', AssistantChatModel::KIND_BRIEFING)
+            ->first();
+
+        $chats = $briefingChat === null ? collect() : collect([$briefingChat]);
 
         $lines = [
             '# '.__('assistant.weekly_report.title'),
@@ -742,6 +764,13 @@ class AssistantChat extends Component
             ]),
             '',
         ];
+
+        // Digest compacto de la actividad para el resumen que compone la
+        // IA: por mensaje, chat + rol + texto recortado + que tablas o
+        // reportes traia. Las cifras las saco del payload real, no del
+        // texto libre.
+        $digest = [];
+        $chatBlocks = [];
 
         foreach ($chats as $chat) {
             $messages = AssistantMessage::query()
@@ -759,25 +788,237 @@ class AssistantChat extends Component
                 ? __('assistant.briefing.title')
                 : ($chat->title ?: __('assistant.untitled_chat'));
 
-            $lines[] = '## '.$chatTitle;
-            $lines[] = '';
+            $chatLines = ['## '.$chatTitle, ''];
 
             foreach ($messages as $message) {
                 $who = $message->role === 'user'
                     ? __('assistant.export_you')
                     : __('assistant.export_assistant');
 
-                $lines[] = '### '.$who.' — '.$message->created_at?->format('d/m/Y H:i');
-                $lines[] = '';
-                $lines[] = trim((string) $message->text);
-                $lines[] = '';
+                $chatLines[] = '### '.$who.' — '.$message->created_at?->format('d/m/Y H:i');
+                $chatLines[] = '';
+                $chatLines[] = trim((string) $message->text);
+                $chatLines[] = '';
+
+                $payload = $message->payload ?? [];
+
+                // Tablas del turno como tablas Markdown reales: la cifra
+                // viaja con su fila, no solo el conteo.
+                $this->appendMarkdownTables($chatLines, $payload['data'] ?? null);
+
+                foreach ((array) ($payload['sections'] ?? []) as $section) {
+                    $this->appendMarkdownTables($chatLines, $section['data'] ?? null);
+                }
+
+                // Reportes/analisis generados por la IA: titulo, intro,
+                // campos y secciones con sus tablas — es la parte del
+                // historico que mas valor tiene para releer la semana.
+                $report = $payload['data']['report'] ?? null;
+
+                if (is_array($report)) {
+                    $this->appendMarkdownReport($chatLines, $report);
+                }
+
+                $digest[] = [
+                    'chat' => $chatTitle,
+                    'role' => $message->role === 'user' ? 'usuario' : 'asistente',
+                    'at' => $message->created_at?->format('Y-m-d H:i'),
+                    'text' => mb_substr(trim((string) $message->text), 0, 400),
+                    'tables' => $this->countTables($payload),
+                    'has_report' => is_array($report),
+                ];
             }
+
+            $chatBlocks[] = implode("\n", $chatLines);
+        }
+
+        if ($chatBlocks === []) {
+            $chatBlocks[] = '> '.__('assistant.weekly_report.empty');
+        }
+
+        // Analisis de la semana compuesto por la IA sobre la actividad
+        // real. Si el proveedor no responde, el reporte sale igual con
+        // el historial completo — el resumen es un extra, no un requisito.
+        $summary = null;
+
+        try {
+            $summary = app(DataAssistantInterface::class)->draft(
+                __('assistant.weekly_report.ai_instruction'),
+                [
+                    'periodo' => $since->format('Y-m-d').' a '.now()->format('Y-m-d'),
+                    'actividad' => $digest,
+                ],
+                $this->userId(),
+            );
+        } catch (\Throwable) {
+            // Sin resumen IA: el markdown igual se descarga completo.
+        }
+
+        if (is_string($summary) && trim($summary) !== '') {
+            $lines[] = '## '.__('assistant.weekly_report.analysis_title');
+            $lines[] = '';
+            $lines[] = trim($summary);
+            $lines[] = '';
+            $lines[] = '---';
+            $lines[] = '';
+        }
+
+        foreach ($chatBlocks as $block) {
+            $lines[] = $block;
+            $lines[] = '';
         }
 
         $this->dispatch('assistant-export',
             name: 'reporte-semanal-'.now()->format('Ymd').'.md',
             content: implode("\n", $lines),
         );
+    }
+
+    /**
+     * Vuelca un mapa {clave: filas[]} a tablas Markdown. Las claves con
+     * "_" son metadata interna (titulos, badges) y no se exportan.
+     *
+     * @param  list<string>  $lines
+     */
+    private function appendMarkdownTables(array &$lines, mixed $data): void
+    {
+        if (! is_array($data)) {
+            return;
+        }
+
+        foreach ($data as $key => $rows) {
+            if (! is_string($key) || str_starts_with($key, '_') || $key === 'report'
+                || ! is_array($rows) || $rows === []
+                || ! isset($rows[0]) || ! is_array($rows[0])) {
+                continue;
+            }
+
+            $headers = array_keys($rows[0]);
+
+            $lines[] = '| '.implode(' | ', array_map(fn ($h): string => $this->mdCell((string) $h), $headers)).' |';
+            $lines[] = '|'.implode('|', array_fill(0, count($headers), ' --- ')).'|';
+
+            foreach (array_slice($rows, 0, 20) as $row) {
+                $lines[] = '| '.implode(' | ', array_map(
+                    fn ($h): string => $this->mdCell($this->mdValue($row[$h] ?? '')),
+                    $headers,
+                )).' |';
+            }
+
+            if (count($rows) > 20) {
+                $lines[] = '> '.str_replace(':count', (string) (count($rows) - 20), __('assistant.export_more_rows'));
+            }
+
+            $lines[] = '';
+        }
+    }
+
+    /**
+     * Reporte IA persistido ({title, intro, fields, sections[]}): se
+     * vuelca como secciones markdown con sus campos y tablas.
+     *
+     * @param  list<string>  $lines
+     * @param  array<string, mixed>  $report
+     */
+    private function appendMarkdownReport(array &$lines, array $report): void
+    {
+        $title = trim((string) ($report['title'] ?? ''));
+        $intro = trim((string) ($report['intro'] ?? ''));
+
+        if ($title !== '') {
+            $lines[] = '#### '.$title;
+            $lines[] = '';
+        }
+
+        if ($intro !== '') {
+            $lines[] = $intro;
+            $lines[] = '';
+        }
+
+        foreach ((array) ($report['fields'] ?? []) as $label => $value) {
+            $lines[] = '- **'.$this->mdCell((string) $label).'**: '.$this->mdCell($this->mdValue($value));
+        }
+
+        if (($report['fields'] ?? []) !== []) {
+            $lines[] = '';
+        }
+
+        foreach ((array) ($report['sections'] ?? []) as $section) {
+            if (! is_array($section)) {
+                continue;
+            }
+
+            $sectionTitle = trim((string) ($section['title'] ?? ''));
+            $sectionText = trim((string) ($section['text'] ?? ''));
+
+            if ($sectionTitle !== '') {
+                $lines[] = '##### '.$sectionTitle;
+            }
+
+            if ($sectionText !== '') {
+                $lines[] = $sectionText;
+                $lines[] = '';
+            }
+
+            foreach ((array) ($section['fields'] ?? []) as $label => $value) {
+                $lines[] = '- **'.$this->mdCell((string) $label).'**: '.$this->mdCell($this->mdValue($value));
+            }
+
+            if (($section['fields'] ?? []) !== []) {
+                $lines[] = '';
+            }
+
+            $table = $section['table'] ?? null;
+
+            if (is_array($table) && isset($table['headers'], $table['rows']) && is_array($table['headers']) && is_array($table['rows'])) {
+                $headers = array_map('strval', $table['headers']);
+
+                $lines[] = '| '.implode(' | ', array_map(fn ($h): string => $this->mdCell($h), $headers)).' |';
+                $lines[] = '|'.implode('|', array_fill(0, count($headers), ' --- ')).'|';
+
+                foreach (array_slice($table['rows'], 0, 30) as $row) {
+                    $cells = is_array($row) ? array_values($row) : [$row];
+                    $lines[] = '| '.implode(' | ', array_map(
+                        fn ($cell): string => $this->mdCell($this->mdValue($cell)),
+                        array_slice($cells, 0, count($headers)),
+                    )).' |';
+                }
+
+                $lines[] = '';
+            }
+        }
+    }
+
+    /**
+     * Celda Markdown segura: escapa el pipe (rompe la tabla) y recorta
+     * saltos de linea que partiriam la fila en dos.
+     */
+    private function mdCell(string $value): string
+    {
+        return str_replace(
+            ['|', "\n", "\r"],
+            ['\\|', ' ', ' '],
+            trim($value),
+        );
+    }
+
+    /**
+     * Normaliza cualquier valor de celda a texto: las tablas del payload
+     * pueden traer arrays u objetos anidados (p. ej. una fila con varios
+     * valores) y un casteo directo a string reventaba la exportacion con
+     * "Array to string conversion".
+     */
+    private function mdValue(mixed $value): string
+    {
+        if (is_array($value)) {
+            return (string) json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+
+        if (is_object($value)) {
+            return method_exists($value, '__toString') ? (string) $value : '';
+        }
+
+        return is_scalar($value) || $value === null ? (string) $value : '';
     }
 
     /**
@@ -2074,6 +2315,7 @@ class AssistantChat extends Component
                 'pending_form' => $message->payload['pending_form'] ?? null,
                 'badge_colors' => $message->payload['badge_colors'] ?? null,
                 'options' => $message->payload['options'] ?? [],
+                'questions' => $message->payload['questions'] ?? [],
                 'notice' => $message->payload['notice'] ?? null,
                 'feedback' => $message->payload['feedback'] ?? null,
                 'table_count' => $message->payload['table_count'] ?? $this->countTables($message->payload ?? []),
@@ -2175,6 +2417,7 @@ class AssistantChat extends Component
             'pending_form' => $reply->pendingForm,
             'badge_colors' => $reply->badgeColors,
             'options' => $reply->options,
+            'questions' => $reply->questions,
             'notice' => $notice,
         ], $at);
 
@@ -2288,6 +2531,7 @@ class AssistantChat extends Component
             'pending_form' => $payload['pending_form'] ?? null,
             'badge_colors' => $payload['badge_colors'] ?? null,
             'options' => $payload['options'] ?? [],
+            'questions' => $payload['questions'] ?? [],
             'notice' => $payload['notice'] ?? null,
             'feedback' => $payload['feedback'] ?? null,
             'table_count' => $this->countTables($payload),
@@ -2476,9 +2720,57 @@ class AssistantChat extends Component
             ->slice(0, -1)
             ->map(fn (array $message): array => [
                 'role' => $message['role'] === 'assistant' ? 'assistant' : 'user',
-                'text' => (string) $message['text'],
+                'text' => (string) $message['text'].$this->questionsToHistory($message),
             ])
             ->values()
             ->all();
+    }
+
+    /**
+     * Las preguntas aclaratorias no viajan en el texto visible (la UI las
+     * pinta como Q:/A:), pero el modelo SI necesita verlas en el historial
+     * para correlacionar las respuestas "Q:/A:" del usuario.
+     *
+     * @param  array<string, mixed>  $message
+     */
+    private function questionsToHistory(array $message): string
+    {
+        $questions = $message['questions'] ?? [];
+
+        if (! is_array($questions) || $questions === []) {
+            return '';
+        }
+
+        $lines = [];
+
+        foreach ($questions as $question) {
+            $q = trim((string) ($question['q'] ?? ''));
+            $options = array_values(array_filter(array_map('strval', (array) ($question['options'] ?? []))));
+
+            if ($q === '') {
+                continue;
+            }
+
+            $lines[] = 'P: '.$q.($options !== [] ? ' / '.implode(' | ', array_map(
+                fn (string $option, int $i): string => chr(65 + $i).') '.$option,
+                $options,
+                array_keys($options),
+            )) : '');
+        }
+
+        return $lines === [] ? '' : "\n\n".implode("\n", $lines);
+    }
+
+    /**
+     * Rondas de preguntas aclaratorias ya lanzadas en esta conversacion:
+     * el tope es 3 — despues de eso la IA debe resolver o rendirse.
+     */
+    private function questionRounds(): int
+    {
+        return collect($this->messages)
+            ->filter(fn (array $message): bool => ($message['role'] ?? '') === 'assistant'
+                && is_array($message['questions'] ?? null)
+                && $message['questions'] !== [])
+            ->count();
     }
 }

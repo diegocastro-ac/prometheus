@@ -49,6 +49,7 @@ use Filament\Support\Facades\FilamentView;
 use Filament\View\PanelsRenderHook;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -58,6 +59,16 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        // Detras del ingress de Azure el request llega como HTTP aunque el
+        // cliente use HTTPS: sin esto asset()/url() generan http:// y el
+        // navegador bloquea CSS/JS por mixed content (y Livewire no hidrata,
+        // lo que termina en 405 al enviar formularios Filament). Va en
+        // register() porque algunos assets (favicon) se resuelven durante el
+        // boot de otros providers, antes que este boot().
+        if ($this->app->environment('production')) {
+            URL::forceScheme('https');
+        }
+
         $this->app->bind(AgreementStorageInterface::class, PublicDiskAgreementStorage::class);
 
         // Singleton: el contexto del usuario se resuelve una sola vez y todas
@@ -220,7 +231,12 @@ class AppServiceProvider extends ServiceProvider
 
         LanguageSwitch::configureUsing(function (LanguageSwitch $switch) {
             $switch
-                ->locales(['en', 'es']);
+                ->locales(['en', 'es'])
+                // Respaldo del idioma en la ficha del usuario: la sesion
+                // y la cookie del selector no existen en comandos (el
+                // briefing diario las necesita para redactar en el
+                // idioma correcto). SyncPreferredLocale la mantiene al dia.
+                ->userPreferredLocale(fn () => auth()->user()?->preferred_locale);
         });
 
         /*

@@ -377,12 +377,33 @@ class AssistantActionExecutor
             ]))->markFailed();
         }
 
+        // Misma regla que la propuesta: el nombre se repite, el
+        // documento/telefono/correo no. El check vive tambien aqui por
+        // si la accion llega por un camino que no paso por la propuesta
+        // (batch, confirmacion tardia con otro inquilino ya creado).
+        $email = $this->nullable($params['email'] ?? null);
+        $duplicate = Tenant::query()
+            ->where('user_id', $userId)
+            ->where(function ($query) use ($document, $phone, $email): void {
+                $query->orWhere('document', $document)
+                    ->orWhere('phone_number', $phone);
+
+                if ($email !== null) {
+                    $query->orWhere('email', $email);
+                }
+            })
+            ->exists();
+
+        if ($duplicate) {
+            return AssistantReply::say(__('assistant.replies.tenant_exists', ['name' => $name]))->markFailed();
+        }
+
         $tenant = Tenant::query()->create([
             'user_id' => $userId,
             'name' => $name,
             'phone_number' => $phone,
             'document' => $document,
-            'email' => $this->nullable($params['email'] ?? null),
+            'email' => $email,
         ]);
 
         return AssistantReply::say(__('assistant.actions.tenant_done', [

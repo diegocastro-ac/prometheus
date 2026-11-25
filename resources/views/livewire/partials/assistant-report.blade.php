@@ -57,6 +57,7 @@
              derecha, mismo patron que la tarjeta de archivo). --}}
         <div
             @if ($previewMethod !== null)
+                wire:click="{{ $previewMethod }}({{ $previewIndex }})"
                 x-on:click="openPreview(() => $wire.{{ $previewMethod }}({{ $previewIndex }}))"
                 x-on:keydown.enter.prevent="$el.click()"
                 role="button"

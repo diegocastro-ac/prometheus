@@ -26,3 +26,13 @@ Thumbs.db
 
 # CodeGraph
 .codegraph/
+
+# Terraform
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+terraform/terraform.tfvars
+terraform/azure-credentials.env
+!terraform/azure-credentials.env.example
+!terraform/terraform.tfvars.example

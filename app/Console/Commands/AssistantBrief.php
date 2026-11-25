@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Contracts\DataAssistantInterface;
 use App\Enums\InvoiceStatus;
 use App\Models\AssistantChat;
 use App\Models\AssistantMessage;
@@ -10,8 +11,10 @@ use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Rental;
 use App\Models\User;
+use App\Services\Assistant\AssistantFormSession;
 use App\Settings\AppSettings;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\App;
 
 /**
  * Publica el briefing diario del copiloto: un mensaje del asistente en el
@@ -25,7 +28,7 @@ use Illuminate\Console\Command;
  */
 class AssistantBrief extends Command
 {
-    protected $signature = 'assistant:brief {--user= : Procesar solo el usuario con ese id}';
+    protected $signature = 'assistant:brief {--user= : Procesar solo el usuario con ese id} {--force : Regenera el briefing de hoy aunque ya exista}';
 
     protected $description = 'Publica el briefing diario del copiloto en el chat protegido de cada usuario.';
 
@@ -58,6 +61,11 @@ class AssistantBrief extends Command
 
     private function briefFor(User $user): bool
     {
+        // El mensaje queda guardado en la BD: hay que redactarlo en el
+        // idioma del usuario, no en el locale por defecto del proceso
+        // (los comandos corren con APP_LOCALE, no con el del panel).
+        App::setLocale($user->preferred_locale ?: config('app.locale'));
+
         $chat = AssistantChat::query()->firstOrCreate(
             ['user_id' => $user->id, 'kind' => AssistantChat::KIND_BRIEFING],
             ['title' => __('assistant.briefing.title'), 'kind' => AssistantChat::KIND_BRIEFING],
@@ -73,25 +81,135 @@ class AssistantBrief extends Command
             ->exists();
 
         if ($alreadyToday) {
-            return false;
+            if (! $this->option('force')) {
+                return false;
+            }
+
+            // --force: reemplaza el briefing del dia (p. ej. tras probar la
+            // via de IA o corregir el resumen) en vez de saltarlo.
+            AssistantMessage::query()
+                ->where('chat_id', $chat->id)
+                ->where('role', 'assistant')
+                ->whereDate('created_at', today())
+                ->delete();
         }
 
         $digest = $this->digest($user);
+
+        // Primero intenta el análisis redactado por la IA (el mismo
+        // reporte con secciones y gráficas del módulo de análisis). Si
+        // la IA no está configurada, no responde o devuelve algo
+        // interactivo, cae al resumen determinista de siempre.
+        $ai = $this->aiAnalysis($user);
 
         AssistantMessage::query()->create([
             'user_id' => $user->id,
             'chat_id' => $chat->id,
             'role' => 'assistant',
-            'text' => $this->summaryText($digest),
-            'payload' => [
-                'data' => $digest['tables'],
-                'suggestions' => $digest['suggestions'],
-            ],
+            'text' => $ai['text'] ?? $this->summaryText($digest),
+            'payload' => $ai !== null
+                ? ['data' => $ai['data'], 'suggestions' => []]
+                : [
+                    'data' => $digest['tables'],
+                    'suggestions' => [],
+                ],
         ]);
 
         $chat->touch();
 
         return true;
+    }
+
+    /**
+     * Pide a la IA el análisis del día con el mismo pipeline del chat
+     * (clasifica -> lookup_data -> composeReport): el resultado es un
+     * reporte estructurado con secciones, métricas, gráficas y tablas
+     * que el chat ya sabe pintar.
+     *
+     * Solo se acepta un reporte limpio: si el modelo devolvió preguntas
+     * aclaratorias, opciones, una acción propuesta o una respuesta por
+     * secciones, el mensaje interactivo no tiene sentido en un chat de
+     * solo lectura y se usa el resumen determinista.
+     *
+     * @return array{text: string, data: array<string, mixed>, suggestions: list<string>}|null
+     */
+    private function aiAnalysis(User $user): ?array
+    {
+        // Con un wizard de formulario en curso, la pregunta del briefing
+        // se clasificaría como respuesta del formulario (form_field) y
+        // ensuciaría la sesión del usuario: mejor el resumen fijo.
+        if (app(AssistantFormSession::class)->wizard($user->id) !== null) {
+            return null;
+        }
+
+        $sections = [];
+        $title = '';
+        $intro = '';
+        $text = '';
+
+        // Un sub-reporte por tema en vez de uno solo: pedir las ~15
+        // secciones del informe en una única respuesta hacía que el
+        // modelo las condensara en 3. Tres llamadas enfocadas (cada una
+        // pide sus 5-7 secciones) sí llenan el informe completo.
+        foreach ((array) __('assistant.briefing.ai_theme_prompts') as $themePrompt) {
+            try {
+                $reply = app(DataAssistantInterface::class)->ask(
+                    $themePrompt,
+                    [],
+                    $user->id,
+                );
+            } catch (\Throwable $e) {
+                // La IA caída o lenta en un tema no tumba el briefing:
+                // los demás sub-reportes igual arman el informe.
+                report($e);
+
+                continue;
+            }
+
+            $report = $reply->data['report'] ?? null;
+            $interactive = $reply->questions !== []
+                || $reply->options !== []
+                || $reply->action !== null
+                || $reply->redirect !== null
+                || $reply->pendingForm !== null
+                || $reply->sections !== null;
+
+            if (! is_array($report) || $interactive || trim($reply->text) === '') {
+                continue;
+            }
+
+            if ($title === '') {
+                $title = (string) ($report['title'] ?? '');
+            }
+            if ($intro === '') {
+                $intro = (string) ($report['intro'] ?? '');
+            }
+            if ($text === '') {
+                $text = $reply->text;
+            }
+
+            foreach (array_slice((array) ($report['sections'] ?? []), 0, 7) as $section) {
+                $sections[] = $section;
+            }
+        }
+
+        if ($sections === []) {
+            return null;
+        }
+
+        return [
+            'text' => $text !== '' ? $text : ($intro !== '' ? $intro : $title),
+            'data' => [
+                'report' => [
+                    'title' => $title !== '' ? $title : __('assistant.briefing.title'),
+                    'intro' => $intro,
+                    'sections' => $sections,
+                ],
+            ],
+            // El chat de briefing es de solo lectura: no propone
+            // respuestas rápidas como el chat normal.
+            'suggestions' => [],
+        ];
     }
 
     /**

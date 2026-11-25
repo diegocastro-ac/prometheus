@@ -22,6 +22,7 @@
     @php $cardClickable = $compact && $previewMethod !== null; @endphp
     <div
         @if ($cardClickable)
+            wire:click="{{ $previewMethod }}({{ $previewIndex }})"
             x-on:click="openPreview(() => $wire.{{ $previewMethod }}({{ $previewIndex }}))"
             x-on:keydown.enter.prevent="$el.click()"
             role="button"

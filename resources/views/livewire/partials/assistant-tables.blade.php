@@ -131,6 +131,7 @@
                          de 5 filas: disponible para cualquier tamaño. --}}
                     <button
                         type="button"
+                        wire:click="previewData({{ $messageIndex }}, '{{ $key }}')"
                         x-on:click="openPreview(() => $wire.previewData({{ $messageIndex }}, '{{ $key }}'))"
                         class="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 transition hover:text-primary-500 dark:text-primary-400"
                     >

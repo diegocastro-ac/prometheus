@@ -1,0 +1,7 @@
+# Copiar a terraform.tfvars si se quieren sobreescribir los defaults.
+# location            = "spaincentral"
+# app_name            = "prometheus-app"
+# image_repository    = "isaacdavid1234/prometheus-app"
+# image_tag           = "latest"
+# min_replicas        = 0
+# max_replicas        = 1

@@ -1,0 +1,1 @@
+{ helpOpen: false }

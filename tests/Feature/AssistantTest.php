@@ -3358,6 +3358,136 @@ class AssistantTest extends TestCase
     }
 
     #[Test]
+    public function el_modelo_puede_proponer_preguntas_aclaratorias_q_a(): void
+    {
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'unknown',
+            'params' => [],
+            'confidence' => 0.9,
+            'questions' => [
+                [
+                    'q' => '¿A qué arriendo te refieres?',
+                    'options' => ['Arriendo de Camila', 'Arriendo de Jorge', 'Arriendo del Local norte', 'Ninguno de esos'],
+                ],
+                [
+                    'q' => '¿Qué periodo quieres analizar?',
+                    'options' => ['Este mes', 'El mes pasado'],
+                ],
+                // Una pregunta sin opciones suficientes se descarta.
+                ['q' => 'pregunta invalida', 'options' => ['solo una']],
+            ],
+        ]);
+
+        $reply = $this->assistant()->ask('analiza eso', [], $this->user->id);
+
+        $this->assertCount(2, $reply->questions);
+        $this->assertSame('¿A qué arriendo te refieres?', $reply->questions[0]['q']);
+        $this->assertCount(4, $reply->questions[0]['options']);
+        $this->assertCount(2, $reply->questions[1]['options']);
+    }
+
+    #[Test]
+    public function las_preguntas_sobreviven_al_mensaje_del_chat(): void
+    {
+        $this->actingAs($this->user);
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'unknown',
+            'params' => [],
+            'confidence' => 0.9,
+            'questions' => [
+                ['q' => '¿Cuál factura?', 'options' => ['FV-001', 'FV-002', 'la más antigua', 'la última']],
+            ],
+        ]);
+
+        Livewire::test(AssistantChat::class)
+            ->set('input', 'ayudame con eso')
+            ->call('send')
+            ->assertSee('¿Cuál factura?')
+            ->assertSee('FV-001');
+
+        $this->assertSame(
+            [['q' => '¿Cuál factura?', 'options' => ['FV-001', 'FV-002', 'la más antigua', 'la última']]],
+            AssistantMessage::query()->latest('id')->first()->payload['questions'] ?? null,
+        );
+    }
+
+    #[Test]
+    public function las_preguntas_tienen_prioridad_sobre_el_intent_cuando_el_modelo_duda(): void
+    {
+        // Si el modelo emite questions junto a un intent, las preguntas
+        // van primero: el intent NO se ejecuta (nada de accion propuesta).
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'create_tenant',
+            'params' => ['name' => 'Pedro'],
+            'confidence' => 0.9,
+            'questions' => [
+                ['q' => '¿El documento de Pedro es 123 o 456?', 'options' => ['123', '456', 'Otro', 'No lo se']],
+            ],
+        ]);
+
+        $reply = $this->assistant()->ask('registrame a Pedro', [], $this->user->id);
+
+        $this->assertNotEmpty($reply->questions);
+        $this->assertNull($reply->action, 'con preguntas pendientes no debe proponerse la accion');
+        $this->assertNotSame('', trim($reply->text));
+    }
+
+    #[Test]
+    public function la_cuarta_ronda_de_preguntas_se_corta_con_no_pude(): void
+    {
+        $this->actingAs($this->user);
+
+        // Tres rondas de preguntas ya lanzadas en la conversacion.
+        $chat = \App\Models\AssistantChat::query()->create([
+            'user_id' => $this->user->id,
+            'title' => 'test',
+        ]);
+
+        foreach (range(1, 3) as $i) {
+            AssistantMessage::query()->create([
+                'user_id' => $this->user->id,
+                'chat_id' => $chat->id,
+                'role' => 'assistant',
+                'text' => 'Pregunta '.$i,
+                'payload' => ['questions' => [['q' => 'P'.$i, 'options' => ['a', 'b']]]],
+            ]);
+            AssistantMessage::query()->create([
+                'user_id' => $this->user->id,
+                'chat_id' => $chat->id,
+                'role' => 'user',
+                'text' => 'Q: P'.$i."\n".'A: a',
+                'payload' => [],
+            ]);
+        }
+
+        $this->fakeGemini([
+            'domain' => 'app',
+            'intent' => 'unknown',
+            'params' => [],
+            'confidence' => 0.9,
+            'questions' => [
+                ['q' => '¿Una pregunta más?', 'options' => ['a', 'b', 'c', 'd']],
+            ],
+        ]);
+
+        Livewire::test(AssistantChat::class)
+            ->call('selectChat', $chat->id)
+            ->set('input', 'otra cosa ambigua')
+            ->call('send');
+
+        $last = AssistantMessage::query()->latest('id')->first();
+
+        $this->assertSame(
+            __('assistant.replies.could_not_resolve'),
+            $last->text,
+        );
+        $this->assertSame([], $last->payload['questions'] ?? null);
+    }
+
+    #[Test]
     public function documento_ambiguo_ofrece_cuatro_opciones_como_respuestas(): void
     {
         $reply = app(AssistantToolInvoker::class)->invoke('generate_document', [
@@ -3679,6 +3809,11 @@ class AssistantTest extends TestCase
     #[Test]
     public function assistant_brief_crea_chat_protegido_y_es_idempotente(): void
     {
+        // Sin IA: el briefing cae al resumen determinista (la prueba del
+        // camino IA va en el test de abajo). Sin este bind el comando
+        // intentaria llamadas reales a Gemini y tardaria minutos.
+        app()->instance(DataAssistantInterface::class, new NullDataAssistant);
+
         $this->artisan('assistant:brief')->assertSuccessful();
 
         $chat = \App\Models\AssistantChat::query()
@@ -3687,12 +3822,121 @@ class AssistantTest extends TestCase
             ->first();
 
         $this->assertNotNull($chat);
-        $this->assertSame('Briefing diario', $chat->title);
+        $this->assertSame('Resumen diario', $chat->title);
         $this->assertSame(1, AssistantMessage::query()->where('chat_id', $chat->id)->count());
 
         // Segunda corrida el mismo dia no duplica el mensaje.
         $this->artisan('assistant:brief')->assertSuccessful();
         $this->assertSame(1, AssistantMessage::query()->where('chat_id', $chat->id)->count());
+    }
+
+    #[Test]
+    public function el_briefing_usa_el_reporte_de_la_ia_cuando_lo_hay(): void
+    {
+        // Fake del asistente: devuelve un reporte de analisis (el mismo
+        // formato del modulo de analisis) en vez del resumen fijo.
+        app()->instance(DataAssistantInterface::class, new class implements DataAssistantInterface
+        {
+            public function ask(string $question, array $history, int $userId, ?callable $abortCheck = null): \App\Dto\AssistantReply
+            {
+                return new \App\Dto\AssistantReply(
+                    text: 'Análisis del día',
+                    data: ['report' => [
+                        'title' => 'Análisis',
+                        'intro' => 'Intro',
+                        'sections' => [['title' => 'Cartera', 'blocks' => [['type' => 'text', 'text' => 'Detalle']]]],
+                    ]],
+                    suggestions: ['¿Cómo va mi cartera?'],
+                );
+            }
+
+            public function title(string $firstMessage): ?string
+            {
+                return null;
+            }
+
+            public function draft(string $instruction, array $context): ?string
+            {
+                return null;
+            }
+        });
+
+        $this->artisan('assistant:brief')->assertSuccessful();
+
+        $chat = \App\Models\AssistantChat::query()
+            ->where('user_id', $this->user->id)
+            ->where('kind', \App\Models\AssistantChat::KIND_BRIEFING)
+            ->firstOrFail();
+
+        $message = AssistantMessage::query()->where('chat_id', $chat->id)->firstOrFail();
+
+        $this->assertSame('Análisis del día', $message->text);
+        $this->assertArrayHasKey('report', $message->payload['data'] ?? []);
+        // El chat de briefing es solo lectura: no propone respuestas rapidas.
+        $this->assertSame([], $message->payload['suggestions'] ?? null);
+    }
+
+    #[Test]
+    public function el_briefing_cae_al_resumen_fijo_si_la_ia_devuelve_algo_interactivo(): void
+    {
+        // La IA devolvio preguntas aclaratorias: en un chat de solo
+        // lectura no sirven, asi que se usa el resumen determinista.
+        app()->instance(DataAssistantInterface::class, new class implements DataAssistantInterface
+        {
+            public function ask(string $question, array $history, int $userId, ?callable $abortCheck = null): \App\Dto\AssistantReply
+            {
+                return new \App\Dto\AssistantReply(
+                    text: 'Necesito aclarar',
+                    questions: [['q' => '¿Cuál?', 'options' => ['a', 'b']]],
+                );
+            }
+
+            public function title(string $firstMessage): ?string
+            {
+                return null;
+            }
+
+            public function draft(string $instruction, array $context): ?string
+            {
+                return null;
+            }
+        });
+
+        $this->artisan('assistant:brief')->assertSuccessful();
+
+        $chat = \App\Models\AssistantChat::query()
+            ->where('user_id', $this->user->id)
+            ->where('kind', \App\Models\AssistantChat::KIND_BRIEFING)
+            ->firstOrFail();
+
+        $message = AssistantMessage::query()->where('chat_id', $chat->id)->firstOrFail();
+
+        $this->assertStringContainsString('resumen del', $message->text);
+        $this->assertArrayNotHasKey('report', $message->payload['data'] ?? []);
+    }
+
+    #[Test]
+    public function el_chat_de_briefing_es_de_solo_lectura_aunque_este_activo(): void
+    {
+        $this->actingAs($this->user);
+
+        $briefing = \App\Models\AssistantChat::query()->create([
+            'user_id' => $this->user->id,
+            'title' => 'Resumen diario',
+            'kind' => \App\Models\AssistantChat::KIND_BRIEFING,
+        ]);
+
+        Livewire::test(AssistantChat::class)
+            ->call('selectChat', $briefing->id)
+            ->set('input', 'hola, quiero registrar un inquilino')
+            ->call('send')
+            ->call('regenerateLast');
+
+        // Ni el envio ni la regeneracion escriben en el canal del job.
+        $this->assertSame(0, AssistantMessage::query()
+            ->where('chat_id', $briefing->id)
+            ->where('role', 'user')
+            ->count());
     }
 
     #[Test]
@@ -3745,14 +3989,15 @@ class AssistantTest extends TestCase
     }
 
     // ---------------------------------------------------------------
-    // Modo exhaustivo y proveedor OpenAI-compatible
+    // Reportes y proveedor OpenAI-compatible
     // ---------------------------------------------------------------
 
     #[Test]
-    public function el_flag_de_epoca_de_la_ia_expande_el_reporte(): void
+    public function el_reporte_acepta_hasta_20_secciones_sin_modo_de_epoca(): void
     {
-        // La IA decide la profundidad: con "deep"=true el sanitizer
-        // acepta hasta 20 secciones; sin el flag el tope normal es 6.
+        // Ya no hay modo normal/exhaustivo: el sanitizer siempre usa
+        // el tope amplio y la extension la decide el modelo segun lo
+        // que pidio el usuario.
         $sections = array_map(
             fn (int $i): array => ['title' => "Sección {$i}", 'blocks' => [['type' => 'text', 'text' => 'Texto']]],
             range(1, 10),
@@ -3763,34 +4008,12 @@ class AssistantTest extends TestCase
             'intent' => 'business_insights',
             'params' => [],
             'confidence' => 0.9,
-            'deep' => true,
             'report' => ['title' => 'Análisis', 'intro' => 'Intro', 'sections' => $sections],
         ]);
 
         $reply = $this->assistant()->ask('dame un análisis exhaustivo del portafolio', [], $this->user->id);
 
         $this->assertCount(10, $reply->data['report']['sections'] ?? []);
-    }
-
-    #[Test]
-    public function sin_flag_de_epoca_el_reporte_queda_en_el_tope_normal(): void
-    {
-        $sections = array_map(
-            fn (int $i): array => ['title' => "Sección {$i}", 'blocks' => [['type' => 'text', 'text' => 'Texto']]],
-            range(1, 10),
-        );
-
-        $this->fakeGemini([
-            'domain' => 'app',
-            'intent' => 'business_insights',
-            'params' => [],
-            'confidence' => 0.9,
-            'report' => ['title' => 'Análisis', 'intro' => 'Intro', 'sections' => $sections],
-        ]);
-
-        $reply = $this->assistant()->ask('analiza mi recaudo', [], $this->user->id);
-
-        $this->assertCount(6, $reply->data['report']['sections'] ?? []);
     }
 
     #[Test]

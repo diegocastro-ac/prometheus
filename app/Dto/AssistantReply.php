@@ -201,6 +201,7 @@ final class AssistantReply
             $this->pendingForm,
             $this->badgeColors,
             $this->options,
+            $this->questions,
             false,
         );
     }

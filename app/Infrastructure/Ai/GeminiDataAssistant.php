@@ -115,22 +115,10 @@ class GeminiDataAssistant implements DataAssistantInterface
     ) {}
 
     /**
-     * La IA decidio (campo "deep" de su JSON de clasificacion) que la
-     * peticion amerita analisis exhaustivo: el compositor investiga
-     * mas (mas rondas de lookup, topes de reporte ampliados) y el
-     * presupuesto de tiempo del proveedor se multiplica. Se enciende
-     * tras el classify y gobierna todo lo que sigue en ask().
-     */
-    private bool $deepMode = false;
-
-    /**
      * Contexto del sanitizeReport en curso: userId para resolver las
-     * URLs de las acciones del reporte via AssistantNavigator y el flag
-     * deep para relajar los topes de bloques/filas.
+     * URLs de las acciones del reporte via AssistantNavigator.
      */
     private int $reportUserId = 0;
-
-    private bool $reportDeep = false;
 
     /**
      * Callback de cancelacion del request en vuelo (nonce del chat). PHP
@@ -143,13 +131,6 @@ class GeminiDataAssistant implements DataAssistantInterface
     public function ask(string $question, array $history, int $userId, ?callable $abortCheck = null): AssistantReply
     {
         $this->abortCheck = $abortCheck;
-
-        // La profundidad del analisis NO se decide por palabras clave:
-        // la IA la declara en su JSON de clasificacion (campo "deep")
-        // razonando sobre la pregunta y el contexto. Se lee tras el
-        // classify y gobierna lookups extra, topes del reporte y
-        // presupuestos de tiempo de todo lo que sigue.
-        $this->deepMode = false;
 
         $activeForm = $this->forms->wizard($userId);
 
@@ -205,21 +186,11 @@ class GeminiDataAssistant implements DataAssistantInterface
             return AssistantReply::say(__('assistant.error'));
         }
 
-        // El modelo decide si la peticion amerita modo exhaustivo. Si
-        // lo enciendo aqui, el presupuesto de tiempo y el limite de PHP
-        // se amplian ANTES de la cadena de lookups y del reporte.
-        $this->applyDeepFlag($parsed);
-
         // Razonamiento con datos reales: si el modelo pidio lookup_data
         // (una consulta de apoyo para resolver una referencia), se
         // ejecuta su SQL y se re-clasifica con las filas reales. El
         // modelo decide que buscar y que hacer con el resultado.
         $parsed = $this->resolveLookups($question, $history, $digest->toArray(), $parsed, $userId) ?? $parsed;
-
-        // La re-clasificacion posterior a los lookups tambien puede
-        // declarar deep (el modelo ve los datos y decide con mas
-        // informacion); una vez encendido no se apaga.
-        $this->applyDeepFlag($parsed);
 
         if (($parsed['domain'] ?? 'app') === 'offtopic') {
             return $this->maybeCompose(AssistantReply::offTopic(), $question, $history, $userId);
@@ -248,6 +219,26 @@ class GeminiDataAssistant implements DataAssistantInterface
 
         if ($this->aborted()) {
             return $this->cancelledReply();
+        }
+
+        // Preguntas aclaratorias Q:/A:: si el modelo las emitio es porque,
+        // DESPUES de razonar, no tiene seguridad de como resolver — una
+        // entidad, un dato del batch, la herramienta o una decision del
+        // usuario. Tienen prioridad sobre ejecutar: correr el intent o el
+        // batch con params que el propio modelo dudaba produciria una
+        // accion o tabla equivocada. Se formulan, el usuario responde
+        // (Q:/A: viaja en el historial) y el ciclo vuelve a clasificar.
+        $questions = $this->cleanQuestions($parsed['questions'] ?? null);
+        $isControlIntent = count($requests) === 1
+            && in_array($requests[0]['intent'], ['form_field', 'cancel_form', 'greeting'], true);
+
+        if ($questions !== [] && ! $isControlIntent) {
+            return $this->maybeCompose(
+                AssistantReply::say(__('assistant.questions.intro'))->withQuestions($questions),
+                $question,
+                $history,
+                $userId,
+            );
         }
 
         if (count($requests) > 1) {
@@ -425,6 +416,7 @@ class GeminiDataAssistant implements DataAssistantInterface
             intent: $reply->intent,
             badgeColors: $reply->badgeColors,
             options: $reply->options,
+            questions: $reply->questions,
         );
     }
 
@@ -448,7 +440,7 @@ class GeminiDataAssistant implements DataAssistantInterface
                 'parts' => [['text' => implode("\n", [
                     'Eres el asistente del copiloto de Prometheus (gestion de arriendos en Colombia).',
                     'El sistema YA resolvio la consulta del usuario y produjo el RESULTADO determinista que se te da abajo: es correcto, no lo contradigas ni inventes datos, cifras, entidades ni acciones que no esten ahi.',
-                    'Tu trabajo es solo la REDACCION FINAL: responde la pregunta del usuario de forma natural y con el contexto de la conversacion, en el MISMO idioma en que escribio. Si el resultado es una pregunta de aclaracion o un aviso, formula la misma peticion de manera conversacional. Si ya es una buena respuesta, puedes devolverla casi igual pero mas natural.',
+                    'Tu trabajo es solo la REDACCION FINAL: responde la pregunta del usuario de forma natural y con el contexto de la conversacion. Idioma OBLIGATORIO: '.$this->replyLanguage($userId).' (el idioma de la app del usuario); solo usa otro si el usuario escribio claramente en ese otro idioma. Si el resultado es una pregunta de aclaracion o un aviso, formula la misma peticion de manera conversacional. Si ya es una buena respuesta, puedes devolverla casi igual pero mas natural.',
                     'Responde SOLO el texto de la respuesta: sin JSON, sin markdown de codigo, sin comillas alrededor, maximo ~120 palabras salvo que el resultado sea largo.',
                 ])]],
             ],
@@ -503,14 +495,75 @@ class GeminiDataAssistant implements DataAssistantInterface
             || $reply->data !== null
             || $reply->redirect !== null
             || $reply->pendingForm !== null
+            || $reply->draft !== null
             || $reply->sections !== null
-            || $reply->options !== []) {
+            || $reply->options !== []
+            || $reply->questions !== []) {
             return $reply;
+        }
+
+        // Preguntas aclaratorias Q:/A:: cuando ni el intent ni las
+        // opciones A-D resuelven la ambiguedad, el modelo puede pedir
+        // respuestas concretas. Mismas reglas de guarda: solo replies de
+        // texto puro y nunca pisa una ronda que el invoker ya puso.
+        if ($reply->questions === []) {
+            $questions = $this->cleanQuestions($parsed['questions'] ?? null);
+
+            // Si hay ronda de preguntas las opciones A-D quedan fuera:
+            // dos UIs de eleccion en el mismo mensaje se pisan.
+            if ($questions !== []) {
+                return $reply->withQuestions($questions);
+            }
         }
 
         $options = $this->cleanOptions($parsed['options'] ?? null);
 
         return $options === [] ? $reply : $reply->withOptions($options);
+    }
+
+    /**
+     * Ronda de preguntas aclaratorias del modelo: max 4 preguntas, cada
+     * una con 2-4 respuestas candidatas. Se descarta lo que no tenga la
+     * forma exacta {q, options[]} — una pregunta sin opciones no se
+     * puede pintar como Q:/A:.
+     *
+     * @return list<array{q: string, options: list<string>}>
+     */
+    private function cleanQuestions(mixed $raw): array
+    {
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        $questions = [];
+
+        foreach ($raw as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $q = trim((string) preg_replace('/\s+/u', ' ', (string) ($item['q'] ?? $item['question'] ?? '')));
+
+            if ($q === '' || mb_strlen($q) > 300) {
+                continue;
+            }
+
+            $options = $this->cleanOptions($item['options'] ?? null);
+
+            // Menos de 2 candidatas no es una pregunta A-D: el texto
+            // libre del composer ya cubre ese caso.
+            if (count($options) < 2) {
+                continue;
+            }
+
+            $questions[] = ['q' => $q, 'options' => $options];
+
+            if (count($questions) >= 4) {
+                break;
+            }
+        }
+
+        return $questions;
     }
 
     /**
@@ -746,6 +799,22 @@ PROMPT;
         return AssistantProvider::isConfigured();
     }
 
+    /**
+     * Idioma en que el usuario quiere ver al asistente: su preferencia
+     * de app (preferred_locale, sincronizada por SyncPreferredLocale)
+     * con app.locale de respaldo. Se usa para anclar la salida
+     * generada: sin el ancla, el modelo deriva al ingles aunque el
+     * prompt diga "mismo idioma del mensaje".
+     */
+    private function replyLanguage(int $userId): string
+    {
+        $locale = $userId > 0
+            ? User::query()->whereKey($userId)->value('preferred_locale')
+            : null;
+
+        return ($locale ?: config('app.locale')) === 'en' ? 'inglés' : 'español';
+    }
+
     public function title(string $firstMessage): ?string
     {
         if (! $this->isConfigured()) {
@@ -775,7 +844,7 @@ PROMPT;
     {
         $body = [
             'system_instruction' => [
-                'parts' => [['text' => $this->draftSystemPrompt()]],
+                'parts' => [['text' => $this->draftSystemPrompt($userId)]],
             ],
             'contents' => [[
                 'role' => 'user',
@@ -895,6 +964,12 @@ PROMPT;
     private function resolveLookups(string $question, array $history, array $digest, array $parsed, int $userId): ?array
     {
         for ($round = 0; $round < 2; $round++) {
+            // Si el usuario cancelo mientras tanto, no se gasta otra
+            // llamada al proveedor: el pipeline lo detecta abajo.
+            if ($this->aborted()) {
+                return $parsed;
+            }
+
             $requests = $this->extractRequests($parsed);
 
             if (count($requests) !== 1 || $requests[0]['intent'] !== 'lookup_data') {
@@ -937,17 +1012,24 @@ PROMPT;
      */
     private function composeReport(string $question, array $history, array $digest, int $userId, string $intent = 'business_insights'): ?array
     {
-        // En modo exhaustivo el compositor puede encadenar mas
-        // consultas de apoyo: un analisis profundo necesita mas de una
-        // pasada sobre tablas relacionadas antes de redactar.
-        $maxRounds = $this->deepMode ? 6 : 4;
+        // No hay modo normal/exhaustivo: el modelo decide cuantas
+        // consultas de apoyo y secciones necesita segun lo que el
+        // usuario pidio. Las rondas y los topes son solo el techo
+        // tecnico; una pregunta puntual se responde en la primera.
+        $maxRounds = 6;
         $notes = [];
+        $expansions = 0;
+        $lastReport = null;
 
         for ($round = 0; $round < $maxRounds; $round++) {
+            if ($this->aborted()) {
+                return $lastReport;
+            }
+
             $parsed = $this->classifyReport($question, $history, $digest, $notes, $userId, $intent);
 
             if ($parsed === null) {
-                return null;
+                return $lastReport;
             }
 
             $lookup = $parsed['lookup'] ?? null;
@@ -956,24 +1038,44 @@ PROMPT;
                 $result = $this->invoker->lookupData($lookup, $userId);
 
                 $notes[] = isset($result['rows'])
-                    ? '[Tu consulta de apoyo '.$round.' — RESULTADOS REALES de la base de datos (JSON): '.json_encode(array_slice($result['rows'], 0, $this->deepMode ? 200 : 60), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).'. Continúa investigando con otra consulta si hace falta, o devuelve el reporte final.]'
+                    ? '[Tu consulta de apoyo '.$round.' — RESULTADOS REALES de la base de datos (JSON): '.json_encode(array_slice($result['rows'], 0, 200), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).'. Continúa investigando con otra consulta si hace falta, o devuelve el reporte final.]'
                     : '[Tu consulta de apoyo '.$round.' fue rechazada o fallo: '.($result['error'] ?? 'error desconocido').'. Ajusta params.sql/params.table o responde con lo que ya tienes.]';
 
                 continue;
             }
 
-            $report = $this->sanitizeReport($parsed['report'] ?? null, $this->deepMode ? 20 : ($intent === 'app_guide' ? 8 : 6), $userId);
+            $report = $this->sanitizeReport($parsed['report'] ?? null, $intent === 'app_guide' ? 8 : 20, $userId);
 
             if ($report === null) {
-                return null;
+                return $lastReport;
             }
 
             $report['suggestions'] = $this->cleanSuggestions($parsed['suggestions'] ?? null);
 
+            // El modelo puede marcar "expand": true cuando el usuario
+            // pidio un analisis muy extenso y su reporte quedo corto —
+            // es su propia valoracion, no un modo del sistema. Si la
+            // marca llega y quedan rondas, se le devuelve su JSON
+            // pidiendo la version expandida (en la segunda pasada el
+            // modelo si suele llenar el informe).
+            if (filter_var($parsed['expand'] ?? false, FILTER_VALIDATE_BOOLEAN)
+                && $expansions < 2
+                && count($report['sections']) < 15
+                && $round < $maxRounds - 1
+            ) {
+                $expansions++;
+                $lastReport = $report;
+                $rawJson = (string) json_encode($parsed['report'] ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+                $notes[] = '[Tu reporte anterior quedo corto ('.count($report['sections']).' secciones) y TU MISMO JSON lo marco como "expand": el usuario pidio un analisis MUY extenso. Devuelve ahora el reporte COMPLETO y MUCHO mas extenso del mismo analisis: conserva lo que ya cubriste y desglosa cada tema en mas secciones propias (hasta 20 en total), con mas tablas de detalle y una grafica por comparacion o distribucion. Reporte anterior (JSON recortado): '.mb_substr($rawJson, 0, 8000).']';
+
+                continue;
+            }
+
             return $report;
         }
 
-        return null;
+        return $lastReport;
     }
 
     /**
@@ -991,11 +1093,11 @@ PROMPT;
     }
 
     /**
-     * Timeout por llamada en modo exhaustivo: el reporte profundo
-     * genera JSONs mucho mas grandes y la cadena de lookups es mas
-     * larga, asi que cada llamada puede tardar bastante mas.
+     * Timeout por llamada del compositor JSON: el reporte puede
+     * generar JSONs muy grandes y la cadena de lookups es larga,
+     * asi que cada llamada puede tardar bastante.
      */
-    private function deepCallTimeout(): int
+    private function reportCallTimeout(): int
     {
         return max(90, $this->aiTimeout() * 6);
     }
@@ -1035,10 +1137,15 @@ PROMPT;
             'generationConfig' => [
                 'responseMimeType' => 'application/json',
                 'temperature' => 0.2,
+                // El reporte puede ser un JSON muy grande (20 secciones
+                // con tablas y graficas): sin tope explicito el modelo
+                // se autopresupuesta corto y el JSON truncado hace
+                // fallar todo el composeReport.
+                'maxOutputTokens' => 32768,
             ],
         ];
 
-        $text = $this->generate($body, $this->deepMode ? $this->deepCallTimeout() : null, $userId);
+        $text = $this->generate($body, $this->reportCallTimeout(), $userId);
 
         if ($text === '') {
             return null;
@@ -1292,10 +1399,8 @@ PROMPT;
         }
 
         // Contexto para los sanitizadores internos: con que usuario
-        // resolver las URLs de las acciones y si el analisis es
-        // exhaustivo (topes ampliados via cap()).
+        // resolver las URLs de las acciones.
         $this->reportUserId = $userId;
-        $this->reportDeep = $this->deepMode;
 
         $title = $this->cleanReportText($raw['title'] ?? '', 120);
         $intro = $this->cleanReportText($raw['intro'] ?? '', 800);
@@ -1340,7 +1445,7 @@ PROMPT;
 
         $out = [];
 
-        foreach (array_slice($blocks, 0, $this->cap(8, 24)) as $block) {
+        foreach (array_slice($blocks, 0, 24) as $block) {
             if (! is_array($block)) {
                 continue;
             }
@@ -1375,7 +1480,7 @@ PROMPT;
     {
         $items = [];
 
-        foreach (array_slice((array) ($block['items'] ?? []), 0, $this->cap(6, 12)) as $item) {
+        foreach (array_slice((array) ($block['items'] ?? []), 0, 12) as $item) {
             if (! is_array($item)) {
                 continue;
             }
@@ -1425,7 +1530,7 @@ PROMPT;
         $rawLabels = (array) ($block['labels'] ?? []);
         $rawValues = (array) ($block['values'] ?? []);
 
-        foreach (array_slice($rawLabels, 0, $this->cap(12, 24)) as $i => $label) {
+        foreach (array_slice($rawLabels, 0, 24) as $i => $label) {
             $label = $this->cleanReportText($label, 24);
 
             if ($label === '') {
@@ -1466,7 +1571,7 @@ PROMPT;
     {
         $columns = [];
 
-        foreach (array_slice((array) ($block['columns'] ?? []), 0, $this->cap(8, 12)) as $column) {
+        foreach (array_slice((array) ($block['columns'] ?? []), 0, 12) as $column) {
             $column = $this->cleanReportText($column, 40);
 
             if ($column !== '') {
@@ -1476,7 +1581,7 @@ PROMPT;
 
         $rows = [];
 
-        foreach (array_slice((array) ($block['rows'] ?? []), 0, $this->cap(30, 200)) as $row) {
+        foreach (array_slice((array) ($block['rows'] ?? []), 0, 200) as $row) {
             if (! is_array($row)) {
                 continue;
             }
@@ -1516,7 +1621,7 @@ PROMPT;
     {
         $items = [];
 
-        foreach (array_slice((array) ($block['items'] ?? []), 0, $this->cap(12, 24)) as $item) {
+        foreach (array_slice((array) ($block['items'] ?? []), 0, 24) as $item) {
             if (! is_array($item)) {
                 continue;
             }
@@ -1615,7 +1720,7 @@ PROMPT;
     {
         $items = [];
 
-        foreach (array_slice((array) ($block['items'] ?? []), 0, $this->cap(8, 16)) as $item) {
+        foreach (array_slice((array) ($block['items'] ?? []), 0, 16) as $item) {
             if (! is_array($item)) {
                 continue;
             }
@@ -1644,7 +1749,7 @@ PROMPT;
     {
         $items = [];
 
-        foreach (array_slice((array) ($block['items'] ?? []), 0, $this->cap(20, 40)) as $item) {
+        foreach (array_slice((array) ($block['items'] ?? []), 0, 40) as $item) {
             if (is_array($item)) {
                 $item = $item['text'] ?? '';
             }
@@ -1657,15 +1762,6 @@ PROMPT;
         }
 
         return $items === [] ? null : ['type' => 'list', 'items' => $items];
-    }
-
-    /**
-     * Tope de un bloque del reporte: el analisis exhaustivo relaja los
-     * limites (el usuario pidio "sin limite" explicitamente).
-     */
-    private function cap(int $normal, int $deep): int
-    {
-        return $this->reportDeep ? $deep : $normal;
     }
 
     private function cleanReportText(mixed $value, int $max, bool $keepMarkdown = false): string
@@ -1760,11 +1856,11 @@ PROMPT;
             $role,
             $mission.' '.$depth,
             $cross,
-            'El usuario puede escribir en ESPAÑOL o en INGLES: el reporte va en el MISMO idioma del usuario.',
+            'El reporte va en '.$this->replyLanguage($userId).' (el idioma de la app del usuario), salvo que la pregunta haya llegado claramente en otro idioma.',
             '',
             'PROCESO (obligatorio):',
             '1. PIENSA que necesitas saber para responder bien. Si te falta un dato que la base de datos puede darte, devuelve PRIMERO una consulta de apoyo y espera los resultados reales.',
-            '2. Puedes hacer hasta '.($this->deepMode ? '5' : '3').' consultas de apoyo encadenadas: cada respuesta tuya puede ser {"lookup":{...}} o el reporte final. No te limites a una sola consulta si el caso lo amerita.',
+            '2. Puedes hacer hasta 5 consultas de apoyo encadenadas: cada respuesta tuya puede ser {"lookup":{...}} o el reporte final. No te limites a una sola consulta si el caso lo amerita.',
             '3. Con los datos reales en la mano, devuelve el reporte final. NUNCA inventes cifras ni funcionalidades: todo numero del reporte debe venir de una consulta ejecutada o del CONTEXTO DEL PORTAFOLIO, y toda funcion mencionada debe existir en la app.',
             $guideStep,
             '',
@@ -1778,16 +1874,18 @@ PROMPT;
             '',
             'BLOQUES DISPONIBLES (combina los que el caso pida; no uses todos por obligacion):',
             '- {"type":"text","text":"parrafo en markdown ligero (**negrita**, listas con -)"} — narrativa, conclusiones, contexto.',
-            '- {"type":"metrics","items":[{"label":"...","value":"...","hint":"...","tone":"success|warning|danger|info"}]} — tarjetas de cifra clave (max '.($this->deepMode ? 12 : 6).'). tone pinta el valor: success=bueno, warning=atencion, danger=problema, info=neutro. Omite tone si no aplica.',
-            '- {"type":"table","title":"...","columns":["Col1","Col2"],"rows":[["a","b"]]} — datos tabulares reales (max '.($this->deepMode ? 12 : 8).' columnas, '.($this->deepMode ? 200 : 30).' filas). Para rankings o listados.',
-            '- {"type":"chart","chart":"bar|line|donut","title":"...","labels":["ene","feb"],"values":[1200,3400],"unit":"$"} — grafica visual (max '.($this->deepMode ? 24 : 12).' puntos). bar=comparacion de categorias, line=serie en el tiempo o tendencia, donut=composicion/porcentajes del total. Usala SIEMPRE que la pregunta hable de evolucion, comparacion entre periodos, ranking visual o distribucion — una grafica comunica mejor que una tabla para eso. labels cortos (max ~10 chars), values solo numeros (sin simbolos de moneda ni separadores de miles).',
+            '- {"type":"metrics","items":[{"label":"...","value":"...","hint":"...","tone":"success|warning|danger|info"}]} — tarjetas de cifra clave (max 12). tone pinta el valor: success=bueno, warning=atencion, danger=problema, info=neutro. Omite tone si no aplica.',
+            '- {"type":"table","title":"...","columns":["Col1","Col2"],"rows":[["a","b"]]} — datos tabulares reales (max 12 columnas, 200 filas). Para rankings o listados.',
+            '- {"type":"chart","chart":"bar|line|donut","title":"...","labels":["ene","feb"],"values":[1200,3400],"unit":"$"} — grafica visual (max 24 puntos). bar=comparacion de categorias, line=serie en el tiempo o tendencia, donut=composicion/porcentajes del total. Usala SIEMPRE que la pregunta hable de evolucion, comparacion entre periodos, ranking visual o distribucion — una grafica comunica mejor que una tabla para eso. labels cortos (max ~10 chars), values solo numeros (sin simbolos de moneda ni separadores de miles).',
             '- {"type":"steps","items":[{"title":"Paso","text":"detalle","action":{"kind":"url","target":"invoices","label":"Ir a Facturas","entity":"Nombre del inquilino/arriendo/propiedad/factura","filter":"VENCIDA","search":"termino libre"}}]} — pasos accionables para guias o planes (max 12). action.kind="url" navega a una seccion: targets validos = invoices, rentals, tenants, properties, delivery_acts, adjustments, finances, documents, profile, settings, ipc. Para que la navegacion sea INTELIGENTE incluye siempre que aplique: "entity" = la entidad concreta del caso (ej: el inquilino del que habla el paso — el sistema la resuelve y te lleva a su mejor pantalla: la ficha del arriendo si es un solo contrato, o la lista filtrada por su nombre); "filter" = estado de factura cuando aplique (EMITIDA|VENCIDA|PAGADA|ANULADA); "search" = termino libre de tabla como alternativa simple a entity. NUNCA uses entity con valores genericos ("el inquilino", "la propiedad"): si no conoces el nombre exacto, usa search con lo que si sabes o deja la accion sin entidad. action.kind="prompt" con "prompt":"texto a enviar al chat" ejecuta una accion guiada (ej: "registra un pago de $100.000 a la factura FV-2026-0001"). Omite action si el paso es solo informativo.',
             '- {"type":"callouts","items":[{"title":"...","text":"...","tone":"warning"}]} — alertas/avisos destacados (max 8).',
             '- {"type":"list","items":["punto 1","punto 2"]} — listas simples (max 20).',
             '',
             'REGLAS DEL REPORTE:',
             '- title: corto y descriptivo (max ~8 palabras). intro: 1-2 frases que enmarcan lo que el usuario va a ver.',
-            '- sections: '.($this->deepMode ? 'hasta 20' : ($isGuide ? 'max 8' : 'max 6')).', orden logico (primero lo que el usuario pidio, luego el detalle). Cada section: title corto + blocks.',
+            '- sections: hasta 20, orden logico (primero lo que el usuario pidio, luego el detalle). Cada section: title corto + blocks.',
+            '- CANTIDAD DE SECCIONES (la decides TÚ): la extension del informe la marca la pregunta, no un modo del sistema. Si el usuario pidio un analisis puntual (una metrica, un listado, un estado) un reporte de 2-4 secciones basta. Si pidio amplitud — informes organizados en temas/bloques ("tres temas", "12 secciones", "gran cantidad de secciones"), "exhaustivo", "a fondo", "completo" — el informe debe sentirse COMPLETO, no un resumen: crea AL MENOS una seccion por cada tema/bloque pedido, apunta a 12-18 secciones en informes multi-tema y NUNCA concentres un pedido exhaustivo en menos de 8 secciones (cada tema merece sus propios bloques: metricas, tabla, grafica, pasos).',
+            '- Si al redactar tu reporte notas que un pedido EXHAUSTIVO quedo claramente por debajo de lo pedido (pocas secciones para muchos temas), agrega "expand": true al JSON de nivel raiz — el sistema te devolvera tu propio reporte para que lo expandas. Omite el campo en cualquier otro caso.',
             '- Tono de ASESOR profesional: directo, con evidencia, con recomendaciones accionables cuando la pregunta lo pida.',
             $isGuide
                 ? '- GUIA: el bloque "steps" es el corazon del reporte — cada paso debe tener action (url a la seccion o prompt que lanza la accion guiada por el chat) siempre que exista una forma de ejecutar ese paso desde la app. Estructura sugerida para una guia completa: una seccion de texto de introduccion personalizada, luego una seccion por modulo (Registro, Facturacion, Cobros, Reajustes IPC, Actas, Documentos, Ajustos) cada una con 2-5 pasos en bloque steps. metrics/chart solo si aportan contexto (ej: "tienes N facturas vencidas"); evita charts decorativos.'
@@ -1807,9 +1905,7 @@ PROMPT;
             'CONTEXTO DEL PORTAFOLIO DEL USUARIO:',
             json_encode($digest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             '',
-            $this->deepMode
-                ? 'MODO EXHAUSTIVO (el usuario pidio un analisis a fondo): se exhaustivo de verdad — hasta 5 consultas de apoyo encadenadas, cruza TODAS las tablas relevantes (facturas + pagos + arriendos + inquilinos + propiedades + actas), compara periodos, segmenta por entidad y por estado, y devuelve un reporte MUY completo: hasta 20 secciones, bloques variados por seccion (texto narrativo + metrics + charts + tables + steps + callouts), tablas con todas las filas relevantes (hasta 200), graficas para cada comparacion o distribucion que aportes, y una conclusion final que responda explicitamente la pregunta de decision del usuario (si vale la pena, que riesgo tiene, que hacer). El usuario quiere profundidad y evidencia, no un resumen.'
-                : '',
+            'PROFUNDIDAD (la decides TÚ, no el sistema): para un pedido EXHAUSTIVO o de gran amplitud se exhaustivo de verdad — cruza TODAS las tablas relevantes (facturas + pagos + arriendos + inquilinos + propiedades + actas), compara periodos, segmenta por entidad y por estado, encadena todas las consultas de apoyo que necesites, y devuelve un reporte MUY completo: hasta 20 secciones, bloques variados por seccion (texto narrativo + metrics + charts + tables + steps + callouts), tablas con todas las filas relevantes (hasta 200), una grafica por comparacion o distribucion que aportes, y una conclusion final que responda explicitamente la pregunta de decision del usuario. El usuario quiere profundidad y evidencia, no un resumen. Para un pedido puntual, se conciso: solo lo que responde la pregunta, sin relleno.',
             'Hoy es '.now()->format('Y-m-d').'.',
         ]);
     }
@@ -1846,6 +1942,8 @@ PROMPT;
             pendingForm: $reply->pendingForm,
             badgeColors: $reply->badgeColors,
             options: $reply->options,
+            questions: $reply->questions,
+            ok: $reply->ok,
         );
     }
 
@@ -2007,47 +2105,6 @@ PROMPT;
     }
 
     /**
-     * Lee el flag "deep" del JSON del modelo. Solo lo enciende: si el
-     * modelo no lo declara (o lo declara false) el modo queda como
-     * estaba — una vez activo no se apaga dentro del mismo ask().
-     *
-     * @param  array<string, mixed>  $parsed
-     */
-    private function applyDeepFlag(array $parsed): void
-    {
-        $wantsDeep = filter_var($parsed['deep'] ?? $parsed['deep_analysis'] ?? false, FILTER_VALIDATE_BOOLEAN);
-
-        if (! $wantsDeep || $this->deepMode) {
-            return;
-        }
-
-        $this->deepMode = true;
-
-        // El deadline global se habia fijado con el presupuesto normal
-        // durante el classify: se extiende (sin perder lo ya transcurrido)
-        // para que la cadena profunda quepa entera. El limite de PHP se
-        // amplia en el mismo request para acompanarla.
-        $this->geminiDeadline = max(
-            $this->geminiDeadline ?? 0,
-            microtime(true) + $this->requestBudgetSeconds(),
-        );
-        $this->extendPhpTimeLimit();
-    }
-
-    /**
-     * max_execution_time de PHP acompana al presupuesto del proveedor:
-     * la cadena classify -> lookups -> reporte puede tardar minutos en
-     * modo profundo. Se puede llamar de nuevo para extender el limite
-     * una vez la IA ya declaro la profundidad.
-     */
-    private function extendPhpTimeLimit(): void
-    {
-        set_time_limit($this->deepMode
-            ? max(480, ($this->aiTimeout() * 24) + 120)
-            : max(90, ($this->aiTimeout() * 2) + 60));
-    }
-
-    /**
      * Segundos totales que puede esperar el proveedor dentro de UNA
      * peticion de chat. Cubre el classify principal mas las llamadas
      * secundarias (compose, sugerencias, reporte) sin dejar que un
@@ -2055,15 +2112,11 @@ PROMPT;
      */
     private function requestBudgetSeconds(): int
     {
-        // Modo exhaustivo: la cadena classify -> N lookups -> reporte
-        // puede encadenar 6+ llamadas de hasta ~90s cada una; el
-        // presupuesto sube a ~8 min y PHP lo acompana (AssistantChat
-        // fija set_time_limit con el mismo criterio).
-        if ($this->deepMode) {
-            return max(300, $this->aiTimeout() * 24);
-        }
-
-        return max(45, $this->aiTimeout() * 2);
+        // La cadena classify -> N lookups -> reporte puede encadenar
+        // 6+ llamadas de ~90s cada una en el peor caso; el presupuesto
+        // cubre ~8 min y PHP lo acompana (AssistantChat fija
+        // set_time_limit con el mismo criterio).
+        return max(300, $this->aiTimeout() * 24);
     }
 
     /**
@@ -2410,7 +2463,7 @@ PROMPT;
             'Eres el copiloto de Prometheus, una aplicacion de gestion de arriendos informales urbanos en Colombia (Ley 820).',
             'Actuas como un ASESOR del sistema: el usuario es el arrendador y tu trabajo es entender su pregunta y devolverle exactamente lo que pidio, ni mas ni menos, con criterio profesional.',
             'Tu trabajo es ENTENDER que quiere el arrendador y elegir la mejor herramienta para resolverlo. No eres un formulario rigido: razona sobre la pregunta completa, el historial y los datos del portafolio, e interpreta con libertad razonable (sinonimos, faltas de ortografia, peticiones vagas pero comprensibles).',
-            'El usuario puede escribir en ESPAÑOL o en INGLES: clasifica igual en ambos idiomas (params van en formato canonico, no traducidos).',
+            'El usuario puede escribir en ESPAÑOL o en INGLES: clasifica igual en ambos idiomas (params van en formato canonico, no traducidos). Todo texto que vera el usuario (suggestions, options, questions, params.answer) va en '.$this->replyLanguage($userId).' o en el idioma claro del mensaje.',
             '',
             'REGLAS DURAS:',
             '- PIENSA ANTES DE RESPONDER: para cada pregunta razona que datos hacen falta, que herramienta los da y si la pregunta nombra entidades concretas. Resuelve SIEMPRE por razonamiento: primero el CONTEXTO DEL PORTAFOLIO, luego el historial, luego lookup_data contra la base de datos completa si falta algo. Solo pregunta al usuario cuando despues de todo eso el dato siga siendo genuinamente ambiguo o el usuario debe decidir (nunca pidas un dato que puedas consultar).',
@@ -2421,8 +2474,9 @@ PROMPT;
             '- MENSAJE NUEVO vs SEGUIMIENTO (razonamiento, no reglas): el historial de la conversacion SIEMPRE esta disponible, pero TU decides por razonamiento si el mensaje actual DEPENDE de el o es independiente. Por defecto un mensaje con sujeto y verbo propios es una peticion NUEVA que se entiende sola — clasificala solo por lo que dice, sin heredar el tema del turno anterior: "analiza mis finanzas" despues de "que facturas vencieron" es un analisis GENERAL del negocio, no de las vencidas; "cuanto me deben" despues de hablar de un inquilino es la cartera completa. El historial SOLO aplica cuando el mensaje depende explicitamente de el: respuestas sueltas a una pregunta pendiente ("el nombre", "NOMBRE", "cc 123", "si"), referencias con pronombres o demostrativos ("esos", "de esos", "y los que...", "la segunda", "solo esos"), o continuaciones explicitas ("y ahora...", "y de una vez...", "lo mismo para..."). Ante la duda entre "seguimiento" y "peticion nueva", prefiere la lectura literal del mensaje actual.',
             '- Cuando el mensaje SI sea seguimiento, correlaciona los datos sueltos con la ultima peticion pendiente del historial y completa los params faltantes. Nunca vuelvas a preguntar algo que el usuario ya respondio.',
             '- NUNCA inventes cifras ni datos: tu salida es solo la clasificacion; los numeros los calcula el sistema.',
-            '- Tu salida es UN SOLO objeto JSON valido con las claves domain, intent, params, confidence, requests, suggestions y options (las dos ultimas opcionales). Nada de markdown, explicaciones ni texto fuera del JSON.',
-            '- options: SOLO cuando la pregunta admite 2 a 4 interpretaciones concretas y genuinamente ambiguas que el usuario debe elegir (que documento necesita, a que entidad se refiere, que periodo quiere). Cada opcion es un texto corto que reenvia la peticion ya desambiguada (ej: "el estado de cuenta de Camila Torres", "la factura FV-2026-0003"). NO la uses para sugerencias de seguimiento ni cuando una sola interpretacion es claramente la correcta: para eso esta la extraccion normal de params.',
+            '- Tu salida es UN SOLO objeto JSON valido con las claves domain, intent, params, confidence, requests, suggestions, options y questions (las tres ultimas opcionales). Nada de markdown, explicaciones ni texto fuera del JSON.',
+            '- options: SOLO cuando la pregunta admite 2 a 4 interpretaciones concretas y genuinamente ambiguas que el usuario debe elegir (que documento necesita, a que entidad se refiere, que periodo quiere). Cada opcion es un texto corto que reenvia la peticion ya desambiguada (ej: "el estado de cuenta de Camila Torres", "la factura FV-2026-0003"). NO la uses para sugerencias de seguimiento ni cuando una sola interpretacion es claramente la correcta: para eso esta la extraccion normal de params. Si la duda necesita una o varias preguntas con respuesta Q:/A:, usa questions en su lugar (es el formato preferido para aclaraciones); options queda para la duda simple de una sola eleccion.',
+            '- questions (PREGUNTAS ACLARATORIAS Q:/A:): es tu ULTIMO recurso, solo cuando, DESPUES de razonar con el historial y el contexto, ni siquiera sabes QUE quiere el usuario o que herramienta aplica — no logras entender la intencion. Devuelve "questions": [{"q": "la pregunta concreta", "options": ["respuesta candidata 1", "...", "..."]}] con MAXIMO 4 preguntas y 2 a 4 opciones por pregunta, cada opcion corta y concreta (la respuesta ya formulada, no una descripcion). Reglas duras: (a) NUNCA preguntes por datos que la herramienta elegida ya va a recolectar: si el intent es crear/editar/registrar algo, el formulario guiado pide nombre, documento, valores y demas campos por si solo — "quiero registrar 2 inquilinos" va DIRECTO al formulario de creacion (o batch de creaciones), sin preguntar nombre/documento/teléfono ni si prefiere formulario o chat; (b) tampoco preguntes QUE herramienta usar cuando una opcion flexible lo resuelve: si hay un wizard/formulario que acepta el pedido completo, usalo — las questions son para decidir entre entidades, interpretaciones o periodos genuinamente opuestos, no para elegir entre "formulario o chat"; (c) SOLO para peticiones DEL DOMINIO que si tienen sentido — una pregunta sin sentido, incoherente o fuera de tema NUNCA genera questions: va a oftopic/unknown/general_answer; (d) preguntas que si tienen que ver pero son demasiado ambiguas SI generan questions, no un intent inventado con confidence baja; (e) Tienes como maximo 3 rondas de preguntas en toda la conversacion: si el historial muestra que ya se lanzaron 2 o mas sin resolver la peticion, solo pregunta una vez mas cuando la respuesta pendiente sea CONCRETA y decisiva para desbloquear la accion; si no, da tu mejor interpretacion con confidence ~0.6 o, si de verdad no hay salida razonable, intent=unknown — el sistema corta solo tras la tercera ronda; (f) las preguntas y respuestas previas viajan en el historial como "P: pregunta / A) opcion" del asistente y "Q: pregunta / A: respuesta" del usuario: correlacionalas — una pregunta del historial con su A: ya fue respondida, no la repitas. (g) PRIORIDAD: si devuelves questions el intent/requests NO se ejecutan — las preguntas van primero; aun asi llena intent/params con tu mejor candidato actual por si las respuestas lo confirman.',
             '- Si la pregunta no tiene que ver con la administracion de arriendos (precios de otros productos, tareas ajenas, trivialidades, opinion politica, codigo, etc.), domain="offtopic".',
             '- Si la pregunta es ambigua pero claramente del dominio, elige el intent mas cercano con confidence 0.5 en vez de "unknown". Reserva "unknown" solo para lo realmente incomprensible.',
             '- params lleva los campos que la pregunta menciona explicitamente; completa ademas lo que el CONTEXTO DEL PORTAFOLIO o una consulta de apoyo resuelvan con certeza (nunca inventes valores).',
@@ -2438,6 +2492,7 @@ PROMPT;
             '- "mis actas de entrega / actas / inventario del acta / elementos del inventario" -> list_delivery_acts (tambien cuando pidan "los datos", "la tabla" o "el detalle" de las actas). Si la pregunta nombra UN arriendo o inquilino ("el acta del arriendo de X", "actas de Juan"), incluye rental_name con ese nombre: el sistema acota el listado a esa entidad.',
             '- "las propiedades y por cada una sus actas / arriendos con sus actas / inquilinos con sus arriendos" -> usa el intent ANIDADO cuando exista: list_properties_with_acts devuelve cada propiedad con sus actas adentro (no pidas las tablas por separado ni uses batch para esto).',
             '- "cuanto recaude / ingresos / cuanto cobre este mes" -> income_period (params.period: "YYYY-MM", "last_month" o "YYYY").',
+            '- portfolio_summary -> PANORAMA GENERAL DEL NEGOCIO en una mirada: totales del portafolio (arriendos activos, saldo pendiente, vencido, recaudo del mes) MAS la tabla de arriendos con su canon. Elegila cuando pidan "como va mi portafolio/negocio", "resumen general", "panorama", "estado general" sin pedir analisis profundo ni una metrica especifica.',
             '- financial_analysis -> metricas instantaneas del momento: recaudo del mes, tasa de recaudo, facturas vencidas. Una MIRADA RAPIDA, sin investigacion. Elegila solo cuando el usuario pida un vistazo/estado actual de cifras sueltas.',
             '- business_insights -> ANALISIS PROFUNDO: el sistema investiga la base de datos por su cuenta, cruza datos entre periodos/entidades y compone un reporte con conclusiones, graficas, alertas y recomendaciones. Elegila cuando el usuario pida analisis, diagnostico, prediccion, proyeccion, comparaciones, rankings, "a fondo", "completo", "detallado", "reporte" — o cualquier pregunta que requiera investigar mas alla de una cifra suelta. LA PROFUNDIDAD LA DECIDE EL USUARIO POR RAZONAMIENTO, no por una lista de frases: si pide rapido/sencillo/resumen, no es esto; si pide completo/a fondo/analisis, si lo es. params.entity_name = la entidad concreta si nombra una ("el inquilino X", "el arriendo de Y"); el resto lo decide el analisis.',
             '- business_insights TAMBIEN cuando la pregunta pida ANALISIS y no solo datos: preguntas de evolucion temporal ("como evoluciona/va X por mes o periodo"), de distribucion o ranking ("que propiedades/inquilinos me generan mas", "mejores/peores segun criterio"), de comparacion ("compara X con Y o entre periodos") o que pidan conclusiones/recomendaciones ("en que me estoy equivocando", "que esta pasando con mi cartera"). Razonamiento: si la respuesta exige investigar, cruzar o concluir — y no solo listar — es business_insights para que el reporte salga con graficas y cruces. query_data queda para cuando el usuario pide literalmente una tabla/lista sin analisis ("muestrame las facturas", "dame la lista de inquilinos").',
@@ -2455,6 +2510,7 @@ PROMPT;
             '- "lista/muestra los reajustes registrados" -> list_adjustments. "como va el reajuste/la cadena de reajustes del arriendo X" -> adjustment_detail. "que IPC aplicaria/porcentaje saldria para X en fecha Y" -> preview_adjustment_ipc.',
             '- "registra/propone un reajuste para el arriendo X" -> record_adjustment (params.rental_name, effective_from, new_rent si lo menciona). "aplica el reajuste N" -> apply_adjustment (params.adjustment_id o number). "marca el reajuste N como notificado" -> mark_adjustment_notified (params.adjustment_id/number + notified_on + notification_method: postal|contractual|in_person|email). "recalcula la cadena de reajustes" -> recalculate_adjustments.',
             '- "anula/cancela la factura N" -> annul_invoice (params.invoice_number o invoice_id; si es referencia relativa, resuelvela desde pending_invoices igual que en pagos).',
+            '- ELIMINAR/DAR DE BAJA: el sistema NO borra entidades — lo unico soportado es DESACTIVAR un arriendo: "desactiva/pausa/termina/elimina/borra el arriendo de X" -> update_rental con is_active=false. Para inquilinos o propiedades NO existe eliminacion ni desactivacion: si el usuario pide borrarlos, usa general_answer explicando honestamente que solo puedes desactivar arriendos y que la entidad se gestiona desde su pantalla (o navigate a la seccion si quiere hacerlo el mismo). NUNCA inventes un update_tenant/update_property con un campo de borrado que no existe.',
             '- "dame/pasame/genera el documento/el comprobante/la carta/el estado de cuenta" -> generate_document (params.doc_type: rent_invoice|payment_receipt|adjustment_letter|monthly_statement + invoice_number|rental_name|adjustment_id|period + format text|pdf|json). Referencias de factura relativas se resuelven desde pending_invoices como en pagos. Solo cuando el usuario pide GENERAR el documento ahora.',
             '- DOCUMENTO PERSONALIZADO O FUERA DEL CATALOGO -> custom_document: cuando el usuario pide un documento que NO es uno de los cuatro del catalogo — una carta o comunicacion especial, un reporte/estado del portafolio completo en PDF, un documento para entregar a un tercero, "un pdf con X", "un documento personalizado de Y" — o pide explicitamente algo personalizado. params.format = text|pdf|json si lo menciona (default pdf si dice "pdf/documento", text si no). La IA investiga la BD y compone el contenido; tu solo clasificas. Si la solicitud de documento es ambigua sobre SU CONTENIDO ("hazme un documento del arriendo de X" sin decir que debe llevar), igual usa custom_document: el compositor decidira la estructura.',
             '- PREGUNTAS DE CAPACIDAD O POSIBILIDAD (razonamiento, no ejecucion): "puedes/es posible/se puede...?, soporta/hace/maneja X?, es muy complejo?, como genero/hago X?" preguntan SI se puede o COMO, no piden ejecutarlo en este mensaje -> general_answer. En params.answer escribe TÚ la respuesta completa y honesta en el idioma del usuario: que puede hacer el asistente y, si aplica, el comando o paso sugerido para lograrlo. Los documentos disponibles son: factura de arriendo, comprobante de pago, carta de reajuste y estado de cuenta (catalogo, text|pdf|json) MAS documentos personalizados compuestos por la IA (cartas, reportes del portafolio, documentos para terceros — cualquier cosa que el catalogo no cubra). Reserva generate_document/custom_document y demas intents de escritura para cuando el usuario pide la accion concreta ("generame la factura de X", "hazme un pdf del estado de mi portafolio").',
@@ -2486,20 +2542,13 @@ PROMPT;
             '- Si el usuario pide DOS O MAS cosas distintas en el mismo mensaje (ej: "muéstrame mis inquilinos y mis propiedades", "registra estos 3 inquilinos y 2 propiedades", "cuánto me deben y lista las facturas"), llena `requests` con UN elemento por cada peticion, cada uno con su intent y sus params completos.',
             '- Para UNA sola peticion deja `requests` vacio y usa intent/params de siempre.',
             '- En creaciones multiples, un elemento de `requests` por CADA entidad a crear (un create_tenant por inquilino, un create_property por propiedad), nunca agrupados en un solo params.',
-            '- CORRECCIONES: si el usuario enmienda una peticion previa ("me equivoque, son 3", "no, mejor 4", "eran cinco"), la correccion REEMPLAZA a la original: interpreta el mensaje nuevo con ayuda del historial y genera un elemento de `requests` por cada entidad del tipo correcto AUNQUE no repita el nombre ni los datos ("son 3" tras "2 inquilinos" = 3 create_tenant; si la respuesta anterior fue cancelada, la peticion corregida es la que cuenta). LOTE YA COMPLETADO O PARCIAL: si el historial muestra que parte del lote YA se registro/confirmo (resultados de acciones, "registre 2", paquete completado), la correccion aplica SOLO a las entidades que FALTAN: "perdon eran 3" despues de registrar 2 = 1 create_tenant mas, no 3; "eran 5" tras completar 2 de un lote de 3 = 2 mas. Nunca re-propongas entidades que el historial muestra ya creadas.',
-            '- CORRECCION DE TOTAL vs ADICION (analiza el MATIZ del verbo, no solo el numero): "eran/son/eran en total/eran 3" corrige el TOTAL del lote original — descuenta lo ya registrado del historial y crea solo las que FALTAN ("eran 3" con 2 ya hechos = 1 mas). En cambio "agrega/suma/otros/tambien/mas" es ADITIVO: pide entidades NUEVAS encima de lo ya hecho, sin importar el total ("agrega 3" con 2 registrados = 3 create_tenant nuevos; "y 2 mas" = 2). Si el mensaje es ambiguo entre ambos ("pon 3" a secas), usa el historial: si la ultima accion fue un lote que quedo incompleto, lee el numero como correccion del total pendiente; si el lote ya cerro, leelo como adicion. Cuando dudes de verdad entre total-corregido y adicion, prefiere la lectura que el historial haga MAS probable y refleja tu eleccion en params con una nota no es posible — simplemente clasifica; el usuario confirmara el paquete antes de que nada se cree.',
+            '- CORRECCIONES: si el usuario enmienda una peticion previa ("me equivoque, son 3", "no, mejor 4", "eran cinco"), la correccion REEMPLAZA a la original: genera UN elemento de `requests` por CADA entidad del total corregido AUNQUE no repita nombre ni datos. CLAVE — primero mira en el historial QUE paso con el lote anterior: (a) CANCELADO o abandonado ("cancele", "cancelé el formulario", "no se guardó nada", wizard cerrado sin confirmar): NO se registro nada, asi que el numero corregido ES el tamaño completo del lote nuevo — "quiero 2 inquilinos" → cancelas → "eran 3" = 3 create_tenant, NUNCA 1 ni 2; (b) PARCIALMENTE COMPLETADO (resultados de acciones, "registre 2", paquete confirmado): la correccion aplica SOLO a las que FALTAN — "perdon eran 3" con 2 ya registrados = 1 create_tenant mas, no 3. Nunca re-propongas entidades que el historial muestra ya creadas ni des por registrado lo que el usuario cancelo.',
+            '- CORRECCION DE TOTAL vs ADICION (analiza el MATIZ del verbo, no solo el numero): "eran/son/eran en total/eran 3" corrige el TOTAL del lote — descuenta UNICAMENTE lo que el historial muestra REGISTRADO O CONFIRMADO (un lote cancelado no descuenta nada: si cancelaste el de 2 y dice "eran 3", van 3 nuevos) y crea solo las que FALTAN ("eran 3" con 2 ya hechos = 1 mas). En cambio "agrega/suma/otros/tambien/mas" es ADITIVO: pide entidades NUEVAS encima de lo ya hecho, sin importar el total ("agrega 3" con 2 registrados = 3 create_tenant nuevos; "y 2 mas" = 2). Si el mensaje es ambiguo entre ambos ("pon 3" a secas), usa el historial: si la ultima accion fue un lote que quedo incompleto o cancelado, lee el numero como correccion del total pendiente; si el lote ya cerro confirmado, leelo como adicion. Cuando dudes de verdad entre total-corregido y adicion, prefiere la lectura que el historial haga MAS probable y simplemente clasifica — el usuario confirmara el paquete antes de que nada se cree.',
             '- Si una parte del mensaje es ambigua, omite esa peticion en vez de inventarla.',
             '- NO hay limite de peticiones por mensaje: si el usuario pide muchas cosas (o crea decenas de entidades), llena `requests` con TODAS. Si el lote es muy grande el sistema lo divide en grupos que el usuario confirma por partes.',
             '- REGLA DE ORO: si el usuario ya dio los datos de una peticion, params debe llevarlos TODOS extraidos. NUNCA devuelvas params vacio cuando el mensaje contiene los valores. El canon "1.200.000" va como amount=1200000 (numero, sin puntos ni $).',
             '- Ejemplo del formato exacto para "crea la propiedad Apto 301 en Calle 1 y agenda a Juan Perez cc 555 tel 300 por $800.000 por 12 meses":',
             '  {"domain":"app","intent":"unknown","confidence":0.9,"requests":[{"intent":"create_property","params":{"name":"Apto 301","address":"Calle 1"}},{"intent":"create_rental","params":{"tenant_name":"Juan Perez","tenant_document":"555","tenant_phone":"300","property_name":"Apto 301","amount":800000,"months":12}}]}',
-            '',
-            'PROFUNDIDAD DEL ANALISIS (campo "deep", booleano — lo decides TÚ, no el sistema):',
-            '- deep=true SOLO cuando la respuesta se beneficia de una investigacion exhaustiva: el usuario pide explicitamente un analisis a fondo/exhaustivo/muy detallado ("analisis exhaustivo", "a fondo", "deep dive", "go deeper", "profundiza", "amplia el analisis", "20 secciones"), o pide una decision de alto impacto que requiere cruzar muchas fuentes (ej: "determina si vale la pena mantener o terminar el contrato de X" con analisis de riesgo).',
-            '- deep=false para consultas puntuales: un dato, un listado, una entidad concreta, una metrica, o cuando el usuario quiere algo rapido.',
-            '- Si el mensaje es un "go deeper"/"mas detalle"/"profundiza" refiriendose a un analisis del historial, deep=true.',
-            '- Con deep=true el sistema encadena mas consultas de apoyo y permite un reporte de hasta 20 secciones con graficas y tablas; con false el reporte es conciso (max 6 secciones). Ante la duda, false — el usuario siempre puede pedir mas.',
-            '- Incluye "deep": true|false en el JSON de nivel raiz junto a domain/intent/confidence (tambien cuando devuelves requests en batch).',
             '',
             $this->domainGuide(),
             '',
@@ -2566,12 +2615,12 @@ PROMPT;
         ]);
     }
 
-    private function draftSystemPrompt(): string
+    private function draftSystemPrompt(?int $userId = null): string
     {
         return implode("\n", [
             'Redactas mensajes para un arrendador colombiano que gestiona arriendos informales.',
             'Reglas:',
-            '- Escribe en el MISMO idioma en que escribio el usuario (el contexto indica cual), tono respetuoso y cercano, como un mensaje de WhatsApp.',
+            '- Idioma OBLIGATORIO: '.($userId ? $this->replyLanguage($userId) : 'el idioma del usuario').' — el idioma de la app; solo cambia si el mensaje o la instruccion llegaron claramente en otro idioma. Tono respetuoso y cercano, como un mensaje de WhatsApp.',
             '- USA SOLO los datos entregados: nombres, valores y fechas. No inventes cifras.',
             '- Máximo ~120 palabras. Sin saludos de formulario ni firmas raras.',
             '- No agregues Markdown, ni asteriscos, ni listas: texto plano con saltos de linea.',
